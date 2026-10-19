@@ -22,6 +22,13 @@ This repo is `ry-diffusion/ios-beryllium` (fork of dipa-studio/ios-sweet, remote
 **Builds:** `BOARD=beryllium shim/build.sh [payload]`; `tools/mkadt.py OUT --board beryllium --highmem` (no /product until research/ipsw-x/d22ap.adt exists).
 **Kernel 0082** (CI run 39338936111): keys GPIO6, NT36672A touch, HID + early console sized from boot_args. Not booted yet.
 
+**🎉 2026-10-19 ~20:51: XNU BOOTS ON THE POCO F1 UP TO ROOT MOUNT** (kernel 0083 + ADT with the kryo470 fix, `shim/out/shim-boot-0083c.img`, cpus=1, read-only UFS, sweetlog=0). Photo IMG_3432: `SWEET UFS: "userdata" on LUN 0: first block 0x60000, 54791 MiB, read-only, DMA at 0x1041b8000`; `SWEET KEYS: arb=0x50000000 apids=512 pon-apid=172 gpio-ppid=0xc5 gpio-apid=190 ... en=0x80 subtype=0x10` (vol-up input OK); `SWEET TOUCH: starting in 45 s` (result not seen yet); root: `hfs_ValidateHFSPlusVolumeHeader: unknown Volume Signature : 3085` (Android ext4) -> mount retries, no panic. USB: `ep0 cmd 0x1 timeout` -> 0084.
+- Debug path that found it: `io=0x5` boot-arg (IOKit attach/start log) showed cpu0-7 nubs attach but no CPU driver start. **SweetCPU matches IONameMatch 'qcom,kryo470'** (iokit/KernelConfigTables.cpp): beryllium ADT said only qcom,kryo385 -> boot waited forever for the CPUs (PE_lockdown_iokit). mkadt now emits `qcom,kryo385|qcom,kryo470|ARM,v8`.
+- Shim GIC test on beryllium (IMG_3430): EL1, MPIDR 0x81000000, vtimer INTID 19 30 IRQs/300 ms, ptimer 18 30, SGI 10/10 (Group 1, EOI ok) = identical to sweet.
+- Shim UFS probe (IMG_3426): hce 1 hcs 0x19f, UFSHCI 2.10, cap 0x1587031f (64AS), TUR/CAP/READ ok, GPT LUN0, userdata lba 0x60000 (4K blocks), ext4.
+- **0084**: DWC3 3.00a (GSNPSID 0x5533300a) reloads GCTL on DCTL soft reset (0x00112000 -> 0x00112069, RAMCLKSEL=PIPE) -> keep ABL's GCTL. QUSB2 v2 register dump in sweet_usb.c reads byte patterns (v2 layout differs; diagnostic only). CI 39344231286.
+- First `fastboot boot` of a 17 MB image after `adb reboot bootloader` hung in "Sending" once; a retry after Power+VolDown worked (0.4 s).
+
 **Next:** (1) first XNU boot on the phone WITHOUT writes: boot-args without ufsrw/rootrw and with `sweetlog=0` (userdata still holds Android data!), expect console, SMP, UFS GPT "userdata on LUN 0", then no root. (2) iOS root image on macOS (mkiosroot.sh is Linux-only: port to hdiutil/newfs_hfs) + D22AP /product, then flashing userdata (erases Android data: ask the user first).
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
