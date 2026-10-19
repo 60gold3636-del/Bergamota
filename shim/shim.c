@@ -331,6 +331,8 @@ static void test_gic(void)
 
 	stage = "gic vtimer";
 	irq_window("VTIMER", r, VTIMER_INTID);
+	stage = "gic ptimer";
+	irq_window("PTIMER", r, PTIMER_INTID);
 	stage = "gic sgi";
 	irq_window("SGI1", r, SGI_INTID);
 	wr32(r + GICR_ICENABLER0, 0xffffffff);
@@ -393,9 +395,20 @@ void shim_main(uint64_t dtb)
 	stage = "ufs";
 	test_ufs();
 	con_skip();
-	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
-	con_str("UFS", "probe done, reset in ~3 min");
-	delay_ms(180000);
+	con_str("UFS", "probe done, GIC/timer test in 15 s");
+	delay_ms(15000);
+
+	/* Does the virtual timer (what xnu uses) reach us as a Group 1 IRQ? */
+	stage = "gic";
+	con_clear(RED);
+	con_set_scale(2);
+	con_str("SHIM", BOARD_NAME " GIC/timer test");
+	con_hex2("EL", "cur=", rsr("CurrentEL") >> 2, "cntfrq=", rsr("cntfrq_el0"));
+	con_hex2("MPIDR", "=", rsr("mpidr_el1"), 0, 0);
+	test_gic();
+	con_skip();
+	con_str("GIC", "done, reset in 120 s");
+	delay_ms(120000);
 	reset(20);
 
 	stage = "fill off";
