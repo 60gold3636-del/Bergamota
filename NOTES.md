@@ -2,21 +2,27 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> BERYLLIUM PORT (Poco F1, SDM845), branch `beryllium`, 2026-10-19 <<<
+### >>> ios-beryllium: iOS on the Poco F1 (beryllium, SDM845) - read first <<<
 
-Goal: the same kernel + iPhone X userland on the Xiaomi Poco F1 (`beryllium`, SDM845, 6 GB, panel variant not known yet). Fork: `ry-diffusion/ios-sweet` (remote `fork`), CI runs there.
+This repo is `ry-diffusion/ios-beryllium` (fork of dipa-studio/ios-sweet, remote `upstream`); work on `main`, CI (`xnu.yml`) runs on push. Kernel patches 0001-0081 are upstream sweet; 0082+ add the Poco F1. One kernel serves both phones: drivers pick the board from the ADT root compatible `xiaomi,beryllium` (`bsd/dev/sweet_board.h`).
 
-**Hardware facts (mainline sdm845*.dtsi + beryllium-common, LineageOS lineage-22.2 downstream; not yet checked on the phone):**
-- Same as sweet: GICD 0x17a00000 / GICR 0x17a60000, virtual timer PPI 3 = INTID 19, 19.2 MHz, PSCI 1.0, UFS ufshc@1d84000, PSHOLD 0xc264000, SPMI arbiter core 0xc440000 / obsrvr 0xe600000 / cnfg 0xc40a000, USB DWC3 0xa600000 + qscratch 0xa6f8800 + QUSB2 v2 0x88e2000, RPMh apps_rsc drv2 0x179e0000 (tcs-offset 0xd00; sweet: 0x18220000), cmd-db 0x85fe0000.
-- Different: splash FB **0x9d400000** (+0x2400000), **1080x2246**, stride 4320; IMEM restart_reason **0x146bf65c**; CPUs 0-3 A55 (0x000-0x300), 4-7 A75 (0x400-0x700); TLMM 0x3400000.
-- Buttons: power + RESIN (vol-down) on PM8998 PON SID0 0x800 (same block as sweet); **vol-up = PM8998 GPIO6, SID0 0xc500** (sweet: PM6150L GPIO2 SID4 0xc110).
-- Touch: **I2C14 = QUP wrap1 SE6 @0xa98000**, IRQ TLMM 31, reset TLMM 32, IO supply L14A (always-on), VCC = PMI8998 LAB (on with the splash). Tianma = Novatek NT36672A @0x01 (records of 6 bytes from reg 0); EBBG = FocalTech FT8719 @0x38 (FTS protocol, sweet's TOUCH_FTS path may fit).
-- RAM: low bank free 0x9f800000-0xf6301000 (rmtfs at 0xf6301000); mkadt beryllium uses 0xa0000000 + 0x56000000 for now. 6 GB high bank: read from the diag boot.
-- Panel: bootargs `msm_drm.dsi_display0=dsi_tianma_fhd_nt36672a_video_display` or `dsi_ebbg_fhd_ft8719_video_display`.
-- Boot image: header v0, DTB appended to the kernel (pmOS deviceinfo), base 0, kernel 0x8000, ramdisk 0x1000000, tags 0x100, page 4096. DTB needs qcom,msm-id <0x141 0x20001>, board-id <69 0>: we use the mainline tianma DTB built from `research/linux-dts` (torvalds c03c1a14) -> `dtb/beryllium/dtb`.
+**The phone (2026-10-19):** Poco F1 global (M1805E10A), 6 GB, **Tianma panel** (`msm_drm.dsi_display0=dsi_tianma_fhd_nt36672a_video_display`; Android input "NVTCapacitiveTouchScreen" 1080x2246), custom ROM aosp_beryllium-**userdebug** Android 16 (BP2A.250605) -> `adb root` works. Bootloader **unlocked** (`fastboot oem device-info`; the ROM fakes flash.locked/green). userdata = **sda21 (LUN 0)**, 54791 MiB; system sde48.
+**Backups:** `backup/*.img` (79 partitions, all except userdata/system/cust/cache/logdump/minidump, SHA256SUMS verified against the phone). Live FDT `dtb/beryllium/live.dtb/.dts`, cmdline `dtb/beryllium/cmdline.txt`. Not in git.
 
-**Done:** `shim/board.h` (BOARD=beryllium in build.sh, macOS toolchain aarch64-elf-gcc), `tools/mkadt.py --board beryllium`, shim diag screen (no payload): live /memory, /reserved-memory, model, PANEL from bootargs, 120 s, then UFS probe, then reset to fastboot. Image `shim/out/shim-boot-beryllium-diag.img`, NOT booted yet.
-**Next:** boot the diag image, photo the screen -> memory map + panel. Then kernel patches 0082+: board from ADT compatible `xiaomi,beryllium`; FB geometry from boot_args (0010/0012 early asm hardcodes 0x9c000000: the 32 MB block 0x9c000000 still covers beryllium's FB); 0061 presented-size offsets for 2246; keys GPIO6; touch on SE6 + NT36672A/FT8719; RPMh base.
+**Verified on the phone:**
+- RAM (live /memory): `<0x80000000 0xc0000000>, <0x1_40000000 0xbd4a0000>`; every fixed carve-out ends below 0xb0400000 (ramdump_fb 0xaf000000, ramoops 0xb0000000) -> kernel RAM = **0x100000000 + 0xfcc00000, same as sweet --highmem**.
+- ROM boot.img: header **v1**, Image.gz + 21 appended DTBs; ours uses the ROM's `Beryllium MP v2.1` DTB (msm-id <0x141 0x20001>, board-id <0x45 0>, = live model) -> `dtb/beryllium/dtb`.
+- **2026-10-19 19:54: `fastboot boot shim/out/shim-boot-beryllium-diag.img` accepted by ABL; the shim ran its whole script and reset after ~330 s** (came back in Android, not fastboot: the IMEM restart_reason does not select fastboot on SDM845 -> Power+VolDown). Screen photo of the FDT page not checked yet.
+- Same SPMI arbiter layout as sweet (live DT: core 0xc440000+0x1100, chnls 0xc600000+0x2000000, obsrvr 0xe600000+0x100000 = v5 strides).
+
+**Hardware facts (mainline + LineageOS lineage-22.2 + live DT):** same as sweet: GICD/GICR, vtimer INTID 19, 19.2 MHz, PSCI, UFS 0x1d84000, PSHOLD, SPMI, USB DWC3 0xa600000/qscratch 0xa6f8800/QUSB2 0x88e2000, TLMM north 0x3900000. Different: FB 0x9d400000 1080x2246 (inside the 0x9c000000 32 MB block the kernel maps); IMEM 0x146bf65c; CPUs 0-3 A55, 4-7 A75; RPMh drv2 0x179e0000; vol-up PM8998 GPIO6 (SID0, PPID 0x0c5, 0xc5xx); touch NT36672A @0x01 on I2C14 = QUP wrap1 SE6 0xa98000 (GCC RCG 0x18738, branch 0x18734, vote 0x5200c bit 28), IRQ TLMM31 (rising), reset TLMM32, SDA/SCL 33/34 func qup14 (mux 2), rails = panel (L14A, LAB/IBB), no RPMh vote. Downstream node `novatek@62` "NVT-ts_mi845", fw novatek_nt36672_e10_hw01.fw (chip has flash; mainline loads none).
+
+**Toolchain on macOS:** aarch64-elf-gcc (brew), dtc, android-platform-tools, mkbootimg/unpack_bootimg from AOSP in ~/.local/share/mkbootimg (wrapper ~/.local/bin/mkbootimg). `tools/xnu-cc.py` works with Xcode clang: `XNU_CLANG=$(xcrun --find clang) python3 tools/xnu-cc.py research/run81.log research/bt81 <files>` (research/bt81 = 0081 buildtree artifact; research/pre82 + w82 = 0082 originals/edits).
+
+**Builds:** `BOARD=beryllium shim/build.sh [payload]`; `tools/mkadt.py OUT --board beryllium --highmem` (no /product until research/ipsw-x/d22ap.adt exists).
+**Kernel 0082** (CI run 39338936111): keys GPIO6, NT36672A touch, HID + early console sized from boot_args. Not booted yet.
+
+**Next:** (1) first XNU boot on the phone WITHOUT writes: boot-args without ufsrw/rootrw and with `sweetlog=0` (userdata still holds Android data!), expect console, SMP, UFS GPT "userdata on LUN 0", then no root. (2) iOS root image on macOS (mkiosroot.sh is Linux-only: port to hdiutil/newfs_hfs) + D22AP /product, then flashing userdata (erases Android data: ask the user first).
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
