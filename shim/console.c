@@ -5,7 +5,7 @@
 #include "console.h"
 #include "font.h"
 
-#define SCALE		3
+static int SCALE = 3;
 #define CH_W		(8 * SCALE)
 #define CH_H		(16 * SCALE)
 #define MARGIN		24
@@ -59,6 +59,11 @@ static void fmt_hex(char *buf, uint64_t v, int digits)
 	for (int i = 0; i < digits; i++)
 		buf[i] = hex[(v >> (4 * (digits - 1 - i))) & 0xf];
 	buf[digits] = 0;
+}
+
+void con_set_scale(int s)
+{
+	SCALE = s;
 }
 
 void con_skip(void)
