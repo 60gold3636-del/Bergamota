@@ -384,8 +384,8 @@ void shim_main(uint64_t dtb)
 	stage = "fdt";
 	con_set_scale(2);
 	fdt_board_info(dtb);
-	con_str("NEXT", "UFS probe in 120 s");
-	delay_ms(120000);
+	con_str("NEXT", "UFS probe in 15 s");
+	delay_ms(15000);
 	con_clear(RED);
 	con_set_scale(3);
 

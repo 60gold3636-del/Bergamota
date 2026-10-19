@@ -110,11 +110,11 @@ static void print_regs(const char *label, uintptr_t val, uint32_t len)
 		char buf[40];
 		static const char hex[] = "0123456789ABCDEF";
 		int n = 0;
-		for (int i = 35; i >= 0; i -= 4)
+		for (int i = 32; i >= 0; i -= 4)
 			buf[n++] = hex[(a >> i) & 0xf];
 		buf[n++] = ' ';
 		buf[n++] = '+';
-		for (int i = 35; i >= 0; i -= 4)
+		for (int i = 32; i >= 0; i -= 4)
 			buf[n++] = hex[(s >> i) & 0xf];
 		buf[n] = 0;
 		con_str(label, buf);
