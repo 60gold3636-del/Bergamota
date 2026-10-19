@@ -48,9 +48,11 @@ BOARDS = {
         compat=['xiaomi,beryllium', 'xiaomi,sweet', 'qcom,sdm845'],
         # 0-3 Kryo 385 Silver (A55), 4-7 Gold (A75)
         cpu_compat='qcom,kryo385', big_from=4, freqs=(1766400000, 2803200000),
-        # Low bank above cont_splash (ends 0x9f800000) and below rmtfs
-        # (0xf6301000); the 6 GB high bank is not mapped out yet.
-        mem=(0xa0000000, 0x56000000)),
+        # Without --highmem: low bank between cont_splash (ends 0x9f800000)
+        # and ramoops@b0000000. --highmem: same window as sweet; the live
+        # FDT memory is <0x80000000 3G>, <0x1_40000000 0xbd4a0000> and every
+        # fixed carve-out ends below 0xb0400000.
+        mem=(0x9f800000, 0x0f800000)),
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
@@ -93,9 +95,8 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
     b = BOARDS[board]
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     if board != 'sweet' and not qemu:
-        if highmem:
-            raise SystemExit(f'--highmem: no high-bank layout for {board} yet')
-        phys_base, mem_size = b['mem']
+        if not highmem:
+            phys_base, mem_size = b['mem']
     fb, fb_size = b['fb']
     fb_w, fb_h = b['fb_wh']
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)

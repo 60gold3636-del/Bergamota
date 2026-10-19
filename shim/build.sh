@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the shim and wrap it in an Android boot.img that ABL accepts.
 #   BOARD=sweet (default)  boot.img v2 mirroring the stock PixelOS header, DTB in the header
-#   BOARD=beryllium        boot.img v0 with the DTB appended to the kernel (Poco F1 / SDM845 ABL)
+#   BOARD=beryllium        boot.img v1, Image.gz + appended DTB like the Poco F1 ROM (SDM845 ABL)
 # Usage: [BOARD=..] [DTB=..] ./build.sh [payload.bin]
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -43,12 +43,12 @@ else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
 if [ "$BOARD" = beryllium ]; then
-	# SDM845 ABL finds the DTB appended to the kernel image (like Image.gz-dtb);
-	# it lands right after image_size, so .bss/stacks never overlap it.
-	cat out/Image "$DTB" > out/Image-dtb
-	mkbootimg --header_version 0 --kernel out/Image-dtb --ramdisk out/ramdisk.bin \
+	# Same layout as the ROM's boot.img: header v1, Image.gz with the DTB
+	# appended (ABL gunzips the kernel and finds the DTB behind the stream).
+	gzip -9 -n -c out/Image | cat - "$DTB" > out/Image.gz-dtb
+	mkbootimg --header_version 1 --kernel out/Image.gz-dtb --ramdisk out/ramdisk.bin \
 		--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
-		--second_offset 0xf00000 --tags_offset 0x100 --pagesize 4096 \
+		--tags_offset 0x100 --pagesize 4096 --os_version 16.0.0 --os_patch_level 2025-06 \
 		--cmdline "console=null" -o out/shim-boot.img
 else
 	mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
