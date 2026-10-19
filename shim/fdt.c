@@ -82,3 +82,108 @@ int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out)
 		}
 	}
 }
+
+/* ---- bring-up info (needs the console) ---- */
+#include "console.h"
+
+static int starts(const char *s, const char *p)
+{
+	while (*p && *s == *p)
+		s++, p++;
+	return !*p;
+}
+
+static void copy_str(char *d, const char *s, int max)
+{
+	int i = 0;
+	while (i < max - 1 && s[i])
+		d[i] = s[i], i++;
+	d[i] = 0;
+}
+
+/* qcom DTs use #address-cells = #size-cells = 2 at the root and in /reserved-memory. */
+static void print_regs(const char *label, uintptr_t val, uint32_t len)
+{
+	for (uint32_t o = 0; o + 16 <= len; o += 16) {
+		uint64_t a = (uint64_t)be32(val + o) << 32 | be32(val + o + 4);
+		uint64_t s = (uint64_t)be32(val + o + 8) << 32 | be32(val + o + 12);
+		char buf[40];
+		static const char hex[] = "0123456789ABCDEF";
+		int n = 0;
+		for (int i = 35; i >= 0; i -= 4)
+			buf[n++] = hex[(a >> i) & 0xf];
+		buf[n++] = ' ';
+		buf[n++] = '+';
+		for (int i = 35; i >= 0; i -= 4)
+			buf[n++] = hex[(s >> i) & 0xf];
+		buf[n] = 0;
+		con_str(label, buf);
+	}
+}
+
+void fdt_board_info(uintptr_t fdt)
+{
+	if (!fdt || be32(fdt) != FDT_MAGIC) {
+		con_str("FDT", "no live FDT");
+		return;
+	}
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t strings = fdt + be32(fdt + 12);
+	int depth = 0, in_mem = 0, in_resv = 0, in_chosen = 0;
+	char cur[12] = "";
+
+	for (;;) {
+		uint32_t tok = be32(p);
+		p += 4;
+		switch (tok) {
+		case FDT_BEGIN_NODE: {
+			const char *name = (const char *)p;
+			depth++;
+			if (depth == 2) {
+				in_mem = starts(name, "memory");
+				in_resv = streq(name, "reserved-memory");
+				in_chosen = streq(name, "chosen");
+			}
+			if (depth == 3 && in_resv)
+				copy_str(cur, name, sizeof cur);
+			p = align4(skip_str(p));
+			break;
+		}
+		case FDT_END_NODE:
+			depth--;
+			if (depth < 2)
+				in_mem = in_resv = in_chosen = 0;
+			break;
+		case FDT_PROP: {
+			uint32_t len = be32(p), nameoff = be32(p + 4);
+			uintptr_t val = p + 8;
+			const char *pn = (const char *)(strings + nameoff);
+			if (depth == 1 && streq(pn, "model")) {
+				char buf[48];
+				copy_str(buf, (const char *)val, sizeof buf);
+				con_str("MODEL", buf);
+			} else if (depth == 2 && in_mem && streq(pn, "reg")) {
+				print_regs("MEMORY", val, len);
+			} else if (depth == 3 && in_resv && streq(pn, "reg")) {
+				print_regs(cur, val, len);
+			} else if (depth == 2 && in_chosen && streq(pn, "bootargs")) {
+				/* "msm_drm.dsi_display0=dsi_..._display:" names the panel */
+				const char *s = (const char *)val;
+				for (; *s; s++)
+					if (starts(s, "dsi_display0=")) {
+						char buf[64];
+						copy_str(buf, s + 13, sizeof buf);
+						con_str("PANEL", buf);
+						break;
+					}
+			}
+			p = align4(val + len);
+			break;
+		}
+		case FDT_NOP:
+			break;
+		default:
+			return;
+		}
+	}
+}
