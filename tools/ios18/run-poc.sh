@@ -35,18 +35,32 @@ echo "== boot-args: $BA"
 case "$BA" in *sweetarm64e=1*) ;; *) echo "!! boot-args lack sweetarm64e=1: the kernel will refuse the arm64e exec (EBADARCH / 'Bad CPU type')" ;; esac
 
 if [ $PUSH = 1 ]; then
-	SUM=$(cat "$BUNDLE/MANIFEST.txt" | shasum | cut -c1-16)-$(stat -f %m "$BUNDLE/dyld")-$(stat -f %m "$BUNDLE/bin/expr")
-	if [ "$($SSH "cat $DIR/.stamp 2>/dev/null")" != "$SUM" ]; then
-		echo "== pushing $(du -sh "$BUNDLE" | cut -f1) to $HOST:$DIR"
-		COPYFILE_DISABLE=1 tar --uid 0 --gid 0 --no-xattrs -C "$BUNDLE" -cf - . |
-			$SSH "rm -rf $DIR && mkdir -p $DIR && cd $DIR && tar -xf - && chmod -R go-w . && echo '$SUM' > .stamp" ||
-			{ echo "push failed" >&2; exit 1; }
+	# incremental: SHA-256 manifest of the bundle vs the manifest the last push left on the phone
+	L=$(mktemp -d); trap 'rm -rf "$L"' EXIT
+	(cd "$BUNDLE" && find . -type f | sort | xargs shasum -a 256 | sed 's|  \./|  |') > "$L/new"
+	$SSH "cat $DIR/.manifest 2>/dev/null" > "$L/old" 2>/dev/null || : > "$L/old"
+	sort "$L/new" > "$L/new.s"; sort "$L/old" > "$L/old.s"
+	comm -23 "$L/new.s" "$L/old.s" | sed 's/^[0-9a-f]*  //' | sort > "$L/changed"
+	comm -13 "$L/new.s" "$L/old.s" | sed 's/^[0-9a-f]*  //' | sort > "$L/gone0"
+	grep -vxFf <(sed 's/^[0-9a-f]*  //' "$L/new.s") "$L/gone0" > "$L/gone" || true
+	NCH=$(wc -l < "$L/changed" | tr -d ' '); NGONE=$(wc -l < "$L/gone" | tr -d ' ')
+	if [ "$NCH" = 0 ] && [ "$NGONE" = 0 ]; then
+		echo "== bundle already on the phone (manifest identical)"
 	else
-		echo "== bundle already on the phone (stamp $SUM)"
+		echo "== pushing $NCH changed file(s), removing $NGONE, to $HOST:$DIR"
+		$SSH "mkdir -p $DIR" || { echo "ssh failed" >&2; exit 1; }
+		if [ "$NCH" != 0 ]; then
+			COPYFILE_DISABLE=1 tar --uid 0 --gid 0 --no-xattrs -C "$BUNDLE" -cf - -T "$L/changed" |
+				$SSH "cd $DIR && tar -xf -" || { echo "push failed" >&2; exit 1; }
+		fi
+		if [ "$NGONE" != 0 ]; then
+			$SSH "cd $DIR && xargs rm -f" < "$L/gone"
+		fi
+		$SSH "chmod -R go-w $DIR; cat > $DIR/.manifest" < "$L/new" || exit 1
 	fi
 fi
 
-ENVV="DYLD_LIBRARY_PATH=$DIR/lib"
+ENVV="DYLD_LIBRARY_PATH=$DIR/lib DYLD_FRAMEWORK_PATH=$DIR/Frameworks"
 if [ $DIAG = 1 ]; then
 	# DYLD_PRINT_* are honoured only if the AMFI stand-in granted AMFI_DYLD_OUTPUT_ALLOW_PRINT_VARS (0x10).
 	ENVV="$ENVV DYLD_PRINT_TO_STDERR=1 DYLD_PRINT_ENV=1 DYLD_PRINT_SEARCHING=1 DYLD_PRINT_LIBRARIES=1 DYLD_PRINT_LOADERS=1 DYLD_PRINT_SEGMENTS=1 DYLD_PRINT_INITIALIZERS=1"
