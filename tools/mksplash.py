@@ -7,7 +7,7 @@ Format (verified on backup/logo.img of the Poco F1; splash.img is empty: just a 
                  i.e. N+1 slots; start/len are in 4 KiB blocks from the start of the partition and len is
                  the slot's allocated size (gap to the next start), zero padded.
   each slot      a plain 24-bpp BI_RGB bottom-up BMP, 4 KiB aligned.
-Slots in the stock image: 0 power-on logo (MI + mi.com, 161x321), 1 fastboot (1080x920), 2 charging,
+Slots in the stock image: 0 power-on logo (MI + mi.com, 161x321), 1 fastboot (1080x920; rebuilt full screen 1080x2246), 2 charging,
 3/6/8 Google logo 458x154, 4 "system has been destroyed" (1080x1920), 5/7 blank 1080x320.
 
   mksplash.py build  [--base backup/logo.img] [-o out/logo-bergamota.img] [--size 1080x2246]
@@ -105,12 +105,12 @@ def compose_poweron(w, h):
     return c
 
 
-def gradient_glow(w, h):
+def gradient_glow(w, h, glow_y=0.40):
     """Colourful fastboot background (the panel is an LCD, black buys nothing): a diagonal
     emerald -> teal -> deep bergamot green gradient with a soft pale-yellow glow behind the logo."""
     c = Canvas(w, h, BG)
     stops = [(0.0, (0x12, 0xb0, 0x6a)), (0.5, (0x0b, 0x7a, 0x75)), (1.0, (0x1a, 0x59, 0x33))]
-    gx, gy, gr = w / 2, h * 0.40, min(w, h) * 0.42
+    gx, gy, gr = w / 2, h * glow_y, min(w, h) * 0.42
     px = c.px
     for y in range(h):
         for x in range(w):
@@ -131,13 +131,26 @@ def gradient_glow(w, h):
 
 
 def compose_fastboot(w, h):
-    c = gradient_glow(w, h)
-    logo = fit(crop_alpha(read_png(os.path.join(ASSETS, "bergamota-logo.png")), 8), 400, 460)
-    word = fit(crop_alpha(read_png(os.path.join(ASSETS, "bergamota-fastboot.png")), 2), 470)
-    gap = 56
-    y = (h - logo[1] - gap - word[1]) // 2
-    c.blit(logo, (w - logo[0]) // 2, y)
-    c.blit(word, (w - word[0]) // 2, y + logo[1] + gap)
+    """ABL fastboot (slot 1), full screen like slot 0: small logo + BERGAMOTA at the top (below the notch),
+    the flash scene (computer -- cable --> memory chip, write arrow) in the middle, FASTBOOT big and a
+    small 'Qualcomm bootloader' subtitle below. The Bergamota shim's own screen (shim/fbui.c) is the dark
+    green one with a computer + power symbol, so the two are told apart at a glance."""
+    def load(name, pad=2):
+        return crop_alpha(read_png(os.path.join(ASSETS, name)), pad)
+    logo = fit(load("bergamota-logo.png", 8), 170, 170)
+    title = fit(load("bergamota-title.png"), 520)
+    scene = fit(load("bergamota-flash-scene.png", 8), 980, 760)
+    word = fit(load("bergamota-fastboot.png"), 720)
+    sub = fit(load("bergamota-abl-sub.png"), 640)
+    y_logo = 230
+    y_title = y_logo + logo[1] + 24
+    y_scene = y_title + title[1] + 230
+    y_word = y_scene + scene[1] + 230
+    y_sub = y_word + word[1] + 44
+    c = gradient_glow(w, h, (y_scene + scene[1] / 2) / h)
+    for img, y in ((logo, y_logo), (title, y_title), (scene, y_scene), (word, y_word), (sub, y_sub)):
+        c.blit(img, (w - img[0]) // 2, y)
+    assert y_sub + sub[1] < h - 100, "fastboot layout overflows"
     return c
 
 
@@ -149,7 +162,7 @@ def build(base_path, out_path, size, preview_dir):
     keep_len = [l for _, l in slots]
     pw, ph = size
     c0 = compose_poweron(pw, ph)
-    c1 = compose_fastboot(*bmp_info(bmps[1])[:2])
+    c1 = compose_fastboot(pw, ph)
     new = list(bmps)
     new[0] = rgb_to_bmp(c0.w, c0.h, c0.px)
     new[1] = rgb_to_bmp(c1.w, c1.h, c1.px)
