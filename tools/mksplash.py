@@ -132,25 +132,22 @@ def gradient_glow(w, h, glow_y=0.40):
 
 def compose_fastboot(w, h):
     """ABL fastboot (slot 1), full screen like slot 0: small logo + BERGAMOTA at the top (below the notch),
-    the flash scene (computer -- cable --> memory chip, write arrow) in the middle, FASTBOOT big and a
-    small 'Qualcomm bootloader' subtitle below. The Bergamota shim's own screen (shim/fbui.c) is the dark
+    the flash scene (computer -- cable --> memory chip, write arrow) in the middle, no text below. The Bergamota shim's own screen (shim/fbui.c) is the dark
     green one with a computer + power symbol, so the two are told apart at a glance."""
     def load(name, pad=2):
         return crop_alpha(read_png(os.path.join(ASSETS, name)), pad)
     logo = fit(load("bergamota-logo.png", 8), 170, 170)
     title = fit(load("bergamota-title.png"), 520)
     scene = fit(load("bergamota-flash-scene.png", 8), 980, 760)
-    word = fit(load("bergamota-fastboot.png"), 720)
-    sub = fit(load("bergamota-abl-sub.png"), 640)
     y_logo = 230
     y_title = y_logo + logo[1] + 24
-    y_scene = y_title + title[1] + 230
-    y_word = y_scene + scene[1] + 230
-    y_sub = y_word + word[1] + 44
+    # no FASTBOOT / 'Qualcomm bootloader' text (user: the picture says it): the scene sits centred in the
+    # space below the title
+    top = y_title + title[1]
+    y_scene = top + (h - top - scene[1]) // 2 - 60
     c = gradient_glow(w, h, (y_scene + scene[1] / 2) / h)
-    for img, y in ((logo, y_logo), (title, y_title), (scene, y_scene), (word, y_word), (sub, y_sub)):
+    for img, y in ((logo, y_logo), (title, y_title), (scene, y_scene)):
         c.blit(img, (w - img[0]) // 2, y)
-    assert y_sub + sub[1] < h - 100, "fastboot layout overflows"
     return c
 
 
