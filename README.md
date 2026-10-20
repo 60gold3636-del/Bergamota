@@ -1,6 +1,46 @@
 # ios-beryllium
 
-**Apple's iOS 16 running on a Poco F1 (`beryllium`, SDM845)**, a port of [ios-sweet](https://github.com/dipa-studio/ios-sweet) (iOS 16 on the Redmi Note 10 Pro). As of **2026-10-19** the Poco F1 boots the iPhone X iOS 16.7.16 userland to the lock and home screen; kernel patches 0082+ and `tools/mkadt.py --board beryllium` hold the Poco F1 specifics, see `NOTES.md`.
+**Apple's iOS 16 running on a Poco F1 (`beryllium`, Qualcomm SDM845).**
+
+A port of [ios-sweet](https://github.com/dipa-studio/ios-sweet) (iOS 16 on the Redmi Note 10 Pro) to the Xiaomi Poco F1. The same XNU kernel (xnu-8796) runs both phones; the Poco F1 specifics are kernel patches 0082+ (selected at runtime from the device tree, `bsd/dev/sweet_board.h`) and `tools/mkadt.py --board beryllium`. On top runs the **unmodified iPhone X iOS 16.7.16 (20H392) userland**.
+
+As of **2026-10-19** the Poco F1 boots to the **iOS lock and home screen**: touch, buttons, navigation, Control Center and Settings work. Everything is rendered by the CPU.
+
+> Experimental, not a usable phone OS. It installs into `userdata` and **erases Android's user data**; security is mostly off.
+
+## Poco F1 status
+
+| Area | State |
+| --- | --- |
+| Boot | Stock ABL, `fastboot boot` of the shim (boot.img v1, Image.gz + the ROM's DTB); nothing flashed to boot partitions |
+| CPU | All 8 cores (4x A55 + 4x A75) via PSCI, `cpus=8` |
+| Memory | 0x1_00000000 + 0xfcc00000 (upper DDR bank, above every Qualcomm carve-out) |
+| Storage | UFS (same host as sweet), iOS root = HFS+ in `userdata` (sda21, LUN 0) |
+| Display | Continuous-splash framebuffer 1080x2246 @0x9d400000; the presented iPhone X screen (1125x2436) is scaled to fit (`sweetfb_scale=1`) or stretched (`=2`) |
+| Touch | Tianma panel's Novatek NT36672A at 0x01 on I2C14; the QUP is GSI-only, so the bus is bit-banged on GPIO 33/34 with the TLMM edge latch of GPIO 31 as IRQ |
+| Buttons | Power and volume-down (PM8998 PON), volume-up (PM8998 GPIO6), SPMI arbiter v5 |
+| Battery | PMI8998 fuel gauge (real SOC, voltage, current) and charger state with `sweetbattery=1` (patch 0092, in testing) |
+| Boot time | A few minutes on the Apple logo; the first boot of a fresh image also seeds the LaunchServices database once |
+| Not working | USB device mode (live log/networking, in progress), Wi-Fi/Bluetooth/modem (WCN3990 needs the modem DSP), GPU (Adreno 630), audio, camera, sensors, SEP |
+
+The boot used to stall on the Apple logo forever: MobileGestalt resolves the Wi-Fi MAC from `/chosen mac-address-wifi0`, else waits for an `IONetworkController` that never appears, once per question, while `lsd` seeds its database. The ADT now carries synthetic `mac-address-wifi0`/`mac-address-bluetooth0` (see `NOTES.md` for the whole bring-up log).
+
+## Reproducing on the Poco F1 (macOS host)
+
+Tools: `brew install --cask android-platform-tools`, `brew install aarch64-elf-gcc dtc zig blacktop/tap/ipsw`, AOSP `mkbootimg.py`; kernel from this repo's GitHub Actions (`xnu.yml`). Back up the phone's partitions first (`backup/`, see `NOTES.md`).
+
+```sh
+# iOS root (iPhone10,3 16.7.16 IPSW: OS, SystemOS, AppOS images; needs sudo to keep owners)
+sudo tools/mkiosroot-macos.sh OS.dmg SystemOS.dmg AppOS.dmg ios16-root.img 20g
+python3 tools/img2simg.py ios16-root.img ios16-root.simg
+fastboot -S 512M flash userdata ios16-root.simg      # erases Android data
+# boot image
+python3 tools/mkadt.py shim/out/beryllium.adt --board beryllium --highmem
+python3 tools/mkpayload.py kernel.development.sweet shim/out/beryllium.adt payload.bin --cmdline 'debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetsample=-'
+BOARD=beryllium shim/build.sh ../payload.bin && fastboot boot shim/out/shim-boot.img
+```
+
+Logs without a serial port: boot OrangeFox temporarily (`fastboot boot recovery.img`), then `tools/sweet-log-pull.sh` (kernel console ring) and `tools/sweet-ios-pull.sh` (iOS unified log via a static `hfsdump`).
 
 ---
 
@@ -31,11 +71,10 @@ As of **2026-10-18** the phone boots to the **iOS home screen**. You can unlock 
 
 ## What does not work (yet)
 
-- **Navigation:** you cannot leave an app (the home gesture and AssistiveTouch Home do nothing yet).
 - **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS or SEP / Face ID.** Daemons for them start and fail or keep relaunching.
 - **No GPU.** Everything is drawn by the CPU at roughly 20–30 fps. The two Cortex-A76 cores are not used yet.
 - **Few apps.** The image has only what is on the system volume. There is no App Store, no Apple ID, and some Settings pages are empty.
-- **Slow boot:** about 4 minutes on the Apple logo.
+- **Slow boot:** a few minutes on the Apple logo (CPU rendering, no GPU).
 - **Security is off:** permissive code signing (AMFI) and sandbox policies, a stub AppleKeyStore, no data protection. Do not put anything personal on it.
 
 ## How it boots
