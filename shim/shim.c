@@ -8,6 +8,7 @@
  */
 #include <stdint.h>
 #include "board.h"
+#include "bootui.h"
 #include "console.h"
 #include "mmu.h"
 #include "loader.h"
@@ -375,12 +376,25 @@ void shim_main(uint64_t dtb)
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
+	const char *why = loader_boot(dtb);
+	if (bootui_active()) {
+		/* Branded boot screen is up: show the error on it (log stays readable), then fall back to text. */
+		bootui_fail(why);
+		delay_ms(8000);
+	}
 	con_clear(BG_BOOT);
+	con_set_scale(3);
 	con_str("SHIM", BOARD_NAME " milestone 4: xnu loader");
 	con_skip();
-	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
+	if (bootui_active()) {
+		/* the boot screen showed only the logo: print what the loader logged */
+		con_set_scale(2);
+		con_replay();
+		con_skip();
+		con_set_scale(3);
+	}
 
 	/* No payload: show the live FDT facts for board bring-up (photo it). */
 	stage = "fdt";

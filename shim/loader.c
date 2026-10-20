@@ -13,6 +13,7 @@
  * mmu_off_jump cleans it all to memory before xnu starts.
  */
 #include <stdint.h>
+#include "bootui.h"
 #include "console.h"
 #include "fdt.h"
 #include "inflate.h"
@@ -88,11 +89,16 @@ static int magic_ok(const char *m)
 	return 1;
 }
 
+/* Boot screen progress: INFLATE spans permille 100..900 over all segments' output bytes. */
+#define PM_INITRD	40
+#define PM_PAYLOAD	70
+#define PM_MMU		100
+#define PM_INFLATE_END	900
+static uint64_t infl_base, infl_total;
+
 static void inflate_progress(uint64_t done)
 {
-	static unsigned calls;
-	if (++calls % 4 == 0)
-		con_hex2("INFLATE", "MiB=", (uint32_t)(done >> 20), 0, 0);
+	bootui_mib("INFLATE", (infl_base + done) >> 20, infl_total >> 20, PM_MMU, PM_INFLATE_END);
 }
 
 const char *loader_boot(uintptr_t dtb)
@@ -102,11 +108,14 @@ const char *loader_boot(uintptr_t dtb)
 	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
 	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
 		return "no initrd in /chosen";
-	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
 	const struct payload *p = (const struct payload *)rd_start;
 	if (!magic_ok(p->magic))
 		return "no SWEETXNU payload";
+	/* A real payload: switch to the branded boot screen (con_* output becomes its log window). */
+	bootui_init();
+	bootui_progress(PM_INITRD, "INITRD FOUND");
+	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 	if ((p->version != 1 && p->version != 2) || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
 	const unsigned stride = p->version == 2 ? 40 : 32;
@@ -115,6 +124,7 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex2("PHYS", "base=", p->phys_base, "size=", p->mem_size);
 	con_hex("VIRT", p->virt_base);
 	con_hex("ENTRY", p->entry_va);
+	bootui_progress(PM_PAYLOAD, "PAYLOAD OK");
 
 	/* The payload must not overlap where the kernel goes. */
 	if (rd_end > p->phys_base && rd_start < p->phys_base + p->mem_size)
@@ -132,6 +142,14 @@ const char *loader_boot(uintptr_t dtb)
 	int mmu_rc = mmu_enable_ranges(&mi, wb, 2);
 	con_hex2("MMU", "rc=", (uint32_t)mmu_rc, "l3=", (uint32_t)mi.n_l3);
 	wb[2] = (struct mmu_range){ mi.img_lo, mi.img_hi };
+	bootui_progress(PM_MMU, "MMU ON");
+
+	infl_base = 0;
+	infl_total = 0;
+	for (uint32_t i = 0; i < p->nsegs; i++) {
+		const struct payload_seg *s = (const struct payload_seg *)(p->segs + (uint64_t)i * stride);
+		infl_total += (p->version == 2 && s->raw_size) ? s->raw_size : s->file_size;
+	}
 
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = (const struct payload_seg *)(p->segs + (uint64_t)i * stride);
@@ -150,10 +168,13 @@ const char *loader_boot(uintptr_t dtb)
 		} else {
 			copy64(dst, rd_start + s->file_off, s->file_size);
 		}
+		infl_base += raw;
+		bootui_mib("INFLATE", infl_base >> 20, infl_total >> 20, PM_MMU, PM_INFLATE_END);
 		if (s->vmsize > raw)
 			zero64(dst + ((raw + 7) & ~7UL), s->vmsize - ((raw + 7) & ~7UL));
 	}
 	con_hex2("SEGS", "n=", p->nsegs, "end=", p->kernel_end + pa_of_va_base);
+	bootui_progress(920, "SEGMENTS READY");
 
 	/* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */
 	uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
@@ -183,9 +204,11 @@ const char *loader_boot(uintptr_t dtb)
 		ba->CommandLine[i] = p->cmdline[i];
 	ba->memSizeActual = p->mem_size;
 	con_hex2("BOOTARG", "pa=", ba_pa, "top=", top);
+	bootui_progress(960, "BOOT ARGS");
 
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	con_hex("JUMP", entry_pa);
+	bootui_progress(1000, "STARTING IOS");
 	con_str("XNU", "jumping (fbcon clears screen)");
 
 	/* Clean to memory, MMU and caches off, invalidate, jump (also right when mmu_rc failed). */

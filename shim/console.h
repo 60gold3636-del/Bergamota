@@ -18,6 +18,14 @@ extern volatile uint32_t *con_fb;
 
 void con_clear(uint32_t bg);
 void con_skip(void);
+/* Re-print the recorded console lines (kept even while the boot-screen log is muted). */
+void con_replay(void);
+void con_rect(int x, int y, int w, int h, uint32_t c);	/* clipped solid fill, 32-bit stores */
+/* Text at pixel position, transparent background; spacing = extra px between glyphs. */
+void con_text(int x, int y, int scale, int spacing, uint32_t fg, const char *s);
+int con_text_w(const char *s, int scale, int spacing);
+/* Route con_str/con_hex* into a window of `rows` lines (current scale) at y_px that wraps; rows < 0 mutes them. */
+void con_window(int y_px, int rows);
 void con_set_scale(int s);	/* 2 or 3; applies to the following rows */
 void con_str(const char *label, const char *s);
 void con_hex(const char *label, uint64_t v);

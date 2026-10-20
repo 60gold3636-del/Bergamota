@@ -133,7 +133,7 @@ static int codes(struct state *s, const struct huffman *lencode, const struct hu
 		}
 		if (s->progress && s->outcnt >= s->next_progress) {
 			s->progress(s->outcnt);
-			s->next_progress = s->outcnt + (8UL << 20);
+			s->next_progress = s->outcnt + (1UL << 20);
 		}
 	} while (symbol != 256);
 	return 0;
@@ -262,7 +262,7 @@ int inflate_raw(const uint8_t *in, uint64_t inlen, volatile uint8_t *out, uint64
 	s.bitbuf = 0;
 	s.bitcnt = 0;
 	s.progress = progress;
-	s.next_progress = 8UL << 20;
+	s.next_progress = 1UL << 20;
 	int last, err = 0;
 	do {
 		last = bits(&s, 1);

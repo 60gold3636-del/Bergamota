@@ -14,7 +14,10 @@ CC=${CROSS}gcc
 OBJCOPY=${CROSS}objcopy
 READELF=${CROSS}readelf
 NM=${CROSS}nm
+# BOOTLOG=1 shows the log window at the bottom of the branded boot screen (default: logo only; the
+# log is recorded and printed on the text screen when the boot fails).
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
+[ "${BOOTLOG:-0}" = 0 ] || CFLAGS="$CFLAGS -DBOOTUI_LOG=1"
 case $BOARD in
 sweet)		DTB=${DTB:-../dtb/boot_unpacked/dtb} ;;
 beryllium)	DTB=${DTB:-../dtb/beryllium/dtb}; CFLAGS="$CFLAGS -DBOARD_BERYLLIUM" ;;
@@ -22,15 +25,15 @@ beryllium)	DTB=${DTB:-../dtb/beryllium/dtb}; CFLAGS="$CFLAGS -DBOARD_BERYLLIUM" 
 esac
 [ -f "$DTB" ] || { echo "error: $DTB missing (stock DTB of the phone, see README)" >&2; exit 1; }
 mkdir -p out
-for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c inflate.c; do
+for f in start.S shim.c console.c bootui.c mmu.c fdt.c loader.c ufs.c inflate.c; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
 done
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$($READELF -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o | grep -c ABS64 || true)
+abs=$($READELF -r out/shim.o out/console.o out/bootui.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
 $CC $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
-	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o -o out/shim.elf -lgcc
+	out/start.o out/shim.o out/console.o out/bootui.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o -o out/shim.elf -lgcc
 $OBJCOPY -O binary out/shim.elf out/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
 size=$($NM out/shim.elf | awk '$3=="_end"{print $1}')
@@ -57,6 +60,7 @@ else
 		--os_version 17.0.0 --os_patch_level 2035-06 \
 		--cmdline "console=null" -o out/shim-boot.img
 fi
-# Host render of the console layout.
-cc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
+# Host render of the console layout and the boot screen (out/host.ppm, out/preview/*.ppm).
+mkdir -p out/preview
+cc -O1 -Wall $([ "$BOARD" = beryllium ] && echo -DBOARD_BERYLLIUM) $([ "${BOOTLOG:-0}" = 0 ] || echo -DBOOTUI_LOG=1) -o out/host_test console.c bootui.c host_test.c && ./out/host_test
 ls -l out/Image out/shim-boot.img
