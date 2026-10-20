@@ -2,6 +2,9 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Branch `ios18` (2026-10-20): iOS 18 port, stage 1 prepared, NOT run on the phone <<<
+`docs/IOS18_PORT.md`: pacstrip rewriter (`tools/ios18/`), iOS 18 restore-ramdisk bundle (real dyld + flat libSystem dylibs, no cache), kernel patch 0131 (`sweetarm64e=1`: arm64e exec grading, AMFI dyld policy 0x5a, `ptrauth_disabled=1`), `tools/ios18/run-poc.sh`. Unverified on hardware; see the doc for how to read failures and the stage 2 plan (rewritten cache + slide v5).
+
 ### >>> ios-beryllium: iOS on the Poco F1 (beryllium, SDM845) - read first <<<
 
 This repo is `ry-diffusion/ios-beryllium` (fork of dipa-studio/ios-sweet, remote `upstream`); work on `main`, CI (`xnu.yml`) runs on push. **Commits here carry NO `Co-Authored-By: dipa-studio` trailer**: the trailer instructions further down in this file are upstream sweet's rule for their own repo; the Poco F1 work is not theirs (ios-sweet is credited in README.md). Commits 0082-0097 wrongly carried it (2026-10-19). Kernel patches 0001-0081 are upstream sweet; 0082+ add the Poco F1. One kernel serves both phones: drivers pick the board from the ADT root compatible `xiaomi,beryllium` (`bsd/dev/sweet_board.h`).
