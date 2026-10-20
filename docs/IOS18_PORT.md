@@ -178,3 +178,14 @@ Fix in this branch:
 * Result: **payload 50.7 MiB** (ramdisk 165.7 MiB -> 44.1 MiB, gzip-9 ratio 3.8) instead of 206 MB, so ABL places it at about 0x82590000. Ready image (kernel = `xnu/out-ios18`, i.e. without 0136; rebuild the payload with the newer kernel using the commands in section 9): `research/ios18/shim-boot-ios18rd-z.img`.
 * Cost: the shim now spends time inflating 165 MiB into Device memory with byte accesses: expect tens of seconds (no caches), shown on the red screen as `INFLATE in=... out=...` and `INFLATE MiB=...` every 32 MiB. A hang there for up to ~2 minutes is not a crash.
 * If the screen is still black with the compressed image: run the probe images; if even 40 MiB is black the ramdisk placement theory is wrong and the next suspects are ABL's kernel-image handling (Image.gz-dtb is unchanged since the 17 MB images) and fastboot buffer placement.
+
+## Milestone 2026-10-20 ~18:27: iOS 18 userland runs jobs under its own launchd
+
+RAM-disk root (`shim/out/shim-boot-ios18-pacga.img` in the main checkout), kernel `xnu/out-0139`
+(0131 + 0135 + 0136 + 0138 + 0139), `sweetarm64e=1`, shim with the cached inflate: iOS 18.7.8 launchd
+bootstraps, spawns `org.sweet.ios18.expr` and `org.sweet.ios18.passwd` through xpcproxy, and both exit 0
+(`42` and iOS 18's /etc/master.passwd on the console). The steps that got here, in order:
+ABL ramdisk budget (`--compress`, inflate) -> 0138 mach_ports_lookup3 reply layout (MIG -300) ->
+0139 exclaves_ctl_trap KERN_NOT_SUPPORTED (SIGSYS in launchd's exclaves-boot) -> keep /usr/libexec/xpcproxy
+in the pruned root -> pacstrip PACGA with a constant rotation (Foundation _NSThreadData MAC, brk in
+__NSThreadPoisoned; docs/IOS18_XPCPROXY.md). Next: the full system on userdata (tools/ios18/*full*).
