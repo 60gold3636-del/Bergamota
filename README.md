@@ -1,6 +1,10 @@
-# ios-sweet
+# ios-beryllium
 
-**Apple's iOS 16 running on a Redmi Note 10 Pro.**
+**Apple's iOS 16 running on a Poco F1 (`beryllium`, SDM845)**, a port of [ios-sweet](https://github.com/dipa-studio/ios-sweet) (iOS 16 on the Redmi Note 10 Pro). As of **2026-10-19** the Poco F1 boots the iPhone X iOS 16.7.16 userland to the lock and home screen; kernel patches 0082+ and `tools/mkadt.py --board beryllium` hold the Poco F1 specifics, see `NOTES.md`.
+
+---
+
+**Upstream ios-sweet README (Redmi Note 10 Pro):** Apple's iOS 16 running on a Redmi Note 10 Pro.
 
 This project ports Apple's open-source XNU kernel (xnu-8796, the iOS 16 generation) to the Xiaomi Redmi Note 10 Pro (`sweet`, Qualcomm SM7150 / Snapdragon 732G). On top of it runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone X**: launchd, the system daemons, backboardd, SpringBoard and the stock apps.
 
