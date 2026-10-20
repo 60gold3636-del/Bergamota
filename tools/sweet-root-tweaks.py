@@ -82,6 +82,16 @@ def containers(root):
             print('mkdir', d)
 
 
+def launchservices(root):
+    # A LaunchServices DB seeded before the extension catalog was readable
+    # (pre-0099) keeps every appex ignored and is reused because it is marked
+    # seeded: drop it so lsd re-seeds (docs/EXTENSION_POINTS_2.md).
+    for p in glob.glob(os.path.join(root, 'private/var/mobile/Containers/Data/InternalDaemon/*/'
+                                          'Library/Caches/com.apple.LaunchServices*')):
+        os.remove(p)
+        print('rm', p)
+
+
 def find_container(root, kind, identifier):
     for meta in glob.glob(os.path.join(root, 'private/var/containers', kind, '*',
                                        '.com.apple.mobile_container_manager.metadata.plist')):
@@ -128,6 +138,7 @@ def main():
     root = sys.argv[1]
     launchd(root)
     containers(root)
+    launchservices(root)
     activation(root)
     audio(root)
     merge_pref(root, 'com.apple.migration', {
