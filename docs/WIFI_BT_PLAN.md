@@ -179,7 +179,7 @@ What does not carry over: any 0080-0091 SM6225 board code, the HyperOS firmware 
   `qcom,msm-geni-serial-hs`, `status = "ok"` [V]. (Note: SE6 of **wrap0** at 0x898000 is not the touch
   controller's "SE6" in NOTES.md, which is wrap1 SE6 at 0xa98000 = I2C14.)
 * **Clocks (GCC):** wrap0 m_ahb CBCR 0x17004 (vote 0x5200c bit 6), s_ahb 0x17008 (bit 7), S6 branch 0x17750
-  (bit 16), S6 RCG 0x17754. On SDM845 the SE root clocks are **DFS-controlled** (mainline registers them with
+  (bit 16), S6 RCG 0x17754. On SDM845 the SE root clocks are **DFS-capable** (hardware 0116hw: DFS off, plain RCG, programmed by 0118, section 7b) (mainline registers them with
   `qcom_cc_register_rcg_dfs`); our touch driver already depends on this (reads RCG+0x14 and level cfg at
   +0x1c) [V code]. The draft reads the DFS table and picks a level/divider per baud (14.7456 MHz
   levels give exact 115200 and 2400 baud) [U until the table is dumped; the probe stage does that].
@@ -317,10 +317,11 @@ nothing on the sweet board.
 | Boot-arg | Stage |
 |---|---|
 | `sweetwlan=1` | probe: GCC CBCRs (SE clocks, MSS clocks), S6 DFS table, TLMM gpio45-48, SE6 firmware protocol/FIFO params (only if its clocks are on), cmd-db lookups for `smpa4 ldoa5 ldoa7 ldoa17 ldoa23 ldoa25`, SMEM table + apps<->modem item list, TCSR mutex 3, apps_smmu SMR/S2CR for SID 0x40 and 0x740 |
-| `sweetwlan=2` | probe + Bluetooth: clocks, pins, RPMh rails, polled UART, power pulses, HCI Reset, Read Local Version, QCA version request, power-off pulse, rails off |
+| `sweetwlan=2` | probe + Bluetooth: clocks, pins, RPMh rails, polled UART, power pulses, HCI Reset, Read Local Version, QCA version request, power-off pulse; rails are never voted off (0118) |
 | `sweetwlan=3` | probe + read-only inventory: partitions, FAT16 walk, MDT table vs carve-outs |
 | `sweetwlandelay=S` | seconds to wait (default 90) |
-| `sweetwlankeep=1` | leave BT rails on after stage 2 |
+| `sweetwlankeep=1` | obsolete since 0118 (rails always stay on) |
+| `sweetwlanskippll=1` | 0118: do not stop when GPLL0 decodes off 600/300 MHz |
 
 Code changes: `bsd/dev/sweet_rpmh.c` (board-selected SDM845 RSC/cmd-db, `sweet_rpmh_lookup`,
 `sweet_rpmh_vreg_set` with an allow list, ENABLE-only disable), `bsd/dev/sweet_ufs.c`
@@ -333,6 +334,81 @@ Known weaknesses of the draft (all [U], by design for a first run):
   RX uses stale-timeout flushing, TX is limited to `4*(depth-2)` bytes (no firmware download yet).
 * Stage 2 sends the vendor read-version before any firmware: Linux does the same before patch download.
 * No interrupts anywhere (polled), no timeouts longer than 1 s per HCI command.
+
+## 7b. Patch 0118: the stage programs the S6 RCG itself (xnu/patches/0118-beryllium-bt-uart-clock.patch)
+
+Base `research/bt117/xnu` (0001-0117); `git apply --check` clean on a fresh copy; `xnu-cc.py` clean for
+`bsd/dev/beryllium_wlan.c` with a real object (no new undefined symbols). Not run on the phone.
+Boot 0116hw (sweetwlan=2) showed the three rail votes completing, the GCC 0x5200c votes bringing wrap0
+m_ahb/s_ahb/s6 on, then the abort: S6 RCG cmd=0x80000000 cfg=0x100000 (XO, HW_CLK_CTRL set), DFS-ENABLE
+0x8020 (bit 0 clear = DFS off), all 8 DFS levels zero, TLMM gpio45-48 still function 0.
+
+What changed (all inside `sweetwlan=2`, every line logged with `SWEET WLAN:`):
+
+1. **GPLL0 check** (`wl_gpll0_check`): the ftbl rates assume GPLL0 600 MHz / GPLL0_OUT_EVEN 300 MHz. Reads
+   PLL_MODE 0x0 (lock bit 31), L 0x4, FRAC 0x38, USER_CTL 0xc (post-div [11:8]: 0/1/3/7 = /1/2/4/8; Fabia
+   regs from clk-alpha-pll.c [U: offsets from memory, the raw values are printed]). Stops when unlocked or
+   off by more than 0.1 %. `sweetwlanskippll=1` skips the rate check (not the lock check).
+2. **S6 RCG, non-DFS path** (`wl_rcg_*`, RCG 0x17754: CMD +0, CFG +4, M +8, N +0xc, D +0x10, DFS +0x14).
+   Following clk-rcg2.c `__clk_rcg2_configure` / `update_config`: M = m, N = ~(n-m), D = ~n (16 bit), CFG =
+   src<<8 | hid | dual-edge (2<<12) when n and m != n (HW_CLK_CTRL bit 20 cleared like Linux), each written with
+   read-back, then CMD |= UPDATE and polled until the bit clears. Table = `ftbl_gcc_qupv3_wrap0_s0_clk_src`
+   from `research/linux-src/gcc-sdm845.c` (hid = 2*div-1; sources XO 0, GPLL0_OUT_MAIN 1, GPLL0_OUT_EVEN 6).
+   The original CFG/M/N/D are saved before the first write and restored (plus UPDATE) on every exit path.
+   If DFS-ENABLE bit 0 is ever set the stage stops (the old DFS-level path is gone).
+3. **Baud selection** (`wl_pick_row`, as `get_clk_cfg` in qcom_geni_serial.c): first row with
+   `rate % (baud * oversampling) == 0`, GENI divider = rate / (baud * os); SER_CLK_CFG = div<<4 | SER_CLK_EN
+   written to SE_M_CLK_CFG and SE_S_CLK_CFG with read-back, SE_CLK_SEL = 0. The RCG is re-programmed only when
+   the row changes (2400 and 115200 share the 7.3728 MHz row). One source rate cannot give all bauds exactly,
+   so the root is retuned per baud (RX stopped first, as set_termios does). SE6 clock registers are saved and
+   restored too. With os = 32: 2400 -> 7.3728 MHz / 96, 115200 -> 7.3728 MHz / 2, 3000000 -> 96 MHz / 1,
+   **3200000 (beryllium dtsi `max-speed`, the WCN3990 operating baud) -> 102.4 MHz / 1**, all exact. The
+   oversampling is 16 instead of 32 when the QUP wrapper0 HW version (0x8c0004) is >= 2.5 (Linux rule);
+   the version is read and printed (SDM845 value not yet known [U]; the baud plan prints the result).
+   The stage still only runs 2400 and 115200; changing to the operating baud needs the QCA vendor command
+   and firmware download, not done here.
+4. **TLMM** (`wl_pins_uart`): gpio45-48 -> function 1 (`qup6`, pinctrl-sdm845.c), pulls/drive from mainline
+   `qup_uart6_4pin` (what beryllium.dtsi selects): CTS pull-down, RFR and TX bias-disable, RX pull-up, 2 mA.
+   The phone's downstream DT (`qupv3_se6_4uart_pins`) differs slightly: ctsrx and TX/RTS pulls (cts+rx none,
+   rts pull-down, tx pull-up), also 2 mA; mainline was chosen because that is what Linux runs on this phone.
+   Only bits [8:0] are modified (OE bit 9 kept), read back, and the original ctl words restored on exit.
+5. **GENI init vs Linux** (qcom-geni-se.c / qcom_geni_serial.c): reviewed `geni_se_init`/`io_init`/
+   `io_set_mode`/`config_packing`/set_termios register by register (CGC 0x7f, DMA general 0xf, OUTPUT_CTRL 0x7f,
+   FORCE_DEFAULT, packing 8 bit x 4, BYTE_GRAN 0, RX stale 160, RX WM 2, RFR WM depth-2, word/stop/parity,
+   TX_TRANS_CFG CTS-mask for flow off, UART_START_TX/READ opcodes, FIFO depth fields) - all matched except:
+   SE_IRQ_EN was OR-ed with 0xf (also enabling DMA TX/RX irqs); `geni_se_io_set_mode` sets only GENI_M/S and
+   clears DMA_TX/RX, now done; SE_CLK_SEL was set to a DFS level, now 0; RX polling never acked S_IRQ status
+   or re-armed the read command after S_CMD_DONE, now done as in `qcom_geni_serial_isr`.
+6. **Rails are never voted off**: the `sweetwlankeep=0` off path and the final "rails off" are removed
+   (the qca_power_off 2400-baud pulse is still sent, rails stay on). Bail-outs after the rail votes end with
+   the same restore sequence (SE clk regs, RCG, pins, clock votes) and "rails left on".
+
+Expected log lines on a good run (order):
+```
+SWEET WLAN: GPLL0 mode 0x... (lock 1) L 31 frac 0x4000 user-ctl 0x... -> main 600000000 Hz, even (post-div 2) 300000000 Hz
+SWEET WLAN: GPLL0 600 MHz / GPLL0_OUT_EVEN 300 MHz confirmed
+SWEET WLAN: S6 RCG saved: cmd 0x... cfg 0x100000 m ... n ... d ...
+SWEET WLAN: TLMM gpio45 (CTS): was 0x... -> func 1 pull 1 drive 2 mA   (x4)
+SWEET WLAN: write TLMM+0x2d000 <- 0x..., read back 0x... (mask 0x1ff) ok
+SWEET WLAN: QUP wrapper0 HW version 0x... -> UART oversampling 32|16
+SWEET WLAN: baud plan 2400 / 115200 / 3000000 / 3200000: ftbl row ... exact
+SWEET WLAN: rail ldoa7 1800 mV -> 0 (x3)
+SWEET WLAN: S6 RCG -> 7372800 Hz: src 6 hid 1 m 384 n 15625 cfg 0x2601
+SWEET WLAN: write GCC+0x1775c <- 0x00000180 ... ok / +0x17760 <- 0x0000c476 / +0x17764 <- 0x0000c2f6 / +0x17758 <- ... ok
+SWEET WLAN: RCG CMD 0x... -> UPDATE set ..., cleared after N polls
+SWEET WLAN: UART 2400 baud: S6 root 7372800 Hz (ftbl row 0), GENI divider 96, oversampling 32
+SWEET WLAN: UART 115200 baud: ... GENI divider 2 ...
+SWEET WLAN: after power-on pulse: N stray RX bytes / HCI Reset event / Read Local Version / QCA patch version
+SWEET WLAN: rails left on (3 of 3 voted by this stage)
+SWEET WLAN: restoring the original S6 RCG config ... S6 RCG restore ok
+SWEET WLAN: write TLMM(restore)+... ; SWEET WLAN: bluetooth stage done
+```
+Failure lines (all end in the restore sequence, never a rail-off): `GPLL0 is not locked`, `GPLL0 is not 600 MHz /
+even 300 MHz`, `S6 RCG is in DFS mode`, `MISMATCH` on any read-back, `RCG UPDATE did not clear`,
+`S6 branch went off after the RCG update`, `UART pin mux did not read back`.
+If no HCI event comes back after the pulse, check first that `UART 115200 baud` shows divider 2 and that the
+TX pin func reads 1; the likely next suspects are the WCN3990 needing its SW_CTRL/other GPIO and the power
+pulse timing.
 
 ## 8. Sources
 
