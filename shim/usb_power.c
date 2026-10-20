@@ -1,5 +1,7 @@
 /*
- * Cold-boot USB power-up (see usb_power.h). Addresses: gcc-sdm845.c (GCC at 0x100000,
+ * Cold-boot USB power-up (see usb_power.h). Addresses checked against Linux v6.12 gcc-sdm845.c
+ * (boot 0140dbg: the old offsets were one register off, so the master clock never ran, GSNPSID 0).
+ * Addresses: gcc-sdm845.c (GCC at 0x100000,
  * resets 15 = USB30_PRIM_BCR 0xf000, 8 = QUSB2PHY_PRIM_BCR 0x12000 match the live DT
  * ssusb@a600000 / qusb@88e2000 reset indices), QUSB2 init sequence from live.dts
  * qcom,qusb-phy-init-seq (value, offset pairs; the last write, 0x22 to PWR_CTRL1, powers up).
@@ -11,18 +13,18 @@
 #define GCC		0x00100000UL
 #define USB30_PRIM_BCR	0x0f000
 #define USB30_GDSCR	0x0f004
-#define MASTER_CBCR	0x0f010
-#define SLEEP_CBCR	0x0f014
-#define MOCK_UTMI_CBCR	0x0f018
-#define MASTER_RCG	0x0f020	/* CMD; CFG at +4 */
-#define MOCK_UTMI_RCG	0x0f038
+#define MASTER_CBCR	0x0f00c
+#define SLEEP_CBCR	0x0f010
+#define MOCK_UTMI_CBCR	0x0f014
+#define MASTER_RCG	0x0f018	/* CMD; CFG at +4 */
+#define MOCK_UTMI_RCG	0x0f030
 #define PHY_AUX_CBCR	0x0f04c
-#define PHY_AUX_RCG	0x0f068
+#define PHY_AUX_RCG	0x0f05c
 #define CFG_NOC_CBCR	0x0502c
 #define AGGRE_CBCR	0x8201c
 #define AHB2PHY_BCR	0x6a000
 #define AHB2PHY_CBCR	0x6a004
-#define CLKREF_EN	0x8c010
+#define CLKREF_EN	0x8c008
 #define QUSB2PHY_BCR	0x12000
 
 #define QUSB2		0x088e2000UL
