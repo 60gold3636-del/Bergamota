@@ -203,7 +203,7 @@
  }
  
 +/*
-+ * qca_set_bdaddr() of btqca.c: vendor 0xfc14, the address least significant byte first, the
++ * qca_set_bdaddr() of btqca.c: vendor 0xfc14, baswap()ed: most significant byte first, the
 + * answer is a vendor event (or a Command Complete). The ADT value is what userland believes
 + * (local-mac-address), so the controller has to report the same one in Read_BD_ADDR.
 + */
@@ -224,7 +224,7 @@
 +		return;
 +	}
 +	for (unsigned i = 0; i < 6; i++) {
-+		par[i] = want[5 - i];
++		par[i] = want[i];	/* boot 0137: LSB first came back byte-reversed */
 +	}
 +	err = wl_hci_cmd(QCA_EDL_WRITE_BD_ADDR_OPCODE, par, 6, rsp, &rlen, 1000);
 +	if (err) {
