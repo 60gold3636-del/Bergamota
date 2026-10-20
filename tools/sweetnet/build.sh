@@ -15,3 +15,7 @@ for t in ${TOOLS:-sweetnetcfg cscheck}; do
 	codesign -s - -f --entitlements "$here/entitlements.plist" "$out/$t"
 	ls -l "$out/$t"
 done
+# LaunchServices register tool for sideloaded apps (tools/sweet-install-ipa.sh)
+xcrun -sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O2 -fobjc-arc \
+	-framework Foundation "$here/sweetuicache.m" -o "$out/sweetuicache"
+codesign -s - -f --entitlements "$here/uicache.entitlements" "$out/sweetuicache"
