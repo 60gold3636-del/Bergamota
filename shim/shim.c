@@ -139,7 +139,7 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 		irq_handler();
 		return;
 	}
-	con_clear(BLUE);
+	con_clear(BG_PANIC);
 	switch (slot & 3) {
 	case 0: con_str("PANIC", "SYNC"); break;
 	case 1: con_str("PANIC", "IRQ"); break;
@@ -375,7 +375,7 @@ void shim_main(uint64_t dtb)
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
-	con_clear(RED);
+	con_clear(BG_BOOT);
 	con_str("SHIM", BOARD_NAME " milestone 4: xnu loader");
 	con_skip();
 	const char *why = loader_boot(dtb);
@@ -388,7 +388,7 @@ void shim_main(uint64_t dtb)
 	fdt_board_info(dtb);
 	con_str("NEXT", "UFS probe in 15 s");
 	delay_ms(15000);
-	con_clear(RED);
+	con_clear(BG_BOOT);
 	con_set_scale(3);
 
 	/* Then probe the internal UFS while the MMU is still off. */
@@ -400,7 +400,7 @@ void shim_main(uint64_t dtb)
 
 	/* Does the virtual timer (what xnu uses) reach us as a Group 1 IRQ? */
 	stage = "gic";
-	con_clear(RED);
+	con_clear(BG_BOOT);
 	con_set_scale(2);
 	con_str("SHIM", BOARD_NAME " GIC/timer test");
 	con_hex2("EL", "cur=", rsr("CurrentEL") >> 2, "cntfrq=", rsr("cntfrq_el0"));
@@ -412,17 +412,17 @@ void shim_main(uint64_t dtb)
 	reset(20);
 
 	stage = "fill off";
-	uint64_t fill_off = ticks_fill(RED);
+	uint64_t fill_off = ticks_fill(BG_BOOT);
 	uint64_t mem_off = ticks_mem();
 
 	stage = "mmu enable";
 	int rc = mmu_enable(&mi);
 
 	stage = "fill on";
-	uint64_t fill_on = rc ? 0 : ticks_fill(RED);
+	uint64_t fill_on = rc ? 0 : ticks_fill(BG_BOOT);
 	uint64_t mem_on = rc ? 0 : ticks_mem();
 	if (rc)
-		con_clear(RED);
+		con_clear(BG_BOOT);
 
 	con_str("SHIM", "sweet milestone 3");
 	con_skip();

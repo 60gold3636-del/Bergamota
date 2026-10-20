@@ -23,7 +23,7 @@ void con_clear(uint32_t bg)
 			line[x] = bg;
 	}
 	con_bg = bg;
-	row = 0;
+	row = TOP_ROWS;
 }
 
 static void put_char(int col, char ch, uint32_t fg)
@@ -73,8 +73,8 @@ void con_skip(void)
 
 void con_str(const char *label, const char *s)
 {
-	put_str(0, label, YELLOW);
-	put_str(LABEL_COLS, s, WHITE);
+	put_str(0, label, LABEL);
+	put_str(LABEL_COLS, s, TEXT);
 	row++;
 }
 
@@ -88,15 +88,15 @@ void con_hex(const char *label, uint64_t v)
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb)
 {
 	char buf[9];
-	int col = put_str(0, label, YELLOW);
+	int col = put_str(0, label, LABEL);
 	col = col < LABEL_COLS ? LABEL_COLS : col + 1;
-	col = put_str(col, a, YELLOW);
+	col = put_str(col, a, LABEL);
 	fmt_hex(buf, va, 8);
-	col = put_str(col, buf, WHITE);
+	col = put_str(col, buf, TEXT);
 	if (b) {
-		col = put_str(col + 1, b, YELLOW);
+		col = put_str(col + 1, b, LABEL);
 		fmt_hex(buf, vb, 8);
-		put_str(col, buf, WHITE);
+		put_str(col, buf, TEXT);
 	}
 	row++;
 }
