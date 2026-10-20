@@ -48,7 +48,10 @@ struct DashboardView: View {
         case .fastboot: "Phone is in fastboot (serial \(model.monitor.fastbootSerial ?? "?")). Ready for `fastboot boot`."
         case .recovery: "OrangeFox / recovery over adb (\(model.monitor.adbSerial ?? "?"))."
         case .android: "Android is up over adb (\(model.monitor.adbSerial ?? "?"))."
-        case .iosBooting: "USB Ethernet is up but SSH is not answering yet."
+        case .iosBooting:
+            if !model.monitor.ifaceHasIP { "USB Ethernet is present but has no IP. Run tools/sweet-usbnet.sh (sudo) to assign 192.168.7.1." }
+            else if model.monitor.noRoute { "USB Ethernet is up but connections fail with 'No route to host'. If the phone is up, allow Bergamota under System Settings > Privacy & Security > Local Network." }
+            else { "USB Ethernet is up but SSH is not answering yet." }
         case .ios: "iOS is up: ping and SSH answer."
         }
     }
@@ -74,6 +77,14 @@ struct DashboardView: View {
                 .padding(18)
                 .background(stateColor(m.state).opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
 
+                if m.macHidden {
+                    Label("macOS is hiding MAC addresses from Bergamota (Local Network permission not granted). Allow it in System Settings > Privacy & Security > Local Network > Bergamota. Using subnet detection meanwhile.", systemImage: "network.slash")
+                        .foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if m.noRoute {
+                    Label("Local Network access may be denied: System Settings > Privacy & Security > Local Network > Bergamota.", systemImage: "network.slash")
+                        .foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if !m.toolWarnings.isEmpty {
                     ForEach(m.toolWarnings, id: \.self) { w in
                         Label(w, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
@@ -85,7 +96,7 @@ struct DashboardView: View {
                         Card(title: "Detection", symbol: "dot.radiowaves.left.and.right") {
                             Row(k: "fastboot", v: m.fastbootSerial ?? "none", ok: m.fastbootSerial != nil)
                             Row(k: "adb", v: m.adbState.map { "\($0) (\(m.adbSerial ?? ""))" } ?? "none", ok: m.adbState != nil)
-                            Row(k: "USB Ethernet", v: m.ifaceName.map { $0 + (m.ifaceUp ? " up" : " down") } ?? "not found", ok: m.ifaceUp)
+                            Row(k: "USB Ethernet", v: m.ifaceName.map { $0 + (m.ifaceUp ? " up" : " down") + (m.ifaceHasIP ? "" : ", no IP") + (m.ifaceInferred ? " (by subnet)" : "") } ?? "not found", ok: m.ifaceName != nil)
                             Row(k: "ping \(model.settings.phoneIP)", v: m.pingOK ? "reply" : "no reply", ok: m.pingOK)
                             Row(k: "TCP 22", v: m.sshOpen ? "open" : "closed", ok: m.sshOpen)
                         }
@@ -113,8 +124,8 @@ struct DashboardView: View {
                             VStack(spacing: 8) {
                                 Row(k: "Charging", v: i.isCharging.map { $0 ? "yes" : "no" } ?? "unknown")
                                 Row(k: "Power source", v: i.powerSource ?? "unknown")
-                                Row(k: "Uptime", v: i.uptime.map(formatUptime) ?? "unknown")
-                                Row(k: "Booted", v: i.bootDate?.formatted(date: .abbreviated, time: .standard) ?? "unknown")
+                                Row(k: "Uptime", v: i.uptime.map(formatUptime) ?? "unknown (phone has no sysctl)")
+                                Row(k: "Seen up since", v: m.stateSince.formatted(date: .omitted, time: .standard) + " (" + formatUptime(Date().timeIntervalSince(m.stateSince)) + ")")
                             }
                         }
                         Row(k: "Kernel", v: i.uname)

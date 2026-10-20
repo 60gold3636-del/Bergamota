@@ -128,6 +128,7 @@ final class LogStore {
     @ObservationIgnored private var filterRunning = false
     @ObservationIgnored private var filterDirty = false
     @ObservationIgnored private var recordHandle: FileHandle?
+    @ObservationIgnored private var autoSuspended = false
     @ObservationIgnored private let settings: AppSettings
 
     init(settings: AppSettings) { self.settings = settings }
@@ -164,6 +165,7 @@ final class LogStore {
             return
         }
         totalReceived += new.count
+        if settings.autoSaveLog && !recording && !autoSuspended { startRecording() }
         updateRate(new.count)
         var batch: [LogLine] = []
         batch.reserveCapacity(new.count)
@@ -239,9 +241,12 @@ final class LogStore {
         guard FileManager.default.createFile(atPath: path, contents: nil), let h = FileHandle(forWritingAtPath: path) else {
             statusMessage = "Cannot create \(path)"; return
         }
-        recordHandle = h; recordPath = path; recording = true
+        recordHandle = h; recordPath = path; recording = true; autoSuspended = false
         statusMessage = "Recording to \(path)"
     }
+
+    /// User-initiated stop: auto-save stays off until the app restarts or it is turned back on.
+    func userStopRecording() { autoSuspended = true; stopRecording() }
 
     func stopRecording() {
         try? recordHandle?.close(); recordHandle = nil

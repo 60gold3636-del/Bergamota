@@ -40,7 +40,13 @@ private struct QueuePane: View {
                 Image(systemName: q.armed ? "scope" : "pause.circle").font(.title)
                     .foregroundStyle(q.armed ? stateColor(model.monitor.state) : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(q.armed ? "Armed" : "Stopped").font(.headline)
+                    HStack(spacing: 8) {
+                        Text(q.armed ? "Armed" : "Stopped").font(.headline)
+                        if settings.allowRemoteStart {
+                            Label("remote control on", systemImage: "antenna.radiowaves.left.and.right").font(.caption2.bold())
+                                .padding(.horizontal, 7).padding(.vertical, 2).background(.blue.opacity(0.18), in: Capsule()).foregroundStyle(.blue)
+                        }
+                    }
                     Text(q.statusText).foregroundStyle(.secondary)
                     if let n = q.note { Text(n).font(.caption).foregroundStyle(.orange) }
                 }

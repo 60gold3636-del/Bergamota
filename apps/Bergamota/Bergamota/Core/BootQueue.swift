@@ -5,10 +5,12 @@ struct QueueItem: Identifiable, Hashable {
     enum Status: Hashable { case pending, sending, sent, failed }
     let id = UUID()
     var imagePath: String
+    var label: String = ""
     var status: Status = .pending
     var sentAt: Date?
     var output = ""
-    var name: String { (imagePath as NSString).lastPathComponent }
+    var name: String { label.isEmpty ? (imagePath as NSString).lastPathComponent : label }
+    var fileName: String { (imagePath as NSString).lastPathComponent }
 }
 
 /// Sends exactly ONE `fastboot boot <img>` per fastboot appearance. A failed send is never retried:
@@ -37,7 +39,7 @@ final class BootQueue {
     var pending: [QueueItem] { items.filter { $0.status == .pending } }
     var sending: QueueItem? { items.first { $0.status == .sending } }
 
-    func add(_ path: String) { items.append(QueueItem(imagePath: path)) }
+    func add(_ path: String, label: String = "") { items.append(QueueItem(imagePath: path, label: label)) }
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .sending } }
     func clearFinished() { items.removeAll { $0.status == .sent || $0.status == .failed } }
     func move(_ id: UUID, by d: Int) {

@@ -28,6 +28,14 @@ struct SettingsView: View {
                 toolRow("python3", $s.pythonPath, s.python)
                 toolRow("ssh", $s.sshPath, s.ssh)
             }
+            Section("Live log") {
+                Toggle("Always save the live log to logs/usb-<timestamp>.txt", isOn: $s.autoSaveLog)
+            }
+            Section("Remote control") {
+                Toggle("Allow remote requests to start the queue", isOn: $s.allowRemoteStart)
+                Text("Requests are JSON files dropped in ~/Library/Application Support/Bergamota/inbox (see scripts/bergamota). Status: status.json next to it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Boot queue") {
                 Toggle("If in OrangeFox, run `adb reboot bootloader` first", isOn: $s.rebootFromRecovery)
                 Toggle("Notify when a boot is sent", isOn: $s.notifyOnBoot)

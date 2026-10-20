@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00E1F2BA24558405C7543157 /* RemoteControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24B936B85666259BB68E2523 /* RemoteControl.swift */; };
 		1AFD9BEBEC8D77117666AABB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0B92F02006A156A7A40A6A7 /* Assets.xcassets */; };
 		27224D0BE64A7F5BDEB9C419 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E0006BEE820A89BEF4C071C /* ContentView.swift */; };
 		3622277176025B99932F6D24 /* CIView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E9BB85C4769A7EEEB93854A /* CIView.swift */; };
@@ -27,6 +28,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		24B936B85666259BB68E2523 /* RemoteControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteControl.swift; sourceTree = "<group>"; };
 		2E0006BEE820A89BEF4C071C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		48D311CBC40367F62751677D /* Bergamota.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bergamota.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A566265151DD90D00679BB5 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -67,6 +69,7 @@
 				CA529915B5B2FC1CC115AF32 /* LogStore.swift */,
 				4EA4729BAD7FDDE0D68743AA /* Notifier.swift */,
 				7CD4C58E6D1931CF4B158745 /* PhoneMonitor.swift */,
+				24B936B85666259BB68E2523 /* RemoteControl.swift */,
 				935046D9F93402D85B583C91 /* Shell.swift */,
 			);
 			path = Core;
@@ -189,6 +192,7 @@
 				AE6DA8C5C8B1AED24B85A5DA /* LogView.swift in Sources */,
 				3FE85DF37181E833C1FB0430 /* Notifier.swift in Sources */,
 				AE2A3922C3A39D6470DBACE8 /* PhoneMonitor.swift in Sources */,
+				00E1F2BA24558405C7543157 /* RemoteControl.swift in Sources */,
 				8C6AB67C5E307BC48A5C44BF /* SettingsView.swift in Sources */,
 				A914B655C8FC74AB45CB9BD4 /* Shell.swift in Sources */,
 			);
@@ -208,6 +212,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Bergamota;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "ios-beryllium control panel";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Bergamota talks to the phone over USB Ethernet (ping, SSH, kernel log on UDP 5140).";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -231,6 +236,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Bergamota;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "ios-beryllium control panel";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Bergamota talks to the phone over USB Ethernet (ping, SSH, kernel log on UDP 5140).";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

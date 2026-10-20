@@ -17,6 +17,8 @@ final class AppSettings {
     var ghRepo: String { didSet { d.set(ghRepo, forKey: "ghRepo") } }
     var rebootFromRecovery: Bool { didSet { d.set(rebootFromRecovery, forKey: "rebootFromRecovery") } }
     var notifyOnBoot: Bool { didSet { d.set(notifyOnBoot, forKey: "notifyOnBoot") } }
+    var allowRemoteStart: Bool { didSet { d.set(allowRemoteStart, forKey: "allowRemoteStart") } }
+    var autoSaveLog: Bool { didSet { d.set(autoSaveLog, forKey: "autoSaveLog") } }
     var notifyOnIOS: Bool { didSet { d.set(notifyOnIOS, forKey: "notifyOnIOS") } }
 
     init() {
@@ -31,6 +33,8 @@ final class AppSettings {
         ghRepo = d.string(forKey: "ghRepo") ?? "ry-diffusion/ios-beryllium"
         rebootFromRecovery = d.bool(forKey: "rebootFromRecovery")
         notifyOnBoot = d.object(forKey: "notifyOnBoot") as? Bool ?? true
+        allowRemoteStart = d.object(forKey: "allowRemoteStart") as? Bool ?? true
+        autoSaveLog = d.object(forKey: "autoSaveLog") as? Bool ?? true
         notifyOnIOS = d.object(forKey: "notifyOnIOS") as? Bool ?? true
     }
 

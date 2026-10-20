@@ -62,6 +62,7 @@ enum Shell {
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = childPath
         environment["LC_ALL"] = "C"
+        environment["LANG"] = "C"
         environment["PYTHONUNBUFFERED"] = "1"
         for (k, v) in env { environment[k] = v }
         p.environment = environment
@@ -104,31 +105,49 @@ enum Shell {
 
     /// TCP connect probe with timeout (non-blocking connect + poll).
     static func tcpOpen(host: String, port: UInt16, timeout: TimeInterval = 1.0) -> Bool {
+        tcpProbe(host: host, port: port, timeout: timeout).open
+    }
+
+    /// Like `tcpOpen` but also reports errno (0 = ok, ETIMEDOUT on poll timeout).
+    static func tcpProbe(host: String, port: UInt16, timeout: TimeInterval = 1.0) -> (open: Bool, err: Int32) {
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = port.bigEndian
-        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else { return false }
+        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else { return (false, EINVAL) }
         let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
+        guard fd >= 0 else { return (false, EINVAL) }
         defer { close(fd) }
         let flags = fcntl(fd, F_GETFL)
         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
         let r = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
         }
-        if r == 0 { return true }
-        guard errno == EINPROGRESS else { return false }
+        if r == 0 { return (true, 0) }
+        guard errno == EINPROGRESS else { return (false, EINVAL) }
         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-        guard poll(&pfd, 1, Int32(timeout * 1000)) > 0 else { return false }
+        guard poll(&pfd, 1, Int32(timeout * 1000)) > 0 else { return (false, EINVAL) }
         var err: Int32 = 0
         var len = socklen_t(MemoryLayout<Int32>.size)
         getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
-        return err == 0
+        return (err == 0, err)
     }
 }
 
 func shellQuote(_ s: String) -> String {
     if !s.isEmpty && s.allSatisfy({ $0.isLetter || $0.isNumber || "-_./=:@%+,".contains($0) }) { return s }
     return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+enum DebugLog {
+    static let path = NSHomeDirectory() + "/Library/Logs/Bergamota.log"
+    private static let lock = NSLock()
+    static func write(_ msg: String) {
+        lock.lock(); defer { lock.unlock() }
+        let f = ISO8601DateFormatter()
+        let line = "\(f.string(from: Date())) \(msg)\n"
+        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+        else { try? line.write(toFile: path, atomically: true, encoding: .utf8) }
+    }
 }

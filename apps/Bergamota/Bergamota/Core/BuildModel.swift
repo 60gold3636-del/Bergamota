@@ -124,9 +124,12 @@ final class BuildModel {
     var targetExists: Bool { FileManager.default.fileExists(atPath: targetImagePath) }
     var canBuild: Bool { !building && Self.validName(imageName) && !kernelPath.isEmpty && !adtPath.isEmpty && !cmdline.trimmingCharacters(in: .whitespaces).isEmpty && settings.repoValid }
 
-    func build() {
-        guard canBuild else { return }
-        guard let python = settings.python else { output = "python3 not found (set it in Settings)\n"; return }
+    func build() { Task { _ = await runBuild() } }
+
+    /// Runs mkpayload + build.sh + copy. Returns the built image path, or nil on failure.
+    func runBuild() async -> String? {
+        guard canBuild else { lastResult = "Cannot build (check name, kernel, ADT, cmdline, repo)"; return nil }
+        guard let python = settings.python else { output = "python3 not found (set it in Settings)\n"; lastResult = "python3 not found"; return nil }
         building = true
         lastResult = nil
         lastBuiltImage = nil
@@ -135,40 +138,36 @@ final class BuildModel {
         let cmd = cmdline.trimmingCharacters(in: .whitespacesAndNewlines)
         let repo = settings.repoURL.path
         let payload = "shim/out/payload-\(name).bin"
-        Task { [weak self] in
-            @Sendable func emit(_ s: String) { Task { @MainActor in self?.output += s } }
-            @Sendable func stream(_ s: String) { emit(s) }
-            func step(_ title: String, _ exe: String, _ args: [String], cwd: String, env: [String: String] = [:]) async -> Bool {
-                emit("\n$ " + ([exe] + args).map(shellQuote).joined(separator: " ") + "   (cwd \(cwd))\n")
-                let r = await Shell.run(exe, args, cwd: cwd, env: env, timeout: 900, onOutput: stream)
-                if let e = r.launchError { emit("launch error: \(e)\n"); return false }
-                if r.timedOut { emit("TIMED OUT\n"); return false }
-                emit("[\(title): exit \(r.status)]\n")
-                return r.ok
-            }
-            var ok = await step("mkpayload", python, ["tools/mkpayload.py", kernel, adt, payload, "--cmdline", cmd], cwd: repo)
-            if ok {
-                ok = await step("build.sh", "/bin/bash", ["./build.sh", "out/payload-\(name).bin"], cwd: repo + "/shim", env: ["BOARD": "beryllium"])
-            }
-            var result: String
-            var built: String?
-            if ok {
-                let src = repo + "/shim/out/shim-boot.img", dst = repo + "/shim/out/shim-boot-\(name).img"
-                do {
-                    if FileManager.default.fileExists(atPath: dst) { try FileManager.default.removeItem(atPath: dst) }
-                    try FileManager.default.copyItem(atPath: src, toPath: dst)
-                    emit("\ncp shim/out/shim-boot.img -> shim/out/shim-boot-\(name).img\n")
-                    result = "Built shim-boot-\(name).img"
-                    built = dst
-                } catch { result = "Copy failed: \(error.localizedDescription)"; emit(result + "\n") }
-            } else { result = "Build failed" }
-            await MainActor.run {
-                guard let self else { return }
-                self.building = false
-                self.lastResult = result
-                self.lastBuiltImage = built
-                self.rescan()
-            }
+        let emit: @Sendable (String) -> Void = { [weak self] s in Task { @MainActor in self?.output += s } }
+        func step(_ title: String, _ exe: String, _ args: [String], cwd: String, env: [String: String] = [:]) async -> Bool {
+            emit("\n$ " + ([exe] + args).map(shellQuote).joined(separator: " ") + "   (cwd \(cwd))\n")
+            let r = await Shell.run(exe, args, cwd: cwd, env: env, timeout: 900, onOutput: emit)
+            if let e = r.launchError { emit("launch error: \(e)\n"); return false }
+            if r.timedOut { emit("TIMED OUT\n"); return false }
+            emit("[\(title): exit \(r.status)]\n")
+            return r.ok
         }
+        var ok = await step("mkpayload", python, ["tools/mkpayload.py", kernel, adt, payload, "--cmdline", cmd], cwd: repo)
+        if ok {
+            ok = await step("build.sh", "/bin/bash", ["./build.sh", "out/payload-\(name).bin"], cwd: repo + "/shim", env: ["BOARD": "beryllium"])
+        }
+        var result = "Build failed"
+        var built: String?
+        if ok {
+            let src = repo + "/shim/out/shim-boot.img", dst = repo + "/shim/out/shim-boot-\(name).img"
+            do {
+                if FileManager.default.fileExists(atPath: dst) { try FileManager.default.removeItem(atPath: dst) }
+                try FileManager.default.copyItem(atPath: src, toPath: dst)
+                output += "\ncp shim/out/shim-boot.img -> shim/out/shim-boot-\(name).img\n"
+                result = "Built shim-boot-\(name).img"
+                built = dst
+            } catch { result = "Copy failed: \(error.localizedDescription)"; output += result + "\n" }
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)   // let queued output appends land
+        building = false
+        lastResult = result
+        lastBuiltImage = built
+        rescan()
+        return built
     }
 }

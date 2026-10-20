@@ -28,7 +28,7 @@ struct LogView: View {
                     }
                     if !logs.activeTags.isEmpty { Button("All") { logs.activeTags = [] }.buttonStyle(.link) }
                     Spacer()
-                    Toggle(isOn: Binding(get: { logs.recording }, set: { $0 ? logs.startRecording() : logs.stopRecording() })) {
+                    Toggle(isOn: Binding(get: { logs.recording }, set: { $0 ? logs.startRecording() : logs.userStopRecording() })) {
                         Label("Record to logs/", systemImage: "record.circle")
                     }.toggleStyle(.button).tint(.red)
                     Button { logs.saveBuffer() } label: { Label("Save buffer", systemImage: "square.and.arrow.down") }

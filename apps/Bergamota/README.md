@@ -26,4 +26,36 @@ Sidebar sections:
   - *Queue*: press **Start** to arm. When the phone is in fastboot (seen on two consecutive polls) the app sends exactly **one** `fastboot boot <img>`, records the result and time, and will not send again until the phone has left fastboot (a failed send leaves ABL hung; re-enter fastboot yourself, there is never an automatic retry). Optional toggle (off by default): when the phone is in OrangeFox, run `adb reboot bootloader` once first. The queue disarms itself when it is empty. Optional notifications when a boot is sent and when iOS comes up.
 - **Settings** (also Cmd+,): repo path (default `/Users/zesmoi/git/iAndroid/ios-beryllium`), phone IP, GitHub repo, and tool paths (`fastboot`, `adb`, `gh`, `python3`, `ssh`; empty means resolve via `PATH` plus `/opt/homebrew/bin` and `/usr/local/bin`).
 
+## Remote control (file-based API, no network)
+
+Bergamota watches `~/Library/Application Support/Bergamota/inbox/` for `*.json` requests (polled every second), processes them and moves each to `inbox/done/` (with a `result` field) or `inbox/failed/` (with an `error` field). Kinds:
+
+```json
+{"kind":"enqueue","image":"shim/out/x.img","label":"...","arm":true}
+{"kind":"build","name":"N","kernel":"xnu/out-.../kernel.development.sweet","adt":"shim/out/beryllium-hi-3x.adt","preset":"default @3x","enqueue":true,"arm":true}
+{"kind":"build","name":"N","kernel":"...","adt":"...","cmdline":"debug=0xc ..."}
+{"kind":"orangefox_reboot","enabled":true}
+{"kind":"stop"}
+```
+
+Paths are absolute or repo-relative; images and ADTs must live under `shim/out/` (`.img` / `.adt`), kernels under `xnu/`. `"arm": true` only arms the queue when Settings > "Allow remote requests to start the queue" is on (default on; the Boot Queue header shows a "remote control on" badge). Otherwise items are added and you press Start. The one-`fastboot boot`-per-fastboot-appearance rule applies unchanged.
+
+`status.json` (same folder) is rewritten atomically on every state change and at least every 5 s: `phone` (state, `ios` battery/charging/kernel/uptime when known), `queue` (armed, items with `state` pending|waiting|sent|failed, `sentAt`, `result`), `liveLog` (listening, `savingTo`), `build`.
+
+CLI (`scripts/bergamota`, bash + python3):
+
+```sh
+scripts/bergamota enqueue shim/out/shim-boot-0130.img [--label L] [--no-arm] [--wait]
+scripts/bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--no-enqueue] [--no-arm] [--wait]
+scripts/bergamota orangefox on|off
+scripts/bergamota stop
+scripts/bergamota status
+```
+
+## Notes
+
+- **Local Network permission.** Without it macOS hides every MAC address from the app (`ifconfig` shows `02:00:00:00:00:00`) and blocks connections to the phone ("No route to host"). Bergamota declares `NSLocalNetworkUsageDescription` so macOS asks on first run; allow it under System Settings > Privacy & Security > Local Network. Until then the USB Ethernet interface is found by subnet (the Mac side `192.168.7.1`) and the Dashboard shows a warning. A debug trace of each detection change is written to `~/Library/Logs/Bergamota.log`.
+- The live log is saved automatically to `logs/usb-<timestamp>.txt` (Settings > Live log; turning Record off in the Live Log pauses it until the next launch).
+- The phone has no `sysctl`, so uptime is shown only if `ps -o etime= -p 1` is sane; the Dashboard also shows when Bergamota first saw iOS up.
+
 The app only ever runs `fastboot devices` and `fastboot boot`, plus `adb devices` and (opt-in) `adb reboot bootloader`. It never flashes, erases or sends `oem` commands.

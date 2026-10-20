@@ -34,6 +34,7 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSHumanReadableCopyright: "ios-beryllium control panel"
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Bergamota talks to the phone over USB Ethernet (ping, SSH, kernel log on UDP 5140)."
         ENABLE_PREVIEWS: YES
 schemes:
   Bergamota:

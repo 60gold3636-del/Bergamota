@@ -46,6 +46,13 @@ private struct Probe: Sendable {
     var ifaceUp = false
     var ping = false
     var ssh = false
+    var ifaceHasIP = false
+    var inferred = false
+    var macHidden = false
+    var ifconfigLen = 0
+    var ifconfigOK = false
+    var pingErr = ""
+    var tcpErr: Int32 = 0
     var nat: String?
     var errors: [String] = []
 }
@@ -64,6 +71,10 @@ final class PhoneMonitor {
     var ifaceUp = false
     var pingOK = false
     var sshOpen = false
+    var ifaceHasIP = false
+    var ifaceInferred = false   // found by subnet because the MAC was not visible
+    var macHidden = false       // macOS zeroes MAC addresses without Local Network permission
+    var noRoute = false   // iface has an IP but connects fail with EHOSTUNREACH (maybe Local Network privacy)
     var natForwarding: String?
     var info: IOSInfo?
     var infoError: String?
@@ -74,6 +85,8 @@ final class PhoneMonitor {
     @ObservationIgnored var observers: [(PhoneState, PhoneState) -> Void] = []
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var infoInFlight = false
+    @ObservationIgnored private var lastSig = ""
+    @ObservationIgnored private var primed = false
     @ObservationIgnored private let settings: AppSettings
 
     init(settings: AppSettings) { self.settings = settings }
@@ -91,6 +104,11 @@ final class PhoneMonitor {
     }
 
     func pollOnce() async {
+        if !primed {
+            primed = true
+            let ip = settings.phoneIP
+            Task.detached { _ = Shell.tcpProbe(host: ip, port: 22, timeout: 1.0) }   // touches the local network -> permission prompt
+        }
         let fb = settings.fastboot, adb = settings.adb, ip = settings.phoneIP
         let probe = await Self.probe(fastboot: fb, adb: adb, ip: ip)
         apply(probe)
@@ -107,6 +125,10 @@ final class PhoneMonitor {
         adbState = p.adbState
         ifaceName = p.iface
         ifaceUp = p.ifaceUp
+        ifaceHasIP = p.ifaceHasIP
+        ifaceInferred = p.inferred
+        macHidden = p.macHidden
+        noRoute = p.iface != nil && p.ifaceHasIP && !p.ping && !p.ssh && (p.tcpErr == EHOSTUNREACH || p.pingErr.contains("No route"))
         pingOK = p.ping
         sshOpen = p.ssh
         natForwarding = p.nat
@@ -115,12 +137,17 @@ final class PhoneMonitor {
         let new: PhoneState
         if p.fastbootSerial != nil { new = .fastboot }
         else if let s = p.adbState, s == "recovery" || s == "sideload" { new = .recovery }
-        else if p.iface != nil && p.ifaceUp && p.ping && p.ssh { new = .ios }
+        else if p.iface != nil && p.ping && p.ssh { new = .ios }
         else if p.adbState == "device" { new = .android }
-        else if p.iface != nil && p.ifaceUp { new = .iosBooting }
+        else if p.iface != nil { new = .iosBooting }
         else { new = .offline }
 
         let old = state
+        let sig = "\(p.macHidden)|\(new.rawValue)|\(p.iface ?? "-")|\(p.ifaceUp)|\(p.ifaceHasIP)|\(p.ping)|\(p.ssh)"
+        if sig != lastSig {
+            lastSig = sig
+            DebugLog.write("state=\(new.rawValue) fastboot=\(p.fastbootSerial ?? "-") adb=\(p.adbState ?? "-") ifconfigLen=\(p.ifconfigLen) ifconfigOK=\(p.ifconfigOK) iface=\(p.iface ?? "none") inferred=\(p.inferred) macHidden=\(p.macHidden) up=\(p.ifaceUp) inet=\(p.ifaceHasIP) ping=\(p.ping) tcp22=\(p.ssh) tcpErr=\(p.tcpErr) pingErr=\(p.pingErr) \(p.errors.joined(separator: "; "))")
+        }
         if new != old {
             state = new
             stateSince = Date()
@@ -151,26 +178,35 @@ final class PhoneMonitor {
             }
         }
         let ifr = await ifR
-        if let (name, up) = parseInterface(ifr.stdout, mac: usbMAC) { p.iface = name; p.ifaceUp = up }
+        p.ifconfigLen = ifr.stdout.count
+        p.ifconfigOK = ifr.ok
+        p.macHidden = ifr.stdout.contains("ether 02:00:00:00:00:00")
+        if let (name, up, hasIP, inferred) = parseInterface(ifr.stdout, mac: usbMAC, phoneIP: ip) { p.iface = name; p.ifaceUp = up; p.ifaceHasIP = hasIP; p.inferred = inferred }
+        if !ifr.ok { p.errors.append("ifconfig failed: \(ifr.launchError ?? ifr.stderr)") }
         let nat = await natR
         if nat.ok { p.nat = nat.stdout.trimmingCharacters(in: .whitespacesAndNewlines) }
-        if p.iface != nil && p.ifaceUp {
-            async let pingR = Shell.run("/sbin/ping", ["-c", "1", "-W", "1000", ip], timeout: 3)
-            async let sshR = Task.detached { Shell.tcpOpen(host: ip, port: 22, timeout: 1.0) }.value
-            p.ping = await pingR.ok
-            p.ssh = await sshR
+        // Probe whenever the interface exists, even if macOS does not flag it UP yet.
+        if p.iface != nil {
+            async let pingR = Shell.run("/sbin/ping", ["-c", "1", "-t", "1", ip], timeout: 4)
+            async let sshR = Task.detached { Shell.tcpProbe(host: ip, port: 22, timeout: 1.5) }.value
+            let pr = await pingR
+            p.ping = pr.ok
+            p.pingErr = (pr.launchError ?? pr.stderr + pr.stdout.split(separator: "\n").filter { $0.contains("No route") }.joined()).trimmingCharacters(in: .whitespacesAndNewlines)
+            let t = await sshR
+            p.ssh = t.open
+            p.tcpErr = t.err
         }
         return p
     }
 
-    nonisolated static func parseInterface(_ text: String, mac: String) -> (String, Bool)? {
+    nonisolated static func parseInterface(_ text: String, mac: String, phoneIP: String = "") -> (String, Bool, Bool, Bool)? {
         var blocks: [[String]] = []
         for line in text.split(separator: "\n") {
             if let f = line.first, !f.isWhitespace { blocks.append([String(line)]) }
             else if !blocks.isEmpty { blocks[blocks.count - 1].append(String(line)) }
         }
         let needle = "ether \(mac.lowercased())"
-        for b in blocks where b.contains(where: { $0.lowercased().contains(needle) }) {
+        func describe(_ b: [String], inferred: Bool) -> (String, Bool, Bool, Bool) {
             let head = b[0]
             let name = String(head.prefix(while: { $0 != ":" }))
             var flagsUp = false
@@ -181,7 +217,18 @@ final class PhoneMonitor {
             if let st = b.first(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("status:") }) {
                 active = st.contains(" active")
             }
-            return (name, flagsUp && active)
+            let hasIP = b.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("inet ") }
+            return (name, flagsUp && active, hasIP, inferred)
+        }
+        if let b = blocks.first(where: { $0.contains(where: { $0.lowercased().contains(needle) }) }) { return describe(b, inferred: false) }
+        // Fallback: without Local Network permission macOS reports 02:00:00:00:00:00 for every MAC,
+        // so find the phone's interface by its subnet (the host side is x.x.x.1 of the phone's /24).
+        let parts = phoneIP.split(separator: ".")
+        if parts.count == 4 {
+            let prefix = "inet \(parts[0]).\(parts[1]).\(parts[2])."
+            if let b = blocks.first(where: { $0[0].hasPrefix("en") && $0.contains(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix(prefix) }) }) {
+                return describe(b, inferred: true)
+            }
         }
         return nil
     }
@@ -195,7 +242,7 @@ final class PhoneMonitor {
         infoInFlight = true
         defer { infoInFlight = false }
         let ip = settings.phoneIP
-        let remote = "uname -a; echo '@@BOOT'; sysctl -n kern.boottime; echo '@@NOW'; date +%s; echo '@@PS'; /usr/local/bin/sweetps"
+        let remote = "uname -a; echo '@@BOOT'; sysctl -n kern.boottime 2>/dev/null; echo '@@ETIME'; ps -o etime= -p 1 2>/dev/null; echo '@@NOW'; date +%s; echo '@@PS'; /usr/local/bin/sweetps"
         let r = await Shell.run(ssh, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "root@\(ip)", remote], timeout: 10)
         if r.launchError != nil || r.timedOut || (r.status != 0 && r.stdout.isEmpty) {
             infoError = r.timedOut ? "ssh timed out" : (r.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -218,22 +265,43 @@ final class PhoneMonitor {
         parts[key] = buf.joined(separator: "\n")
         var i = IOSInfo()
         i.uname = (parts["UNAME"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Double((parts["NOW"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? Date().timeIntervalSince1970
         let boot = parts["BOOT"] ?? ""
-        let nowS = Double((parts["NOW"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         if let m = boot.firstMatch(of: /sec\s*=\s*(\d+)/), let sec = Double(m.1) {
             i.bootDate = Date(timeIntervalSince1970: sec)
-            let now = nowS ?? Date().timeIntervalSince1970
             i.uptime = max(0, now - sec)
+        } else if let up = parseEtime(parts["ETIME"] ?? ""), up < 366 * 86400 {
+            // The phone has no sysctl; `ps -o etime= -p 1` works only when its clock was not stepped after boot.
+            i.uptime = up
+            i.bootDate = Date(timeIntervalSince1970: now - up)
         }
         let ps = parts["PS"] ?? ""
-        if let m = ps.firstMatch(of: /"?Current Capacity"?\s*=\s*(\d+)/) { i.batteryPercent = Int(m.1) }
-        if let m = ps.firstMatch(of: /"?Is Charging"?\s*=\s*"?(\w+)"?/) {
-            let v = m.1.lowercased()
-            i.isCharging = ["1", "true", "yes"].contains(v)
-        }
-        if let m = ps.firstMatch(of: /"?Power Source State"?\s*=\s*"?([^";\n]+)"?/) {
-            i.powerSource = m.1.trimmingCharacters(in: .whitespaces)
-        }
+        if let v = psValue("Current Capacity", in: ps), let n = Int(v.replacingOccurrences(of: "+", with: "")) { i.batteryPercent = n }
+        if let v = psValue("Is Charging", in: ps) { i.isCharging = ["1", "true", "yes"].contains(v.lowercased()) }
+        if let v = psValue("Power Source State", in: ps) { i.powerSource = v }
         return i
+    }
+
+    /// Value of a CFDictionary-description key, e.g. `"Current Capacity"} = <CFNumber ..>{value = +87, ...}` or `Is Charging = Yes;`.
+    nonisolated static func psValue(_ key: String, in text: String) -> String? {
+        let k = NSRegularExpression.escapedPattern(for: key)
+        let pat = "\"?" + k + "\"?\\}?\\s*=\\s*(?:<CF[A-Za-z]+ [^>]*>\\{(?:value|contents) = \"?([^,}\"]+)|\"?([^\";\\n,]+))"
+        guard let re = try? NSRegularExpression(pattern: pat), let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+        for g in 1...2 {
+            if let r = Range(m.range(at: g), in: text) { return String(text[r]).trimmingCharacters(in: .whitespaces) }
+        }
+        return nil
+    }
+
+    /// ps etime: [[dd-]hh:]mm:ss
+    nonisolated static func parseEtime(_ s: String) -> TimeInterval? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        var days = 0.0, rest = t
+        if let dash = t.firstIndex(of: "-") { days = Double(t[..<dash]) ?? .nan; rest = String(t[t.index(after: dash)...]) }
+        let p = rest.split(separator: ":").map { Double($0) ?? .nan }
+        guard !days.isNaN, (2...3).contains(p.count), !p.contains(where: \.isNaN) else { return nil }
+        let secs = p.count == 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1]
+        return days * 86400 + secs
     }
 }

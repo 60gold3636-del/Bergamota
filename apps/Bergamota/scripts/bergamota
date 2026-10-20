@@ -1,0 +1,123 @@
+#!/bin/bash
+# CLI for the Bergamota app's file-based API (no network). Needs python3 for JSON only.
+#   bergamota enqueue IMG [--label L] [--no-arm] [--wait]
+#   bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--label L] [--no-enqueue] [--no-arm] [--wait]
+#   bergamota orangefox on|off
+#   bergamota status
+#   bergamota stop
+# Requests are written to ~/Library/Application Support/Bergamota/inbox/ ; results land in inbox/done or inbox/failed.
+set -eu
+BASE="$HOME/Library/Application Support/Bergamota"
+INBOX="$BASE/inbox"
+
+die() { echo "bergamota: $*" >&2; exit 1; }
+usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# submit KIND JSON [wait]: write atomically (tmp name is not *.json), optionally wait for the result.
+submit() {
+	local json=$1 wait=${2:-0}
+	mkdir -p "$INBOX/done" "$INBOX/failed"
+	local id; id="$(date +%s)-$$-$RANDOM.json"
+	printf '%s\n' "$json" > "$INBOX/.$id.tmp"
+	mv "$INBOX/.$id.tmp" "$INBOX/$id"
+	echo "submitted $id"
+	[ "$wait" = 1 ] || return 0
+	local i=0
+	while [ $i -lt 1800 ]; do
+		for d in done failed; do
+			if [ -f "$INBOX/$d/$id" ]; then
+				python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); print(d.get("error") and "ERROR: "+d["error"] or "OK: "+str(d.get("result","")))
+sys.exit(1 if d.get("error") else 0)' "$INBOX/$d/$id"
+				return $?
+			fi
+		done
+		sleep 1; i=$((i+1))
+	done
+	die "timed out waiting for the app (is Bergamota running?)"
+}
+
+abspath() { # keep repo-relative paths as they are, absolutize ones that exist relative to cwd
+	if [ -e "$1" ]; then python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$1"; else printf '%s' "$1"; fi
+}
+
+cmd=${1:-}; [ -n "$cmd" ] || usage 1; shift || true
+case "$cmd" in
+enqueue)
+	img=""; label=""; arm=true; wait=0
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--label) label=$2; shift 2 ;;
+		--no-arm) arm=false; shift ;;
+		--wait) wait=1; shift ;;
+		-h|--help) usage ;;
+		*) [ -z "$img" ] || die "unexpected argument $1"; img=$1; shift ;;
+		esac
+	done
+	[ -n "$img" ] || die "enqueue needs an image"
+	json=$(python3 -c 'import json,sys; print(json.dumps({"kind":"enqueue","image":sys.argv[1],"label":sys.argv[2],"arm":sys.argv[3]=="true"}))' "$(abspath "$img")" "$label" "$arm")
+	submit "$json" $wait ;;
+build)
+	name=""; kernel=""; adt=""; preset=""; cmdline=""; label=""; enq=true; arm=true; wait=0
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--name) name=$2; shift 2 ;;
+		--kernel) kernel=$2; shift 2 ;;
+		--adt) adt=$2; shift 2 ;;
+		--preset) preset=$2; shift 2 ;;
+		--cmdline) cmdline=$2; shift 2 ;;
+		--label) label=$2; shift 2 ;;
+		--no-enqueue) enq=false; shift ;;
+		--no-arm) arm=false; shift ;;
+		--wait) wait=1; shift ;;
+		-h|--help) usage ;;
+		*) die "unexpected argument $1" ;;
+		esac
+	done
+	[ -n "$name" ] && [ -n "$kernel" ] && [ -n "$adt" ] || die "build needs --name, --kernel and --adt"
+	{ [ -n "$preset" ] || [ -n "$cmdline" ]; } || die "build needs --preset or --cmdline"
+	json=$(python3 -c 'import json,sys
+n,k,a,p,c,l,e,r=sys.argv[1:9]
+d={"kind":"build","name":n,"kernel":k,"adt":a,"enqueue":e=="true","arm":r=="true"}
+if c: d["cmdline"]=c
+else: d["preset"]=p
+if l: d["label"]=l
+print(json.dumps(d))' "$name" "$(abspath "$kernel")" "$(abspath "$adt")" "$preset" "$cmdline" "$label" "$enq" "$arm")
+	submit "$json" $wait ;;
+orangefox)
+	case ${1:-} in on) v=true ;; off) v=false ;; *) die "orangefox on|off" ;; esac
+	submit "{\"kind\":\"orangefox_reboot\",\"enabled\":$v}" ${2:+1} ;;
+stop)
+	submit '{"kind":"stop"}' $([ "${1:-}" = --wait ] && echo 1 || echo 0) ;;
+status)
+	[ -f "$BASE/status.json" ] || die "no status.json (is Bergamota running?)"
+	python3 - "$BASE/status.json" <<'PY'
+import json, sys, datetime
+d = json.load(open(sys.argv[1]))
+def age(s):
+    try:
+        t = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return f"{(datetime.datetime.now(datetime.timezone.utc) - t).total_seconds():.0f}s ago"
+    except Exception: return s
+p = d["phone"]; q = d["queue"]; l = d["liveLog"]
+print(f"updated   {d['updated']} ({age(d['updated'])})")
+print(f"phone     {p['state']} (since {p.get('since','?')})")
+ios = p.get("ios")
+if ios:
+    print(f"  ios     battery={ios.get('battery','?')}% charging={ios.get('charging','?')} uptime={ios.get('uptime','?')}s")
+    print(f"          {ios.get('kernel','')}")
+print(f"queue     {'ARMED' if q['armed'] else 'stopped'}  remote-start={'allowed' if q.get('remoteStartAllowed') else 'denied'}  orangefox-reboot={q.get('orangefoxReboot')}")
+print(f"          {q.get('status','')}")
+for it in q["items"]:
+    print(f"  [{it['state']:7}] {it['label']}  {it['image']}" + (f"  sent {it['sentAt']}" if it.get('sentAt') else ""))
+    if it["state"] in ("sent", "failed") and it.get("result"):
+        for line in it["result"].strip().splitlines()[-3:]: print("             " + line)
+print(f"liveLog   listening={l['listening']} saving={l.get('savingTo')} {l.get('linesPerSecond')} lines/s")
+b = d.get("build", {})
+print(f"build     {'RUNNING' if b.get('building') else 'idle'}  last={b.get('last')}")
+if d.get("lastRequest"): print(f"request   {d['lastRequest']}")
+PY
+	;;
+-h|--help|help) usage ;;
+*) die "unknown command $cmd (try --help)" ;;
+esac
