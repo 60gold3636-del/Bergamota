@@ -4,7 +4,7 @@
 
 A port of [ios-sweet](https://github.com/dipa-studio/ios-sweet) (iOS 16 on the Redmi Note 10 Pro) to the Xiaomi Poco F1. The same XNU kernel (xnu-8796) runs both phones; the Poco F1 specifics are kernel patches 0082+ (selected at runtime from the device tree, `bsd/dev/sweet_board.h`) and `tools/mkadt.py --board beryllium`. On top runs the **unmodified iPhone X iOS 16.7.16 (20H392) userland**.
 
-As of **2026-10-20** the Poco F1 boots to the **iOS lock and home screen with its wallpaper**: touch (including the swipe-up home gesture), buttons, navigation, Control Center, Settings and Safari work, and the phone shows up on a computer as **USB Ethernet**: SSH (`ssh root@192.168.7.2`, key-only, dropbear), a live kernel log, and internet shared from the Mac (Safari loads sites; pages still render blank). Photos works: pictures pushed with `tools/sweet-push-photo.sh` show up in the Photos app. Everything is rendered by the CPU.
+As of **2026-10-20** the Poco F1 boots to the **iOS lock and home screen with its wallpaper**: touch (including the swipe-up home gesture), buttons, navigation, Control Center, Settings and Safari work, and the phone shows up on a computer as **USB Ethernet**: SSH (`ssh root@192.168.7.2`, key-only, dropbear), a live kernel log, and internet shared from the Mac (Safari loads and renders sites). Photos works: pictures pushed with `tools/sweet-push-photo.sh` show up in the Photos app. Everything is rendered by the CPU.
 
 > Experimental, not a usable phone OS. It installs into `userdata` and **erases Android's user data**; security is mostly off.
 
