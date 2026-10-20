@@ -105,8 +105,33 @@ def compose_poweron(w, h):
     return c
 
 
+def gradient_glow(w, h):
+    """Colourful fastboot background (the panel is an LCD, black buys nothing): a diagonal
+    emerald -> teal -> deep bergamot green gradient with a soft pale-yellow glow behind the logo."""
+    c = Canvas(w, h, BG)
+    stops = [(0.0, (0x12, 0xb0, 0x6a)), (0.5, (0x0b, 0x7a, 0x75)), (1.0, (0x1a, 0x59, 0x33))]
+    gx, gy, gr = w / 2, h * 0.40, min(w, h) * 0.42
+    px = c.px
+    for y in range(h):
+        for x in range(w):
+            t = (x / w * 0.45 + y / h * 0.55)
+            for i in range(len(stops) - 1):
+                if t <= stops[i + 1][0]:
+                    (t0, c0), (t1, c1) = stops[i], stops[i + 1]
+                    f = (t - t0) / (t1 - t0)
+                    break
+            r, g, b_ = (c0[k] + (c1[k] - c0[k]) * f for k in range(3))
+            d2 = ((x - gx) ** 2 + (y - gy) ** 2) / (gr * gr)
+            if d2 < 1:
+                a = (1 - d2) ** 2 * 0.55          # glow strength
+                r, g, b_ = r + (0xff - r) * a, g + (0xf7 - g) * a, b_ + (0x8c - b_) * a
+            o = (y * w + x) * 3
+            px[o], px[o + 1], px[o + 2] = int(r), int(g), int(b_)
+    return c
+
+
 def compose_fastboot(w, h):
-    c = Canvas(w, h, (0, 0, 0))
+    c = gradient_glow(w, h)
     logo = fit(crop_alpha(read_png(os.path.join(ASSETS, "bergamota-logo.png")), 8), 400, 460)
     word = fit(crop_alpha(read_png(os.path.join(ASSETS, "bergamota-fastboot.png")), 2), 470)
     gap = 56
