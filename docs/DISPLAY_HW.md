@@ -65,7 +65,7 @@ Register programming (`hwProgram`, once when the first canvas frame is scanned; 
 | +0x10/0x14 PHASE_STEP_Y_H/V, +0x18/0x1c UV_H/V | `(src << 21) / dst` per axis (24 bit), same on the UV set (alpha channel) | `_dpu_plane_setup_scaler3` mult_frac(1<<21, src, dst) |
 | +0x20 PRELOAD | `4 | 3<<8 | 4<<16 | 3<<24` | DPU_QSEED3_DEFAULT_PRELOAD_H/V |
 | +0x40 SRC_SIZE_Y_RGB_A, +0x44 SRC_SIZE_UV, +0x48 DST_SIZE | src, src, dst (`(h<<16)|w`) | |
-| +0x04 OP_MODE (last) | BIT0 enable, 1<<16 Y/RGB filter bilinear, BIT14 non-DX, BIT31 blend_cfg; if SRC_FORMAT bit 8 (alpha, set on ABL's format): BIT10 + alpha filter bilinear (1<<29; 1<<30 on v0x1002) | `dpu_hw_setup_scaler3`; no detail enhancer, no LUT upload (lut_flag 0), dir_en 0 |
+| +0x04 OP_MODE (last) | BIT0 enable, ~~1<<16 Y/RGB filter bilinear~~ (WRONG, see 0129: bilinear is field 3, so 3<<16), BIT14 non-DX, BIT31 blend_cfg; if SRC_FORMAT bit 8 (alpha, set on ABL's format): BIT10 + alpha filter bilinear (1<<29; 1<<30 on v0x1002) | `dpu_hw_setup_scaler3`; no detail enhancer, no LUT upload (lut_flag 0), dir_en 0 |
 | SRC0_ADDR +0x14, YSTRIDE0 +0x24 | back buffer PA, `fHwStride` | |
 | LM0 +0x45008 / +0x45010 BORDER_COLOR | 0, only when the fit leaves margins and the boot border colour is non-zero (`border fix`) | `dpu_hw_lm.c` LM_BORDER_COLOR_0/1 (from memory, unverified) |
 | CTL0 +0x2018 FLUSH | `VIG0 BIT0 | CTL BIT17` (| `BIT6` LM_0 with the first flush after a border change) | `dpu_hw_ctl.c` |
@@ -166,3 +166,31 @@ Refusals / fallbacks: `SWEET SURF: low pool 0x... refused: overlaps <name> ...`,
 7. **Variants**: `sweetfb_lowwc=1` (write-combined pool: if the write-back device mapping misbehaves, e.g. panics in the pmap or shows stale rows, the picture still has to be right but the UI will crawl); `sweetfb_lowpool=64` (small pool: watch `low pool full` and the fallback counter; frames must keep flowing through the copy path); toggle the display off and on (counters line at display off, the zero-copy frame comes back after wake); trigger a panic (the console must show, boot frame restored). Tearing / half-drawn frames (ios-topaz saw them when scanning CoreAnimation surfaces in place, even with the 0099 in-use count) would show as rows from the next frame at the top of the screen: if so, capture `SWEET FB: zero-copy counters` and fall back to the copy path (drop `sweetfb_zc`); the next lever is a per-frame "was this surface in use when CA drew" check, not a bigger pool.
 
 Reverts: `sweetfb_hw` / `sweetfb_zc` / `sweetfb_smmu` / `sweetfb_lowpool*` / `sweetfb_zcforce` / `sweetfb_lowwc` are absent by default; `sweetfb_blfade=0` disables the only default-on part. Risks not testable offline: whether the window 0xb0400000-0xc0000000 is free of TZ/hyp protection, write-back mapping of a non-managed range through `IOMemoryDescriptor` (by analysis of `pmap_enter_options`, same path as the write-combined splash mapping), MDP fetch from outside ABL's mapping, half-drawn frames when scanning CoreAnimation's own surfaces, QSEED3 register semantics (bilinear, alpha bits, PE registers), LM border write (BIT6 flush), EE ownership of the WLED APIDs, and the read of the ABL-owned context banks at `sweetfb_smmu=2`.
+
+
+## 0129: QSEED3 filter fix (image quality)
+
+Patch `xnu/patches/0129-beryllium-fb-scaler-quality.patch` (diff against `research/bt127/xnu` = 0001-0128; `git apply --check` verified; `SweetFramebuffer.cpp` compiles). Not booted.
+
+**Root cause found by reading Linux (`dpu_hw_sspp.h`, `dpu_hw_util.c`, `dpu_plane.c`, torvalds/linux master):** `_dpu_plane_setup_scaler3` sets `y_rgb_filter_cfg = DPU_SCALE_BIL`, and that `DPU_SCALE_BIL` is the last member of `enum dpu_hw_filter_yuv { DPU_SCALE_2D_4X4, DPU_SCALE_2D_CIR, DPU_SCALE_1D_SEP, DPU_SCALE_BIL }` = **3**, not 1 (`DPU_SCALE_FILTER_BIL` = 1 belongs to the unrelated QSEED2 `enum dpu_hw_filter`). `dpu_hw_setup_scaler3` writes it as `op_mode |= (y_rgb_filter_cfg & 3) << 16`. 0126 wrote `1<<16` = the **circular LUT filter with no coefficient table loaded** (Linux uploads nothing for the default bilinear: `lut_flag = 0`), i.e. the scaler ran on whatever the coefficient RAM held. That matches "blurry and jagged" at both 1.38x up and 0.92x down. The op value at @2x was 0xa0014401; it is now **0xa0034401** (with the alpha format; 0x80034001 without).
+
+Everything else was already Linux-exact and is unchanged: phase init 0 (v0x1003: four `PHASE_INIT_*` regs; v0x1002: packed `PHASE_INIT`), `PHASE_STEP = (src<<21)/dst`, PRELOAD `4|3<<8|4<<16|3<<24` (QSEED3 defaults; 4/2 is QSEED4), SRC_SIZE Y/UV and DST_SIZE, `dir_en` 0 (no BIT4), detail enhancer off (no BIT8), BIT14 for non-DX formats, BIT31 blend_cfg 1, and for alpha formats BIT10 plus alpha filter `DPU_SCALE_ALPHA_BIL` = 1 -> bit29 (bit30 on v0x1002). `uv_filter_cfg` is only used for YUV formats (BIT12, bits 25:24), not written for RGB. Linux has no LUT upload for this path; `_dpu_hw_setup_scaler3_lut` (offsets: filter tables at `QSEED3_COEF_LUT` 0x100 + {0x000, 0x320, 0x500, 0x380, 0x560}, regions of 18/12/12/8 resp. 6/3/3/3 words, `COEF_LUT_CTRL` 0x4c bit0 swap) only runs with lut_flag set, with coefficients that come from userspace/downstream and are not in mainline, so there is nothing to load for bilinear.
+
+Boot-arg `sweetfb_hwfilter` (default 1):
+
+| value | Y/RGB field (bits 17:16) | meaning |
+|---|---|---|
+| 1 (default) | 3 | bilinear, exactly Linux. Needs no LUT. |
+| 0 | 0 | 2D 4x4 (edge directed) with whatever coefficient RAM contains: diagnostic |
+| 2 | 2 | 1D separable LUT filter, same caveat: diagnostic |
+| 3 | 1 | circular LUT filter = what 0126 did: diagnostic |
+
+There is no real nearest/pixel-repeat mode for RGB in QSEED3 (only the alpha channel has `PIXEL_REP`), and generating a LUT set blind (format of the 60-word tables is not in mainline) was judged riskier than useful; 0, 2, 3 exist to see, with `sweetfb_hwdump=1`, whether the coefficient RAM was populated by ABL. If bilinear at 0.92x still looks soft/aliased, the next step is a real LUT upload (needs coefficients from a downstream sde LUT dump) and/or the detail enhancer.
+
+Logging (once, at first programming): `SWEET FB: qseed3 written (v0x.., hwfilter N = Y/RGB field F ...): SRC_SIZE OUT_SIZE OUT_XY PE ...` and `qseed3 written: PHASE_INIT ... STEP_Y .. STEP_UV .. PRELOAD SRC_Y SRC_UV DST OP (en, filter, non-DX, blend, dir_en 0, DE off, lut_flag 0, alpha)`. With `sweetfb_hwdump=1` additionally `qseed3 readback +0xNN = ...` for 0x00-0x50 and 0x90-0x9c, and `qseed3 lutN @0x...: w0 w1 w2 w3` for the five tables (reads only).
+
+Test: boot with `sweetfb_hw=1 sweetfb_hwdump=1` at @3x; compare `sweetfb_hwfilter=1` (expected: clean, slightly soft downscale) with 3 (0126 look).
+
+## 0130: battery
+
+Patch `xnu/patches/0130-beryllium-battery-ios-capacity.patch`: `CurrentCapacity` is now the percentage and `MaxCapacity` 100 (iOS AppleSmartBattery convention; mAh stay in `AppleRaw*Capacity`/`NominalChargeCapacity`), plus `BatteryData`, `AdapterDetails`, `built-in`, `CapacityEstimated`, time-remaining 65535 and a few more keys.
