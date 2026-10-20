@@ -20,6 +20,8 @@ final class AppSettings {
     var allowRemoteStart: Bool { didSet { d.set(allowRemoteStart, forKey: "allowRemoteStart") } }
     var autoSaveLog: Bool { didSet { d.set(autoSaveLog, forKey: "autoSaveLog") } }
     var notifyOnIOS: Bool { didSet { d.set(notifyOnIOS, forKey: "notifyOnIOS") } }
+    /// Reboot the phone from iOS into fastboot (SSH `sweetreboot fastboot`) when a queued image is waiting.
+    var autoRebootToFastboot: Bool { didSet { d.set(autoRebootToFastboot, forKey: "autoRebootToFastboot") } }
 
     init() {
         let d = UserDefaults.standard
@@ -36,6 +38,7 @@ final class AppSettings {
         allowRemoteStart = d.object(forKey: "allowRemoteStart") as? Bool ?? true
         autoSaveLog = d.object(forKey: "autoSaveLog") as? Bool ?? true
         notifyOnIOS = d.object(forKey: "notifyOnIOS") as? Bool ?? true
+        autoRebootToFastboot = d.object(forKey: "autoRebootToFastboot") as? Bool ?? true
     }
 
     var repoURL: URL { URL(fileURLWithPath: (repoPath as NSString).expandingTildeInPath) }

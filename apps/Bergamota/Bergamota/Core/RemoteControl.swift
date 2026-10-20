@@ -14,6 +14,9 @@ final class RemoteControl {
     static var statusURL: URL { baseURL.appendingPathComponent("status.json") }
 
     var lastRequest: String?
+    /// Set by AppModel after init.
+    @ObservationIgnored var tools: PhoneTools?
+    @ObservationIgnored var bannerProvider: (() -> ActivityBanner)?
 
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let monitor: PhoneMonitor
@@ -117,6 +120,26 @@ final class RemoteControl {
             let r = await queue.sendNow()
             if r.hasPrefix("FAILED") || r == "not sent" || r.hasPrefix("a send") || r.hasPrefix("queue") { throw RemoteError(r) }
             return r
+        case "install_ipa":
+            guard let tools else { throw RemoteError("tools unavailable") }
+            guard let path = req["path"] as? String, !path.isEmpty else { throw RemoteError("missing \"path\"") }
+            let r = await tools.installIPA(path)
+            if !r.0 { throw RemoteError(r.1) }
+            return r.1
+        case "upload":
+            guard let tools else { throw RemoteError("tools unavailable") }
+            guard let paths = req["paths"] as? [String], !paths.isEmpty else { throw RemoteError("missing \"paths\" array") }
+            let r = await tools.upload(paths, dest: (req["dest"] as? String) ?? "photos")
+            if !r.0 { throw RemoteError(r.1) }
+            return r.1
+        case "reboot":
+            // {"kind":"reboot","to":"fastboot|recovery"}: iOS -> fastboot/recovery via SSH sweetreboot
+            guard let to = req["to"] as? String, to == "fastboot" || to == "recovery" else { throw RemoteError("\"to\" must be \"fastboot\" or \"recovery\"") }
+            guard monitor.state == .ios else { throw RemoteError("iOS is not up (state: \(monitor.state.rawValue))") }
+            guard let tools else { throw RemoteError("tools unavailable") }
+            let (ok, msg) = await tools.rebootIOS(to: to)
+            if !ok { throw RemoteError(msg) }
+            return msg
         case "stop":
             queue.disarm()
             return "queue disarmed"
@@ -202,16 +225,19 @@ final class RemoteControl {
             }
             return ["id": it.id.uuidString, "label": it.label.isEmpty ? it.fileName : it.label, "image": it.imagePath,
                     "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400)),
-                    "sizeBytes": it.size, "warning": it.isLarge ? BootQueue.largeWarning : ""]
+                    "sizeBytes": it.size, "warning": it.isLarge ? BootQueue.largeWarning : "",
+                    "needsManualFastboot": it.needsManualFastboot, "autoRebootTried": it.autoRebootTried]
         }
         return [
             "phone": phone,
             "queue": ["armed": queue.armed, "status": queue.statusText, "items": items,
-                      "orangefoxReboot": settings.rebootFromRecovery, "remoteStartAllowed": settings.allowRemoteStart],
+                      "orangefoxReboot": settings.rebootFromRecovery, "remoteStartAllowed": settings.allowRemoteStart,
+                      "autoRebootToFastboot": settings.autoRebootToFastboot, "autoRebootStatus": (queue.autoStatusText as Any?) ?? NSNull()],
             "liveLog": ["listening": logs.listening, "savingTo": logs.recording ? ((logs.recordPath as Any?) ?? NSNull()) : NSNull(),
                         "linesPerSecond": logs.linesPerSecond, "totalReceived": logs.totalReceived],
             "build": ["building": build.building, "last": (build.lastResult as Any?) ?? NSNull()],
             "lastRequest": (lastRequest as Any?) ?? NSNull(),
+            "activity": bannerProvider.map { ["title": $0().title, "subtitle": $0().subtitle] } ?? [:],
         ]
     }
 

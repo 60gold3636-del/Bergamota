@@ -40,6 +40,8 @@ struct Row: View {
 
 struct DashboardView: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmReboot = false
+    @State private var rebootResult: (ok: Bool, text: String)?
 
     private var hint: String {
         switch model.monitor.state {
@@ -60,6 +62,7 @@ struct DashboardView: View {
         let m = model.monitor
         ScrollView {
             VStack(spacing: 16) {
+                ActivityBannerView()
                 HStack(spacing: 16) {
                     Image(systemName: m.state.symbol)
                         .font(.system(size: 40))
@@ -136,12 +139,31 @@ struct DashboardView: View {
                     }
                     if m.state == .ios, m.info != nil, let e = m.infoError { Text(e).font(.caption).foregroundStyle(.orange) }
                     if m.state == .ios {
-                        Button("Refresh now") { Task { await m.refreshInfoIfNeeded(force: true) } }.controlSize(.small)
+                        HStack {
+                            Button("Refresh now") { Task { await m.refreshInfoIfNeeded(force: true) } }.controlSize(.small)
+                            Button {
+                                confirmReboot = true
+                            } label: { Label("Reboot to fastboot", systemImage: "bolt.horizontal.circle") }
+                                .controlSize(.small).tint(.orange)
+                                .disabled(model.tools.rebooting != nil || model.tools.busy)
+                            if let t = model.tools.rebooting { ProgressView().controlSize(.small); Text("rebooting to \(t)...").font(.caption).foregroundStyle(.secondary) }
+                            if let r = rebootResult {
+                                Label(r.text, systemImage: r.ok ? "checkmark.circle" : "exclamationmark.triangle").font(.caption)
+                                    .foregroundStyle(r.ok ? .green : .orange).textSelection(.enabled)
+                            }
+                        }
                     }
                 }
             }
             .padding(20)
         }
         .navigationTitle("Dashboard")
+        .confirmationDialog("Reboot the phone into fastboot?", isPresented: $confirmReboot, titleVisibility: .visible) {
+            Button("Reboot to fastboot", role: .destructive) {
+                Task { let r = await model.tools.rebootIOS(to: "fastboot"); rebootResult = (r.0, r.1) }
+            }
+        } message: {
+            Text("Runs /usr/local/bin/sweetreboot fastboot over SSH. iOS is shut down immediately; needs kernel patch 0137 and the tool on the phone (README).")
+        }
     }
 }

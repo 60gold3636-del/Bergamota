@@ -1,15 +1,15 @@
 #!/bin/sh
 # Build and ad-hoc sign the on-device tools for iOS 16 -> research/sweetnet/
-# (sweetnetcfg, cscheck, hcitest, bluetool-stub; set TOOLS="hcitest" to build a subset)
+# (sweetnetcfg, cscheck, hcitest, bluetool-stub, sweetreboot; set TOOLS="hcitest" to build a subset; sweetreboot = reboot-to-fastboot, kernel 0137)
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 out=$here/../../research/sweetnet
 mkdir -p "$out"
-for t in ${TOOLS:-sweetnetcfg cscheck hcitest bluetool-stub}; do
+for t in ${TOOLS:-sweetnetcfg cscheck hcitest bluetool-stub sweetreboot}; do
 	ents=$here/entitlements.plist
 	case $t in
 	cscheck) frameworks="-framework CoreFoundation -framework Security" ;;
-	hcitest) frameworks="" ;;
+	hcitest|sweetreboot) frameworks="" ;;
 	bluetool-stub) frameworks=""; ents=$here/bluetool.entitlements ;;
 	*) frameworks="-framework CoreFoundation" ;;
 	esac

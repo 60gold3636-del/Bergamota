@@ -3,6 +3,9 @@
 #   bergamota enqueue IMG [--label L] [--no-arm] [--wait]
 #   bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--label L] [--no-enqueue] [--no-arm] [--wait]
 #   bergamota orangefox on|off
+#   bergamota install IPA [--wait]
+#   bergamota upload [--dest photos|/phone/folder] FILE... [--wait]
+#   bergamota reboot fastboot|recovery [--wait]     (iOS up; SSH sweetreboot)
 #   bergamota status
 #   bergamota stop
 # Requests are written to ~/Library/Application Support/Bergamota/inbox/ ; results land in inbox/done or inbox/failed.
@@ -11,7 +14,7 @@ BASE="$HOME/Library/Application Support/Bergamota"
 INBOX="$BASE/inbox"
 
 die() { echo "bergamota: $*" >&2; exit 1; }
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # submit KIND JSON [wait]: write atomically (tmp name is not *.json), optionally wait for the result.
 submit() {
@@ -84,9 +87,26 @@ else: d["preset"]=p
 if l: d["label"]=l
 print(json.dumps(d))' "$name" "$(abspath "$kernel")" "$(abspath "$adt")" "$preset" "$cmdline" "$label" "$enq" "$arm")
 	submit "$json" $wait ;;
+install)
+	ipa=""; wait=0
+	while [ $# -gt 0 ]; do
+		case $1 in --wait) wait=1; shift ;; -h|--help) usage ;; *) ipa=$1; shift ;; esac
+	done
+	[ -n "$ipa" ] || die "install needs an .ipa"
+	submit "$(python3 -c 'import json,sys; print(json.dumps({"kind":"install_ipa","path":sys.argv[1]}))' "$(abspath "$ipa")")" $wait ;;
+upload)
+	dest=photos; wait=0; files=()
+	while [ $# -gt 0 ]; do
+		case $1 in --dest) dest=$2; shift 2 ;; --wait) wait=1; shift ;; -h|--help) usage ;; *) files+=("$(abspath "$1")"); shift ;; esac
+	done
+	[ ${#files[@]} -gt 0 ] || die "upload needs at least one file"
+	submit "$(python3 -c 'import json,sys; print(json.dumps({"kind":"upload","dest":sys.argv[1],"paths":sys.argv[2:]}))' "$dest" "${files[@]}")" $wait ;;
 orangefox)
 	case ${1:-} in on) v=true ;; off) v=false ;; *) die "orangefox on|off" ;; esac
 	submit "{\"kind\":\"orangefox_reboot\",\"enabled\":$v}" ${2:+1} ;;
+reboot)
+	case ${1:-} in fastboot|recovery) to=$1 ;; *) die "reboot fastboot|recovery [--wait]" ;; esac
+	submit "{\"kind\":\"reboot\",\"to\":\"$to\"}" $([ "${2:-}" = --wait ] && echo 1 || echo 0) ;;
 stop)
 	submit '{"kind":"stop"}' $([ "${1:-}" = --wait ] && echo 1 || echo 0) ;;
 status)
@@ -108,8 +128,9 @@ if ios:
     print(f"          {ios.get('kernel','')}")
 print(f"queue     {'ARMED' if q['armed'] else 'stopped'}  remote-start={'allowed' if q.get('remoteStartAllowed') else 'denied'}  orangefox-reboot={q.get('orangefoxReboot')}")
 print(f"          {q.get('status','')}")
+print(f"          auto-reboot-to-fastboot={q.get('autoRebootToFastboot')} {q.get('autoRebootStatus') or ''}")
 for it in q["items"]:
-    print(f"  [{it['state']:7}] {it['label']}  {it['image']}" + (f"  sent {it['sentAt']}" if it.get('sentAt') else ""))
+    print(f"  [{it['state']:7}] {it['label']}  {it['image']}" + (f"  sent {it['sentAt']}" if it.get('sentAt') else "") + ("  NEEDS MANUAL FASTBOOT" if it.get('needsManualFastboot') else ""))
     if it["state"] in ("sent", "failed") and it.get("result"):
         for line in it["result"].strip().splitlines()[-3:]: print("             " + line)
 print(f"liveLog   listening={l['listening']} saving={l.get('savingTo')} {l.get('linesPerSecond')} lines/s")

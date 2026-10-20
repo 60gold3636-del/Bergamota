@@ -26,6 +26,7 @@ screen (image versions v8-v14 in NOTES.md):
   activation      mobileactivationd data ark seeded; the actual Activated state
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
+  sweetreboot     /usr/local/bin/sweetreboot fastboot|recovery|normal (docs/REBOOT_MODE.md)
   bluetooth       sweetbt=1 transport (docs/BT_IOS_TRANSPORT.md): BT_HCI_TRANSPORT (+ BT_DEVICE_ADDRESS)
                   in bluetoothd's launchd job, and the BlueTool stub (tools/sweetnet/bluetool-stub.c)
                   as /usr/sbin/BlueTool with the original kept as BlueTool.orig; skipped if the stub
@@ -364,6 +365,23 @@ def netcfg(root):
     print('netcfg: /usr/local/bin/sweetnetcfg + launchd job', NETCFG_LABEL)
 
 
+REBOOT_TOOL = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'research', 'sweetnet', 'sweetreboot')
+
+
+def sweetreboot(root):
+    """sweetreboot fastboot|recovery|normal (tools/sweetnet/sweetreboot.c, needs
+    kernel patch 0137): sets kern.sweet_reboot_mode and reboots. No launchd job."""
+    if not os.path.exists(REBOOT_TOOL):
+        print('sweetreboot: skipped, build it first (tools/sweetnet/build.sh)')
+        return
+    dst = os.path.join(root, 'usr/local/bin/sweetreboot')
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(REBOOT_TOOL, dst)
+    os.chown(dst, 0, 0)
+    os.chmod(dst, 0o755)
+    print('sweetreboot: /usr/local/bin/sweetreboot')
+
+
 def find_container(root, kind, identifier):
     for meta in glob.glob(os.path.join(root, 'private/var/containers', kind, '*',
                                        '.com.apple.mobile_container_manager.metadata.plist')):
@@ -421,6 +439,7 @@ def main():
     launchservices(root)
     usbnet(root)
     netcfg(root)
+    sweetreboot(root)
     ssh(root)
     bluetooth(root)
     activation(root)

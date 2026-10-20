@@ -17,14 +17,27 @@ The project is generated from `project.yml` with [XcodeGen](https://github.com/y
 
 Sidebar sections:
 
-- **Dashboard**: polls every 2 s and shows one of fastboot (`fastboot devices`), OrangeFox/recovery (`adb devices`), iOS (USB Ethernet MAC `02:00:5e:77:ee:01` up in `ifconfig -a`, ping of the phone IP, TCP 22 open), Android (adb `device`), or offline. When iOS is up it SSHes as `root@192.168.7.2` (`BatchMode=yes`, `ConnectTimeout=3`, your normal `known_hosts`) every ~10 s for `uname -a`, `kern.boottime` and `/usr/local/bin/sweetps` (battery %, charging, power source). It also shows the Mac's `net.inet.ip.forwarding` (read only; enable NAT with `tools/sweet-mac-nat.sh`).
+- **Dashboard**: polls every 2 s and shows one of fastboot (`fastboot devices`), OrangeFox/recovery (`adb devices`), iOS (USB Ethernet MAC `02:00:5e:77:ee:01` up in `ifconfig -a`, ping of the phone IP, TCP 22 open), Android (adb `device`), or offline. When iOS is up it SSHes as `root@192.168.7.2` (`BatchMode=yes`, `ConnectTimeout=3`, your normal `known_hosts`) every ~10 s for `uname -a`, `kern.boottime` and `/usr/local/bin/sweetps` (battery %, charging, power source). It also shows the Mac's `net.inet.ip.forwarding` (read only; enable NAT with `tools/sweet-mac-nat.sh`). While iOS is up the iOS card has a **Reboot to fastboot** button (confirmation dialog): it runs `/usr/local/bin/sweetreboot fastboot` over SSH (see *Reboot to fastboot* below).
 - **Live Log**: listens on UDP 5140 for the phone's kernel console (same stream as `tools/sweet-usbnet.sh`; quit that script first, only one listener can bind). Ring buffer of 300k lines, UI updates batched every 100 ms, search box, filter chips (SWEET USB / GPU / WLAN / FB / CRASH), follow/pause, copy. "Record to logs/" appends every incoming line to `logs/usb-<timestamp>.txt` in the repo; "Save buffer" dumps the whole buffer there.
 - **CI**: `gh run list` for `xnu.yml` on `main`, `ios18`, `ci-cache` (status, branch, sha, age, duration). "Download kernel" runs `gh run download <id> -n xnu-kernel -D xnu/out-<branch>-<id>` in the repo (needs `gh auth login`).
 - **Boot Queue**
   - *Build*: pick a kernel (`xnu/out-*/kernel.development.sweet`), an ADT (`shim/out/*.adt`, default `beryllium-hi-3x.adt`), a cmdline (presets in `~/Library/Application Support/Bergamota/presets.json`, seeded with "default @3x", "bluetooth test", "ios18 poc") and an image name. It runs `tools/mkpayload.py`, then `BOARD=beryllium ./build.sh` in `shim/`, then copies `shim/out/shim-boot.img` to `shim/out/shim-boot-<name>.img`, streaming the output.
   - *Images*: lists `shim/out/*.img`; add any to the queue.
-  - *Queue*: press **Start** to arm. When the phone is in fastboot (seen on two consecutive polls) the app sends exactly **one** `fastboot boot <img>`, records the result and time, and will not send again until the phone has left fastboot (a failed send leaves ABL hung; re-enter fastboot yourself, there is never an automatic retry). After a send the next item re-arms as soon as the phone is seen outside fastboot for one poll, or when the fastboot device re-enumerates on USB (best-effort `ioreg -p IOUSB` registry id/sessionID/locationID change), because a bad image can leave ABL sitting in fastboot. The first pending item also has a **Send now** button (only while the phone is in fastboot, with a confirmation: sending again after a hung ABL can hang it further, so press it only after re-entering fastboot). Images over 64 MiB get a yellow warning ("large boot image: ABL may not start it") in the queue, the image list and after a build; they are not blocked. Optional toggle (off by default): when the phone is in OrangeFox, run `adb reboot bootloader` once first. The queue disarms itself when it is empty. Optional notifications when a boot is sent and when iOS comes up.
+  - *Queue*: press **Start** to arm. When the phone is in fastboot (seen on two consecutive polls) the app sends exactly **one** `fastboot boot <img>`, records the result and time, and will not send again until the phone has left fastboot (a failed send leaves ABL hung; re-enter fastboot yourself, there is never an automatic retry). After a send the next item re-arms as soon as the phone is seen outside fastboot for one poll, or when the fastboot device re-enumerates on USB (best-effort `ioreg -p IOUSB` registry id/sessionID/locationID change), because a bad image can leave ABL sitting in fastboot. The first pending item also has a **Send now** button (only while the phone is in fastboot, with a confirmation: sending again after a hung ABL can hang it further, so press it only after re-entering fastboot). Images over 64 MiB get a yellow warning ("large boot image: ABL may not start it") in the queue, the image list and after a build; they are not blocked. Optional toggle (off by default): when the phone is in OrangeFox, run `adb reboot bootloader` once first. The queue disarms itself when it is empty. Optional notifications when a boot is sent and when iOS comes up. **Auto-reboot into fastboot** (Settings, default on): see below; the queue header shows a green "auto-reboot to fastboot on" badge and its current state (or an orange "manual fastboot needed" badge).
 - **Settings** (also Cmd+,): repo path (default `/Users/zesmoi/git/iAndroid/ios-beryllium`), phone IP, GitHub repo, and tool paths (`fastboot`, `adb`, `gh`, `python3`, `ssh`; empty means resolve via `PATH` plus `/opt/homebrew/bin` and `/usr/local/bin`).
+
+## Activity banner and Control Plane
+
+A high-contrast **activity banner** tops the Dashboard (and fills the Control Plane): BUILDING <name>, WAITING FOR FASTBOOT, SENDING <label>, BOOTING <label> with elapsed time (right after a send the phone vanishes from USB while the shim/kernel boots, so Offline is not shown; ends when iOS is up or after 5 minutes, and says STILL IN FASTBOOT if the phone is still in fastboot 20 s after the send), iOS UP, IN ORANGEFOX, OFFLINE, INSTALLING <app>, UPLOADING <n> FILES. Kernel log hints: the last `SWEET` line while booting, and a `panic(` line turns it into a red PANIC.
+
+**Control Plane** (toolbar button, Window > Control Plane, Shift+Cmd+C, or Settings > "Open at launch" / `--args -openControlPlane YES`): a separate dark, large-type window for a second display with the banner, phone state, battery, last boot result, the queue (with Send now), the latest CI run per branch, a filterable 15-line live-log tail and quick buttons (Reboot to fastboot when available, Send now, Stop). Its *Display* menu moves it to another screen and can make it full screen; the window frame, screen and full-screen choice are remembered.
+
+## Apps (sideloading) and Media
+
+- **Apps**: drop or pick an `.ipa` to run `tools/sweet-install-ipa.sh` (unzip, reject FairPlay-encrypted binaries, ad-hoc re-sign, copy to /Applications over SSH, register) with live output. The installed list (`ls /Applications` over SSH) marks sideloaded apps (recorded in `~/Library/Application Support/Bergamota/sideloaded.json`), third-party guesses (no `com.apple.` in Info.plist) and system apps; Uninstall (`sweet-install-ipa.sh -u`) is offered only for the first two.
+- **Media**: drop images/videos/files. Camera Roll mode sends images through `tools/sweet-push-photo.sh` (JPEG into DCIM/100APPLE) and videos as `VID_*` into DCIM/100APPLE; "Phone folder" mode (default `/private/var/mobile/Media/Downloads`) and any other file use `scp`. Folders are limited to `/private/var/mobile/`, `/var/mobile/`, `/private/var/tmp/`, `/tmp/`. Photos may need a relaunch or reboot to show new pictures.
+- All SSH goes through `root@<phone IP>` with `BatchMode=yes` and `ConnectTimeout=3` (the repo scripts run with ssh/scp wrappers that add them), and every action is disabled with a message unless iOS is up.
+- Inbox kinds: `{"kind":"install_ipa","path":"/abs/App.ipa"}` and `{"kind":"upload","paths":["/abs/a.png"],"dest":"photos"|"/private/var/mobile/Media/Downloads"}`. CLI: `scripts/bergamota install IPA`, `scripts/bergamota upload [--dest photos|/folder] FILE...`. `status.json` has an `activity` entry with the banner text.
 
 ## Remote control (file-based API, no network)
 
@@ -36,12 +49,13 @@ Bergamota watches `~/Library/Application Support/Bergamota/inbox/` for `*.json` 
 {"kind":"build","name":"N","kernel":"...","adt":"...","cmdline":"debug=0xc ..."}
 {"kind":"orangefox_reboot","enabled":true}
 {"kind":"send_now"}
+{"kind":"reboot","to":"fastboot"}          // or "recovery"; only while iOS is up
 {"kind":"stop"}
 ```
 
 Paths are absolute or repo-relative; images and ADTs must live under `shim/out/` (`.img` / `.adt`), kernels under `xnu/`. `"arm": true` only arms the queue when Settings > "Allow remote requests to start the queue" is on (default on; the Boot Queue header shows a "remote control on" badge). Otherwise items are added and you press Start. The one-`fastboot boot`-per-fastboot-appearance rule applies unchanged. `send_now` sends the next pending item immediately; it is refused unless the phone is in fastboot and remote start is allowed.
 
-`status.json` (same folder) is rewritten atomically on every state change and at least every 5 s: `phone` (state, `ios` battery/charging/kernel/uptime when known), `queue` (armed, items with `state` pending|waiting|sent|failed, `sentAt`, `result`), `liveLog` (listening, `savingTo`), `build`.
+`status.json` (same folder) is rewritten atomically on every state change and at least every 5 s: `phone` (state, `ios` battery/charging/kernel/uptime when known), `queue` (armed, `autoRebootToFastboot`, `autoRebootStatus`, items with `state` pending|waiting|sent|failed, `sentAt`, `result`, `needsManualFastboot`), `liveLog` (listening, `savingTo`), `build`.
 
 CLI (`scripts/bergamota`, bash + python3):
 
@@ -49,9 +63,16 @@ CLI (`scripts/bergamota`, bash + python3):
 scripts/bergamota enqueue shim/out/shim-boot-0130.img [--label L] [--no-arm] [--wait]
 scripts/bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--no-enqueue] [--no-arm] [--wait]
 scripts/bergamota orangefox on|off
+scripts/bergamota reboot fastboot|recovery [--wait]
 scripts/bergamota stop
 scripts/bergamota status
 ```
+
+## Reboot to fastboot
+
+Needs the Poco F1 kernel with patch 0137 and `/usr/local/bin/sweetreboot` on the phone (new root images get it from `tools/sweet-root-tweaks.py`; for a running phone, `scp research/sweetnet/sweetreboot root@192.168.7.2:/usr/local/bin/sweetreboot`, built by `tools/sweetnet/build.sh`; details in `docs/REBOOT_MODE.md`). The button and the `reboot` inbox request run `ssh root@<phone> /usr/local/bin/sweetreboot fastboot|recovery`; the SSH connection dies with the phone, so success is judged by the tool's "next reboot mode" line.
+
+**Auto-reboot** (Settings > Boot queue > "Auto-reboot iOS into fastboot when a queued image is waiting", default **on**): applies only when the queue is armed, the next item is pending, the phone has been in iOS for at least 30 s, and at most once per queue item. 90 s after the command, if the phone is not in fastboot, the item is marked **needs manual fastboot** (shown in the queue header and on the item, `needsManualFastboot` in status.json) and auto-rebooting pauses until fastboot is seen, the queue is re-armed (Start) or the toggle is cycled. A missing `sweetreboot` on the phone gives the same state at once. Once in fastboot, the usual one-`fastboot boot`-per-appearance rule takes over.
 
 ## Notes
 
@@ -59,4 +80,4 @@ scripts/bergamota status
 - The live log is saved automatically to `logs/usb-<timestamp>.txt` (Settings > Live log; turning Record off in the Live Log pauses it until the next launch).
 - The phone has no `sysctl`, so uptime is shown only if `ps -o etime= -p 1` is sane; the Dashboard also shows when Bergamota first saw iOS up.
 
-The app only ever runs `fastboot devices` and `fastboot boot`, plus `adb devices` and (opt-in) `adb reboot bootloader`. It never flashes, erases or sends `oem` commands.
+The app only ever runs `fastboot devices` and `fastboot boot`, plus `adb devices`, (opt-in) `adb reboot bootloader` and, over SSH, `sweetreboot fastboot|recovery` (button, inbox request, auto-reboot). It never flashes, erases or sends `oem` commands.

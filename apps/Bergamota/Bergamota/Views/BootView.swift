@@ -48,7 +48,14 @@ private struct QueuePane: View {
                                 .padding(.horizontal, 7).padding(.vertical, 2).background(.blue.opacity(0.18), in: Capsule()).foregroundStyle(.blue)
                         }
                     }
+                    if let b = q.autoRebootBadge {
+                        Label(b, systemImage: "arrow.triangle.2.circlepath").font(.caption2.bold())
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background((b.contains("manual") ? Color.orange : Color.green).opacity(0.18), in: Capsule())
+                            .foregroundStyle(b.contains("manual") ? Color.orange : Color.green)
+                    }
                     Text(q.statusText).foregroundStyle(.secondary)
+                    if let a = q.autoStatusText, a != q.statusText { Text(a).font(.caption).foregroundStyle(.secondary) }
                     if let n = q.note { Text(n).font(.caption).foregroundStyle(.orange) }
                 }
                 Spacer()
@@ -83,6 +90,11 @@ private struct QueuePane: View {
                                 Button { q.move(item.id, by: 1) } label: { Image(systemName: "chevron.down") }.buttonStyle(.borderless)
                             }
                             if item.status != .sending { Button { q.remove(item.id) } label: { Image(systemName: "xmark") }.buttonStyle(.borderless) }
+                        }
+                        if item.needsManualFastboot {
+                            Label("needs manual fastboot (hold Power + Volume Down)", systemImage: "hand.tap.fill").font(.caption).foregroundStyle(.orange)
+                        } else if item.autoRebootTried, item.status == .pending {
+                            Label("auto-reboot to fastboot sent", systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
                         }
                         if item.isLarge {
                             Label("\(BootQueue.largeWarning) (\(sizeFmt.string(fromByteCount: item.size)))", systemImage: "exclamationmark.triangle.fill")

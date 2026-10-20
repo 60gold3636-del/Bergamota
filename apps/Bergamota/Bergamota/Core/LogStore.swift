@@ -118,6 +118,11 @@ final class LogStore {
     var recording = false
     var recordPath: String?
     var statusMessage: String?
+    /// Kernel-log hints for the activity banner.
+    var lastPanicLine: String?
+    var lastPanicAt: Date?
+    var lastSweetLine: String?
+    var lastSweetAt: Date?
 
     @ObservationIgnored private var ring: [LogLine] = []
     @ObservationIgnored private var nextID = 0
@@ -169,7 +174,11 @@ final class LogStore {
         updateRate(new.count)
         var batch: [LogLine] = []
         batch.reserveCapacity(new.count)
-        for (t, tags) in new { batch.append(LogLine(id: nextID, text: t, tags: tags)); nextID += 1 }
+        for (t, tags) in new {
+            batch.append(LogLine(id: nextID, text: t, tags: tags)); nextID += 1
+            if tags & LogTag.crash.bit != 0, t.contains("panic(") || t.contains("Kernel panic") || t.contains("panicked") { lastPanicLine = t; lastPanicAt = Date() }
+            if t.contains("SWEET ") { lastSweetLine = t; lastSweetAt = Date() }
+        }
         ring.append(contentsOf: batch)
         if ring.count > Self.capacity + 30_000 { ring.removeFirst(ring.count - Self.capacity) }
         bufferedCount = ring.count
@@ -216,6 +225,16 @@ final class LogStore {
                 if self.filterDirty { self.filterDirty = false; self.scheduleFilter() }
             }
         }
+    }
+
+    /// Last `count` buffered lines matching any of `tags` (all lines if empty). Cheap: scans backwards.
+    func tail(_ count: Int, tags: Set<LogTag> = []) -> [LogLine] {
+        let mask = tags.reduce(UInt8(0)) { $0 | $1.bit }
+        if mask == 0 { return Array(ring.suffix(count)) }
+        var out: [LogLine] = []
+        var i = ring.count - 1
+        while i >= 0 && out.count < count { if ring[i].tags & mask != 0 { out.append(ring[i]) }; i -= 1 }
+        return out.reversed()
     }
 
     // MARK: saving
