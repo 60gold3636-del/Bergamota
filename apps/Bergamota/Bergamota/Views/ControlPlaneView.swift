@@ -24,22 +24,24 @@ struct ControlPlaneView: View {
 
     var body: some View {
         let m = model.monitor, q = model.queue
-        ScrollView {
+        // Rows take their natural height with equal-height cards; the log takes whatever is left.
         VStack(spacing: 18) {
             ActivityBannerView(big: true)
             HStack(spacing: 18) {
-                tile("PHONE", m.state.title.uppercased(), color: stateColor(m.state))
+                tile("PHONE", m.state.title.uppercased(), sub: "since \(m.stateSince.formatted(date: .omitted, time: .standard))", color: stateColor(m.state))
                 batteryTile
                 lastBootTile
             }
-            HStack(alignment: .top, spacing: 18) {
-                queueCard.frame(maxWidth: .infinity)
-                ciCard.frame(width: 440)
+            .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 18) {
+                queueCard.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                ciCard.frame(width: 440).frame(maxHeight: .infinity, alignment: .topLeading)
             }
-            logCard
+            .fixedSize(horizontal: false, vertical: true)
+            logCard.frame(maxHeight: .infinity)
         }
         .padding(24)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .safeAreaInset(edge: .bottom) { controls.padding(.horizontal, 24).padding(.vertical, 12).frame(maxWidth: .infinity).background(bg) }
         .background(bg)
         .preferredColorScheme(.dark)
@@ -66,7 +68,7 @@ struct ControlPlaneView: View {
             Text(value).font(.system(size: 40, weight: .heavy, design: .rounded)).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.5)
             if !sub.isEmpty { Text(sub).font(.system(size: 16)).foregroundStyle(.secondary).lineLimit(1) }
         }
-        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
     }
 
@@ -111,7 +113,7 @@ struct ControlPlaneView: View {
             }
             Text(q.statusText).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(2)
         }
-        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
     }
 
@@ -141,7 +143,7 @@ struct ControlPlaneView: View {
             }
             if let e = model.ci.error { Text(e).font(.caption).foregroundStyle(.orange).lineLimit(2) }
         }
-        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
     }
     private func ciIcon(_ r: CIRun?) -> String {
@@ -158,7 +160,6 @@ struct ControlPlaneView: View {
     // MARK: log
 
     private var logCard: some View {
-        let lines = model.logs.totalReceived >= 0 ? model.logs.tail(15, tags: tagFilter) : []
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("LIVE LOG").font(.system(size: 16, weight: .bold)).foregroundStyle(.secondary)
@@ -172,6 +173,9 @@ struct ControlPlaneView: View {
                 Spacer()
                 Text("\(model.logs.linesPerSecond) lines/s").font(.system(size: 14)).foregroundStyle(.secondary).monospacedDigit()
             }
+            GeometryReader { geo in
+            let fit = max(1, Int(geo.size.height / 19))
+            let lines = model.logs.totalReceived >= 0 ? model.logs.tail(fit, tags: tagFilter) : []
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(lines) { l in
                     Text(l.text.isEmpty ? " " : l.text).font(.system(size: 15, design: .monospaced)).lineLimit(1)
@@ -179,9 +183,11 @@ struct ControlPlaneView: View {
                 }
                 if lines.isEmpty { Text(model.logs.listening ? "waiting for kernel log on udp/5140..." : "log listener stopped").foregroundStyle(.secondary) }
             }
-            .frame(maxWidth: .infinity, minHeight: 15 * 19, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .frame(minHeight: 4 * 19)
         }
-        .padding(18).background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: controls
