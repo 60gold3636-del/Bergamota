@@ -410,6 +410,90 @@ If no HCI event comes back after the pulse, check first that `UART 115200 baud` 
 TX pin func reads 1; the likely next suspects are the WCN3990 needing its SW_CTRL/other GPIO and the power
 pulse timing.
 
+## 7c. Patch 0130: WCN3990 rampatch + NVM download, baud change (xnu/patches/0130-beryllium-bt-firmware.patch)
+
+Base `research/bt118/xnu` (0001-0118); `git apply --check` clean on a fresh copy, `xnu-cc.py` clean for
+`bsd/dev/beryllium_wlan.c` (object built; the new undefined symbols `sweet_a630_fw_get` / `sweet_a630_fw_put` are
+defined in `bsd/dev/sweet_a630.c`). Not run on the phone. Only `beryllium_wlan.c` changes; the files are read
+with the GPU's vnode reader (`sweet_a630_fw_get(NULL, name, ...)` from `/usr/standalone/firmware/sweet/`, 256 KiB
+limit), so the stage (about 90 s after boot) needs the root fs.
+
+Gate: `sweetwlan=2`; `sweetbtfw=1` (default) downloads when the files exist, `sweetbtfw=0` stops after the
+version queries (the 0118 behaviour). Other boot-args: `sweetbtbaud` (default 3000000; 3200000 also has an exact
+S6 rate and a QCA code), `sweetbtfast=1` (Linux order: baud change first, download at the operating speed;
+default 0: download at 115200, about 20 s), `sweetbtibs=1` (Linux NVM edits, see below), `sweetbtpoweroff=1`
+(send the 2400 baud 0xC0 power-off pulse at the end; default: the controller stays powered). Rails are still
+never voted off.
+
+Protocol (btqca.c / hci_qca.c, WCN3990 path), H4 over the UART:
+
+1. Version: vendor 0xFC00 `{0x19}` (EDL_PATCH_VER_REQ). The reply is vendor event 0xff `{cresp 0, rtype 2,
+   product_id le32, patch_ver le16, rom_ver le16, soc_id le32}`. Boot 0118g4 raw `ff 0e 00 02 0a 00 00 00 01 00 01
+   02 14 02 01 40` decodes to product 0x0000000a, patch 0x0001, rom 0x0201, soc_id 0x40010214. As in Linux
+   `soc_ver = (soc_id << 16) | rom_ver` = 0x02140201 and `rom_ver = ((soc_ver & 0xf00) >> 4) | (soc_ver & 0xf)` =
+   0x21, so the names are `qca/crbtfw21.tlv` and `qca/crnv21.bin` (`crnv%02xu.bin` only for soc_id 0x40014320, the
+   WCN3991), identical to Android's. If a different name were computed the stage logs it and falls back to those two.
+2. Rampatch (TLV type 1): the whole file including its 4-byte `tlv_type_hdr` is sent in segments of 243 bytes
+   (`MAX_SIZE_PER_TLV_SEGMENT`) as vendor 0xFC00 `{0x1e (EDL_PATCH_TLV_REQ), len, data}`: 918 segments, the last one
+   157 bytes. The patch header (`tlv_type_patch`, offsets from the file start: total_size @4, data_length @8,
+   format @12, signature @13, **download_mode @14**, product @16, rom_build @18, patch_version @20, entry @24)
+   gives the download mode: crbtfw21.tlv has 3 (QCA_SKIP_EVT_VSE_CC), rom_build 0x0201, patch_version 2, entry
+   0x209e4. Mode 3: no segment is acknowledged except the last (or any short one: "the last segment is always
+   acked"), which gets the vendor event `{cresp 0, rtype 4 (EDL_TVL_DNLD_RES_EVT), result}`, result 0 = ok. The
+   stage does not wait for the intermediate segments (the controller's RTS holds the stream back; TX slack
+   0.5 s), drains events between segments and aborts on a non-zero Command Complete status or TLV result. Mode 1
+   waits for a Command Complete per segment, modes 0/2 for the vendor event. 10 s timeout on the last segment.
+3. 10 ms, then the NVM (its TLV type byte is 4 here, Linux does not check it) the same way with mode 0: every
+   segment is acknowledged by the vendor event (19 segments).
+   NVM edits (`qca_tlv_check_data`): HCI transport tag 17: `data[0] |= 0x80` (software in-band sleep, IBS) and
+   `data[1]` = baud code (enum qca_baudrate: 115200 = 0, 921600 = 10, 3000000 = 0x0e, 3200000 = 0x11); deep-sleep
+   tag 27: `data[0] |= 1`. Linux does that because it implements IBS; we do not, and a controller that sleeps needs
+   the 0xfd/0xfc/0xfe wake protocol, so by default the stage **clears** 0x80 on tag 17 and the sleep bit on tag 27
+   (`sweetbtibs=1` restores the Linux bits). The baud tag is the speed in effect during the download (115200 by
+   default, the operating speed with `sweetbtfast=1`).
+   Finding on the Android crnv21.bin: its entries (`{id, len, reserve1, reserve2, data[len]}`) start at file
+   offset 8, not 4, because there is one more header word (0x000dfb02) after `type_len`; Linux's walker, which
+   starts at offset 4, would not find tags 17/27 in this file. The stage tries both start offsets and takes the
+   one with a consistent tag chain (44 tags, ids ascending, ending at offset 3587; tag 17 at 43 with data 82 01
+   11 08 04 14 28 02 15, tag 27 at 133 with data 01). An unrecognised layout is sent unmodified.
+   [U] what the rest of the file after offset 3587 is.
+4. HCI Reset (3 s timeout), then the QCA version is read again (patch_ver should now be 2).
+5. Baud change (`qca_set_speed`): flow control off, vendor 0xFC48 with one byte (qca_baudrate) at the old speed,
+   not waited for; 10 ms; host UART switched (S6 root 96 MHz / 1 for 3000000, 102.4 MHz / 1 for 3200000); flow
+   control on; the controller's vendor event for 0xFC48 (Linux drops it) is logged if it arrives within 100 ms;
+   verified with HCI Read Local Version at the new rate (manufacturer 0x001d expected).
+6. HCI Read BD_ADDR (0x1009), logged most significant byte first. `qca_check_bdaddr` / `qca_set_bdaddr` skipped,
+   `qca_disable_soc_logging` (WCN3991 and later) not applicable.
+
+Expected log lines on a good run (after the existing 0118 lines):
+```
+SWEET WLAN: BT fw QCA patch version (...): product ID 0x0000000a, patch version 0x0001, ROM version 0x0201, SoC ID 0x40010214 -> soc_ver 0x02140201, rom_ver 0x21
+SWEET WLAN: BT fw: btqca.c names for WCN3990 soc_ver 0x02140201: qca/crbtfw21.tlv, qca/crnv21.bin (same as the Android files)
+SWEET WLAN: BT fw: loaded crbtfw21.tlv (222988 bytes) / loaded crnv21.bin (4591 bytes)
+SWEET WLAN: BT fw patch: TLV type 1 length 222984 (file 222988), ... download_mode 3, product 0x000a, rom_build 0x0201, patch_version 0x0002, entry 0x209e4
+SWEET WLAN: BT fw NVM: TLV type 4 length 4587 (file 4591) / tags start at offset 8 ... / 44 tags ... HCI tag 17 at 43, deep sleep tag 27 at 133
+SWEET WLAN: BT fw NVM: HCI tag: data[0] 0x82 -> 0x02 (IBS off), data[1] (baud) 0x01 -> 0x00 / deep sleep tag: data[0] 0x01 -> 0 (deep sleep off)
+SWEET WLAN: BT fw patch: 222988 bytes in 918 segments of 243, download_mode 3 (only the last segment is acknowledged)
+SWEET WLAN: BT fw patch: segment 92/918 (10%), 22356/222988 bytes   ... every 10 % ... (100%)
+SWEET WLAN: BT fw patch: download complete, last segment acknowledged (0 command complete, 0 other events along the way)
+SWEET WLAN: BT fw NVM: 4591 bytes in 19 segments of 243, download_mode 0 (vendor event per segment) ... download complete
+SWEET WLAN: HCI Reset event after download: 0e 04 01 03 0c 00
+SWEET WLAN: BT fw QCA version after download: ... patch version 0x0002 ...
+SWEET WLAN: BT fw: EDL_SET_BAUDRATE_CMD 0xfc48 code 0xe (3000000 baud), host 115200 -> 3000000 baud
+SWEET WLAN: UART 3000000 baud: S6 root 96000000 Hz (ftbl row ...), GENI divider 1, oversampling 32
+SWEET WLAN: HCI Read Local Version (at new baud): HCI version ... manufacturer 0x001d ...
+SWEET WLAN: BT fw: controller answers at 3000000 baud
+SWEET WLAN: BT fw BD_ADDR xx:xx:xx:xx:xx:xx
+SWEET WLAN: BT fw setup complete (patch + NVM downloaded, controller up at the operating baud)
+SWEET WLAN: BT controller left powered (no power-off pulse; sweetbtpoweroff=1 sends it)
+```
+Failure lines: `BT fw patch|NVM: segment N/M: no vendor event | TLV with invalid response or error status | TX
+failed`, `download FAILED after N/M segments`, `HCI Reset after download: no event`, `controller does not answer
+at N baud`, `firmware files not available: no download`. Every failure ends in the normal restore sequence
+(clocks, RCG, pins); rails stay on. Likely first-boot problems: no vendor event after the last patch segment
+(try `sweetbtfast=1`, or the NVM baud tag semantics: Android's file carries code 1 where Linux's table says 57600,
+so the tag may not mean what the table says [U]); no answer after the baud change (try `sweetbtbaud=3200000`).
+
 ## 8. Sources
 
 * ios-topaz patches 0113-0126 (`gh api repos/MakrSas/ios-topaz/contents/xnu/patches/...`), read 2026-10-20 [V].
