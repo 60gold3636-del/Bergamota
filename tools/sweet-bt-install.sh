@@ -8,7 +8,7 @@
 # What it does (docs/BT_IOS_TRANSPORT.md, "Phone test order"):
 #  1. pulls /System/Library/xpc/launchd.plist (the cache launchd really reads),
 #     keeps a copy in research/bt-install/ and on the phone (launchd.plist.pre-bt, written once),
-#     sets BT_HCI_TRANSPORT / BT_DEVICE_ADDRESS in the com.apple.bluetoothd job with plistlib
+#     sets BT_HCI_TRANSPORT (and drops BT_DEVICE_ADDRESS) in the com.apple.bluetoothd job with plistlib
 #     (tools/sweet-root-tweaks.py --bt-plist) and pushes it back;
 #  2. installs research/sweetnet/bluetool-stub as /usr/sbin/BlueTool, the original is kept as
 #     /usr/sbin/BlueTool.orig (written once);

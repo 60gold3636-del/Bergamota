@@ -296,6 +296,12 @@ Each step is read-only or reversible; stop at the first surprise.
 
 ## 8. Implemented: patch 0136 (xnu/patches/0136-beryllium-bt-hci-kctl.patch) and the userland pieces
 
+> **Do not set `BT_DEVICE_ADDRESS` (boot 0137, 2026-10-20).** bluetoothd 16.7 `sscanf()`s it into its
+> address global and then unconditionally zeroes it (`main` 0x1000268f4/8), so it logs "Not a valid MAC
+> address (all 00s)" and exits with "No bluetooth on this device" (launchd restarts it forever). Without
+> the variable it reads `local-mac-address` from the ADT `/arm-io/bluetooth` node (verified:
+> "bluetooth: Got local-mac-address: 02:00:5e:77:b0:01"). Older mentions of the variable below are wrong.
+
 Base `research/bt133/xnu` (0001-0133); `git apply --check` clean on a fresh copy, `xnu-cc.py` clean (objects built; the
 new undefined symbols `ctl_register`, `ctl_enqueuedata`, `mbuf_data/len/next/freem`, `SecureDTLookupEntry/GetProperty`,
 `lck_mtx_*` are all defined in the tree and kern_control.c / kpi_mbuf.c are built by the sweet config). **Nothing here
