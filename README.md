@@ -4,7 +4,7 @@
 
 A port of [ios-sweet](https://github.com/dipa-studio/ios-sweet) (iOS 16 on the Redmi Note 10 Pro) to the Xiaomi Poco F1. The same XNU kernel (xnu-8796) runs both phones; the Poco F1 specifics are kernel patches 0082+ (selected at runtime from the device tree, `bsd/dev/sweet_board.h`) and `tools/mkadt.py --board beryllium`. On top runs the **unmodified iPhone X iOS 16.7.16 (20H392) userland**.
 
-As of **2026-10-19** the Poco F1 boots to the **iOS lock and home screen**: touch, buttons, navigation, Control Center and Settings work. Everything is rendered by the CPU.
+As of **2026-10-20** the Poco F1 boots to the **iOS lock and home screen with its wallpaper**: touch, buttons, navigation, Control Center, Settings and Safari work, and the phone shows up on a computer as **USB Ethernet** (ping, live kernel log). Everything is rendered by the CPU.
 
 > Experimental, not a usable phone OS. It installs into `userdata` and **erases Android's user data**; security is mostly off.
 
@@ -16,12 +16,15 @@ As of **2026-10-19** the Poco F1 boots to the **iOS lock and home screen**: touc
 | CPU | All 8 cores (4x A55 + 4x A75) via PSCI, `cpus=8` |
 | Memory | 0x1_00000000 + 0xfcc00000 (upper DDR bank, above every Qualcomm carve-out) |
 | Storage | UFS (same host as sweet), iOS root = HFS+ in `userdata` (sda21, LUN 0) |
-| Display | Continuous-splash framebuffer 1080x2246 @0x9d400000; the presented iPhone X screen (1125x2436) is scaled to fit (`sweetfb_scale=1`) or stretched (`=2`) |
+| Display | Continuous-splash framebuffer 1080x2246 @0x9d400000; iOS renders at @2x (750x1624, ADT `--display-scale 2`), scaled to fit (`sweetfb_scale=1`) or stretched (`=2`); page flipping on the MDP VIG0 pipe (`sweetfb_flip=1`) |
 | Touch | Tianma panel's Novatek NT36672A at 0x01 on I2C14; the QUP is GSI-only, so the bus is bit-banged on GPIO 33/34 with the TLMM edge latch of GPIO 31 as IRQ |
 | Buttons | Power and volume-down (PM8998 PON), volume-up (PM8998 GPIO6), SPMI arbiter v5 |
-| Battery | PMI8998 fuel gauge (real SOC, voltage, current) and charger state with `sweetbattery=1` (patch 0092, in testing) |
+| Battery | PMI8998 fuel gauge (real SOC, voltage, current) and charger state with `sweetbattery=1` |
+| USB | Device mode at high speed as CDC-ECM Ethernet: phone 192.168.7.2, host 192.168.7.1, live kernel log on UDP 5140 (`sweetusb=2`). The fix was powering up the QUSB2 PHY that ABL leaves powered down (patches 0102, 0107-0109) |
+| Wallpaper | Works once `lsd` re-seeds its database (patch 0099 makes the extension catalog readable; `sweetlsreset=1` once, or a fresh image, drops a database seeded before it) |
 | Boot time | A few minutes on the Apple logo; the first boot of a fresh image also seeds the LaunchServices database once |
-| Not working | USB device mode (live log/networking, in progress), Wi-Fi/Bluetooth/modem (WCN3990 needs the modem DSP), GPU (Adreno 630), audio, camera, sensors, SEP |
+| In progress | GPU (Adreno 630) bring-up stages `sweetgpu=N` (patch 0103, untested on hardware; `docs/GPU_A630_BRINGUP.md`), Wi-Fi/Bluetooth probes `sweetwlan=N` (patch 0104; `docs/WIFI_BT_PLAN.md`) |
+| Not working | Wi-Fi/modem, Bluetooth, GPU acceleration, audio, camera, sensors, SEP |
 
 The boot used to stall on the Apple logo forever: MobileGestalt resolves the Wi-Fi MAC from `/chosen mac-address-wifi0`, else waits for an `IONetworkController` that never appears, once per question, while `lsd` seeds its database. The ADT now carries synthetic `mac-address-wifi0`/`mac-address-bluetooth0` (see `NOTES.md` for the whole bring-up log).
 
@@ -35,12 +38,12 @@ sudo tools/mkiosroot-macos.sh OS.dmg SystemOS.dmg AppOS.dmg ios16-root.img 20g
 python3 tools/img2simg.py ios16-root.img ios16-root.simg
 fastboot -S 512M flash userdata ios16-root.simg      # erases Android data
 # boot image
-python3 tools/mkadt.py shim/out/beryllium.adt --board beryllium --highmem
-python3 tools/mkpayload.py kernel.development.sweet shim/out/beryllium.adt payload.bin --cmdline 'debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetsample=-'
+python3 tools/mkadt.py shim/out/beryllium.adt --board beryllium --highmem --display-scale 2
+python3 tools/mkpayload.py kernel.development.sweet shim/out/beryllium.adt payload.bin --cmdline 'debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetfb_flip=1 sweetusb=2 sweetbattery=1 sweetsample=-'
 BOARD=beryllium shim/build.sh ../payload.bin && fastboot boot shim/out/shim-boot.img
 ```
 
-Logs without a serial port: boot OrangeFox temporarily (`fastboot boot recovery.img`), then `tools/sweet-log-pull.sh` (kernel console ring) and `tools/sweet-ios-pull.sh` (iOS unified log via a static `hfsdump`).
+Live log over USB: `tools/sweet-usbnet.sh logs/usb.txt` (macOS/Linux; gives the host 192.168.7.1 and listens on UDP 5140). Logs without USB: boot OrangeFox temporarily (`fastboot boot recovery.img`), then `tools/sweet-log-pull.sh` (kernel console ring) and `tools/sweet-ios-pull.sh` (iOS unified log via a static `hfsdump`).
 
 ---
 
