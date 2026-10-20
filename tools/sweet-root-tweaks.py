@@ -280,6 +280,37 @@ def ssh(root):
     print('ssh: launchd job', DROPBEAR_LABEL, '(192.168.7.2:22, key-only)')
 
 
+NETCFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'research', 'sweetnet', 'sweetnetcfg')
+NETCFG_LABEL = 'org.sweet.netcfg'
+
+
+def netcfg(root):
+    """sweetnetcfg (tools/sweetnet) at boot: publishes ue0's IPv4 + DNS state
+    in configd's dynamic store, which IPConfiguration never does for ue0, so
+    IPMonitor installs the default route via the Mac and the DNS servers.
+    Relaunched until it succeeds (configd may not be up yet)."""
+    if not os.path.exists(NETCFG):
+        print('netcfg: skipped, build it first (tools/sweetnet/build.sh)')
+        return
+    dst = os.path.join(root, 'usr/local/bin/sweetnetcfg')
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(NETCFG, dst)
+    os.chown(dst, 0, 0)
+    os.chmod(dst, 0o755)
+    job = {'Label': NETCFG_LABEL, 'ProgramArguments': ['/usr/local/bin/sweetnetcfg'],
+           'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 5,
+           'UserName': 'root', 'StandardErrorPath': '/dev/console'}
+    jpath = '/System/Library/LaunchDaemons/%s.plist' % NETCFG_LABEL
+    os.makedirs(os.path.join(root, os.path.dirname(jpath).lstrip('/')), exist_ok=True)
+    save(os.path.join(root, jpath.lstrip('/')), job, 0, 0, 0o644, plistlib.FMT_XML)
+    lpath = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(lpath)
+    plist = load(lpath)
+    plist['LaunchDaemons'][jpath] = job
+    save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('netcfg: /usr/local/bin/sweetnetcfg + launchd job', NETCFG_LABEL)
+
+
 def find_container(root, kind, identifier):
     for meta in glob.glob(os.path.join(root, 'private/var/containers', kind, '*',
                                        '.com.apple.mobile_container_manager.metadata.plist')):
@@ -328,6 +359,7 @@ def main():
     containers(root)
     launchservices(root)
     usbnet(root)
+    netcfg(root)
     ssh(root)
     activation(root)
     audio(root)
