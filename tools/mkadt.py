@@ -52,7 +52,16 @@ BOARDS = {
         # and ramoops@b0000000. --highmem: same window as sweet; the live
         # FDT memory is <0x80000000 3G>, <0x1_40000000 0xbd4a0000> and every
         # fixed carve-out ends below 0xb0400000.
-        mem=(0x9f800000, 0x0f800000)),
+        mem=(0x9f800000, 0x0f800000),
+        # MobileGestalt's Wi-Fi address: /chosen mac-address-wifi0 (set by
+        # iBoot on real devices), else ADT sdio/wlan/marconi-wifi nodes,
+        # else it WAITS for an IONetworkController and times out, once per
+        # question -> lsd's first-boot database seed takes ages (boot 2).
+        # Synthetic locally administered addresses, not the phone's.
+        chosen_extra=[
+            ('mac-address-wifi0', bytes([0x02, 0x00, 0x5e, 0x77, 0xe0, 0x01])),
+            ('mac-address-bluetooth0', bytes([0x02, 0x00, 0x5e, 0x77, 0xb0, 0x01])),
+        ]),
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
@@ -139,7 +148,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
         ('effective-production-status-ap', u32(0)),
         ('certificate-security-mode', u32(1)),
         ('effective-security-mode-sep', u32(1)),
-    ], [node('memory-map', [ph()]),
+    ] + b.get('chosen_extra', []), [node('memory-map', [ph()]),
         # Local boot policy (kern_csr.c): SIP relaxed like `csrutil disable`
         # (lp-sip0: untrusted kexts, unrestricted FS, task_for_pid, kernel
         # debugger, dtrace, nvram), lp-sip1: unauthenticated (unsealed) root.
