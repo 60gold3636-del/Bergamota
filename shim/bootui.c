@@ -45,25 +45,29 @@
 static int active;
 static unsigned bar_px;		/* filled width so far */
 
-/* Row-wise RLE (tools/mkbootlogo.py) straight into the framebuffer. */
-static void draw_logo(int x0, int y0)
+/* Row-wise RLE (tools/mkbootlogo.py) straight into the framebuffer; also used by fbui.c. */
+void bootui_draw_rle(const unsigned int *pal, const unsigned char *p, int w, int h, int x0, int y0)
 {
-	const unsigned char *p = bootlogo_rle;
-	for (int y = 0; y < BOOTLOGO_H; y++) {
+	for (int y = 0; y < h; y++) {
 		volatile uint32_t *line = con_fb + (y0 + y) * (FB_STRIDE / 4) + x0;
 		int x = 0;
-		while (x < BOOTLOGO_W) {
+		while (x < w) {
 			unsigned c = *p++;
 			if (c & 0x80) {
 				for (unsigned n = (c & 0x7f) + 1; n; n--)
-					line[x++] = bootlogo_pal[*p++];
+					line[x++] = pal[*p++];
 			} else {
-				uint32_t col = bootlogo_pal[*p++];
+				uint32_t col = pal[*p++];
 				for (unsigned n = c + 1; n; n--)
 					line[x++] = col;
 			}
 		}
 	}
+}
+
+static void draw_logo(int x0, int y0)
+{
+	bootui_draw_rle(bootlogo_pal, bootlogo_rle, BOOTLOGO_W, BOOTLOGO_H, x0, y0);
 }
 
 static void centered(int y, int scale, int spacing, uint32_t fg, const char *s)

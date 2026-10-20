@@ -212,15 +212,25 @@ void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint
 }
 
 /* Print the recorded lines (oldest first) at the current position, e.g. after a failed muted boot. */
-void con_replay(void)
+void con_replay_tail(unsigned n)
 {
 	unsigned first = hist_n >= HIST_LINES - 1 ? hist_n - (HIST_LINES - 1) : 0;
+	if (n < hist_n - first)
+		first = hist_n - n;
 	replaying = 1;
-	for (unsigned n = first; n < hist_n; n++) {
-		unsigned l = n % HIST_LINES;
-		for (int c = 0; c < HIST_COLS && hist_ch[l][c]; c++)
-			put_char(c, hist_ch[l][c], hist_fg[l][c]);
+	for (unsigned i = first; i < hist_n; i++) {
+		unsigned l = i % HIST_LINES;
+		int end = HIST_COLS;
+		while (end && !hist_ch[l][end - 1])
+			end--;	/* label/value gap columns are never written: print them as blanks */
+		for (int c = 0; c < end; c++)
+			put_char(c, hist_ch[l][c] ? hist_ch[l][c] : ' ', hist_fg[l][c]);
 		next_row();
 	}
 	replaying = 0;
+}
+
+void con_replay(void)
+{
+	con_replay_tail(HIST_LINES);
 }

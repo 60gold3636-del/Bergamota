@@ -14,6 +14,7 @@
 #include "bootui.h"
 #include "console.h"
 #include "fastboot.h"
+#include "fbui.h"
 #include "fdt.h"
 #include "loader.h"
 #include "usb_dwc3.h"
@@ -89,12 +90,36 @@ static const char *cmdline_opt(uintptr_t dtb, const char *key)
 	return 0;
 }
 
+#define RR_BERGAMOTA	0x42455247U	/* 'BERG': written by the kernel for `sweetreboot bergamota` */
+
+static char entry_why[16];	/* an array: a static string pointer would need an ABS64 relocation */
+
+static void set_entry(const char *s)
+{
+	unsigned i = 0;
+	while (*s && i < sizeof entry_why - 1)
+		entry_why[i++] = *s++;
+	entry_why[i] = 0;
+}
+
 int bergamota_wanted(uintptr_t dtb)
 {
-	const char *v = cmdline_opt(dtb, "bergamota.fastboot=");
+	volatile uint32_t *rr = (volatile uint32_t *)IMEM_RESTART_REASON;
+	const char *v;
 
-	if (v)
+	if (*rr == RR_BERGAMOTA) {
+		*rr = 0;	/* one-shot: the next reboot boots normally */
+		__asm__ volatile("dsb sy" ::: "memory");
+		set_entry("restart reason");
+		con_str("SHIM", "entered via restart reason");
+		return 1;
+	}
+	v = cmdline_opt(dtb, "bergamota.fastboot=");
+	if (v) {
+		set_entry("cmdline");
 		return *v == '1';
+	}
+	set_entry("no payload");
 	return !loader_has_payload(dtb);
 }
 
@@ -123,11 +148,11 @@ static void __attribute__((noreturn)) hw_reset(uint32_t reason)
 		__asm__ volatile("wfe");
 }
 
-/* ---- screen ---- */
+/* ---- screen (fbui.c) ---- */
 
 static struct fb *g_fb;
-static uint64_t ui_last_ms, ui_sig;
-static unsigned ui_draws;
+static uint64_t ui_last_ms, ui_start_ms;
+static uint64_t buf_base, buf_size;
 
 /* no lookup table of string pointers (ABS64 relocations): keep this a real switch */
 __attribute__((optimize("no-tree-switch-conversion")))
@@ -135,10 +160,10 @@ static const char *usb_state_str(enum usb_state s)
 {
 	switch (s) {
 	case USB_ST_DOWN: return "down";
-	case USB_ST_RUNNING: return "up, no host yet (plug in the Mac)";
-	case USB_ST_RESET: return "bus reset, enumerating";
+	case USB_ST_RUNNING: return "no host";
+	case USB_ST_RESET: return "reset";
 	case USB_ST_ADDRESSED: return "addressed";
-	case USB_ST_CONFIGURED: return "CONFIGURED: fastboot ready";
+	case USB_ST_CONFIGURED: return "configured";
 	}
 	return "?";
 }
@@ -148,53 +173,132 @@ static uint32_t le32p(const uint8_t *p)
 	return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-static uint64_t buf_base, buf_size;
+/* tiny string builder, no libc */
+struct sb {
+	char *d;
+	unsigned n, max;
+};
 
-static void ui_draw(void)
+static void sb_str(struct sb *b, const char *s)
 {
-	struct usb_dwc3_info *u = &usb_info;
-	struct fb *fb = g_fb;
-
-	con_clear(BG_BOOT);
-	con_set_scale(2);
-	con_str("SHIM", "Bergamota fastboot " BOARD_NAME);
-	con_skip();
-	con_str("USB", usb_state_str(usb_dwc3_state()));
-	con_hex2("BUFFER", "base=", (uint32_t)buf_base, "MiB=", (uint32_t)(buf_size >> 20));
-	if (fb) {
-		con_skip();
-		con_str("CMD", fb->last_cmd);
-		con_str("REPLY", fb->last_resp);
-		if (fb->dl_want)
-			con_hex2("DOWNLOAD", "MiB=", (uint32_t)(fb->dl_got >> 20), "of=", (uint32_t)(fb->dl_want >> 20));
-		else
-			con_hex2("IMAGE", "bytes=", (uint32_t)fb->dl_len, "cmds=", fb->n_cmds);
-	}
-	con_skip();
-	con_hex2("EVENTS", "n=", u->events, "resets=", u->resets);
-	con_hex2("SETUP", "n=", u->setups, "last=", le32p(u->last_setup));
-	con_hex2("DWC3", "id=", u->gsnpsid, "dsts=", u->dsts);
-	con_hex2("GCTL", "abl=", u->gctl_abl, "now=", u->gctl_now);
-	con_hex2("QUSB2", "pwr=", u->qusb_pwr_before << 8 | u->qusb_pwr_after, "pll=", u->qusb_pll_after);
-	con_hex2("SMMU", "rc=", (uint32_t)u->smmu_rc, "smr=", u->smmu_info);
-	con_skip();
-	con_str("HOLD", "Power+VolDown = back to ABL fastboot");
-	ui_draws++;
+	while (*s && b->n + 1 < b->max)
+		b->d[b->n++] = *s++;
+	b->d[b->n] = 0;
 }
 
-/* Cheap enough to call from every wait loop: redraws at most every 500 ms and only after a change. */
+static void sb_strn(struct sb *b, const char *s, unsigned n)
+{
+	while (*s && n-- && b->n + 1 < b->max)
+		b->d[b->n++] = *s++;
+	b->d[b->n] = 0;
+}
+
+static void sb_u(struct sb *b, uint64_t v)
+{
+	char t[20];
+	int n = 0;
+	do
+		t[n++] = '0' + v % 10;
+	while ((v /= 10) && n < 20);
+	while (n && b->n + 1 < b->max)
+		b->d[b->n++] = t[--n];
+	b->d[b->n] = 0;
+}
+
+static void sb_hex(struct sb *b, uint32_t v)
+{
+	static const char hex[] = "0123456789abcdef";
+	for (int i = 28; i >= 0 && b->n + 1 < b->max; i -= 4)
+		b->d[b->n++] = hex[(v >> i) & 15];
+	b->d[b->n] = 0;
+}
+
+/* bytes as "12.3" MiB */
+static void sb_mib(struct sb *b, uint64_t bytes)
+{
+	uint64_t t = (bytes * 10) >> 20;
+	sb_u(b, t / 10);
+	sb_str(b, ".");
+	sb_u(b, t % 10);
+}
+
+static void ui_diag(enum usb_state st, int show)
+{
+	static char l0[96], l1[96], l2[96];
+	struct usb_dwc3_info *u = &usb_info;
+	struct fb *fb = g_fb;
+	struct sb b0 = { l0, 0, sizeof l0 }, b1 = { l1, 0, sizeof l1 }, b2 = { l2, 0, sizeof l2 };
+
+	if (!show) {
+		fbui_diag(0, 0, 0);
+		return;
+	}
+	l0[0] = l1[0] = l2[0] = 0;
+	sb_str(&b0, "usb "); sb_str(&b0, usb_state_str(st));
+	sb_str(&b0, "  ev "); sb_hex(&b0, u->events);
+	sb_str(&b0, " rst "); sb_hex(&b0, u->resets);
+	sb_str(&b0, " setup "); sb_hex(&b0, u->setups);
+	sb_str(&b0, " last "); sb_hex(&b0, le32p(u->last_setup));
+	sb_str(&b1, "dwc3 id "); sb_hex(&b1, u->gsnpsid);
+	sb_str(&b1, " dsts "); sb_hex(&b1, u->dsts);
+	sb_str(&b1, " gctl "); sb_hex(&b1, u->gctl_abl); sb_str(&b1, "/"); sb_hex(&b1, u->gctl_now);
+	sb_str(&b1, " qusb "); sb_hex(&b1, u->qusb_pwr_before << 8 | u->qusb_pwr_after);
+	sb_str(&b1, " pll "); sb_hex(&b1, u->qusb_pll_after);
+	sb_str(&b1, " smmu "); sb_hex(&b1, (uint32_t)u->smmu_rc); sb_str(&b1, "/"); sb_hex(&b1, u->smmu_info);
+	sb_str(&b2, "buf "); sb_hex(&b2, (uint32_t)buf_base); sb_str(&b2, "+"); sb_u(&b2, buf_size >> 20); sb_str(&b2, "MiB");
+	if (fb) {
+		sb_str(&b2, "  cmd "); sb_strn(&b2, fb->last_cmd, 24);
+		sb_str(&b2, "  reply "); sb_strn(&b2, fb->last_resp, 24);
+	}
+	fbui_diag(l0, l1, l2);
+}
+
+/* Derive the status from USB + protocol state; fbui only redraws what changed. */
+static void ui_update(void)
+{
+	static char text[48], detail[64];
+	struct fb *fb = g_fb;
+	enum usb_state st = usb_dwc3_state();
+	struct sb bt = { text, 0, sizeof text }, bd = { detail, 0, sizeof detail };
+	int permille = FBUI_NOBAR;
+	uint32_t fg = FBUI_OK_COLOR;
+
+	text[0] = detail[0] = 0;
+	if (fb && fb->dl_want) {
+		unsigned pm = (unsigned)(fb->dl_got * 1000 / fb->dl_want);
+		sb_str(&bt, "RECEIVING "); sb_u(&bt, pm / 10); sb_str(&bt, "%");
+		sb_str(&bd, "("); sb_mib(&bd, fb->dl_got); sb_str(&bd, " / "); sb_mib(&bd, fb->dl_want); sb_str(&bd, " MiB)");
+		permille = (int)pm;
+		fg = TEXT;
+	} else if (st == USB_ST_CONFIGURED) {
+		if (fb && fb->dl_len) {
+			sb_str(&bt, "READY");
+			sb_str(&bd, "image in memory: "); sb_mib(&bd, fb->dl_len); sb_str(&bd, " MiB");
+			permille = 1000;
+		} else {
+			sb_str(&bt, fb && fb->n_cmds ? "READY" : "CONNECTED");
+			sb_str(&bd, "waiting for fastboot commands");
+		}
+		fg = TEXT;
+	} else if (st == USB_ST_RESET || st == USB_ST_ADDRESSED) {
+		sb_str(&bt, "CONNECTING");
+		sb_str(&bd, "USB host found");
+	} else {
+		sb_str(&bt, "CONNECT TO YOUR MAC");
+		sb_str(&bd, "plug in the USB cable");
+	}
+	fbui_status(text, detail, permille, fg);
+	ui_diag(st, st != USB_ST_CONFIGURED && ms_now() - ui_start_ms > 20000);
+}
+
+/* Cheap enough to call from every wait loop: updates at most every 250 ms. */
 static void ui_tick(void)
 {
 	uint64_t t = ms_now();
-	if (t - ui_last_ms < 500)
+	if (t - ui_last_ms < 250)
 		return;
-	struct fb *fb = g_fb;
-	uint64_t sig = usb_info.change * 0x9e3779b1u + (fb ? fb->n_cmds * 131u + (fb->dl_got >> 20) + fb->n_links * 7u : 0);
 	ui_last_ms = t;
-	if (sig == ui_sig && ui_draws)
-		return;
-	ui_sig = sig;
-	ui_draw();
+	ui_update();
 }
 
 /* ---- transport + platform callbacks ---- */
@@ -259,14 +363,8 @@ static void __attribute__((noreturn)) boot_failed(const char *why)
 		bootui_fail(why);
 		delay_ms(8000);
 	}
-	con_clear(BG_PANIC);
-	con_set_scale(2);
-	con_str("BOOT", "failed after OKAY");
-	con_str("WHY", why);
-	if (bootui_active())
-		con_replay();
-	con_skip();
-	con_str("RESET", "back to ABL fastboot in 20 s");
+	fbui_init(entry_why);
+	fbui_error(why, "back to ABL fastboot in 20 s");
 	delay_ms(20000);
 	hw_reset(RESTART_BOOTLOADER);
 }
@@ -279,8 +377,7 @@ static void p_boot(void *ctx, const uint8_t *img, uint64_t len)
 	(void)ctx;
 	if (why)
 		boot_failed(why);
-	con_clear(BG_BOOT);
-	con_set_scale(2);
+	fbui_status("BOOTING PAYLOAD", "stopping USB, handing over", 1000, TEXT);
 	con_str("BOOT", "downloaded image, stopping USB");
 	usb_dwc3_stop();
 	why = loader_boot_payload(lo, hi, 1);
@@ -290,8 +387,7 @@ static void p_boot(void *ctx, const uint8_t *img, uint64_t len)
 static void p_reboot(void *ctx, int mode)
 {
 	(void)ctx;
-	con_clear(BG_BOOT);
-	con_set_scale(2);
+	fbui_status("REBOOTING", mode ? "to the bootloader" : "", FBUI_NOBAR, LABEL);
 	con_str("RESET", mode ? "reboot-bootloader" : "reboot");
 	delay_ms(300);		/* the OKAY has completed on the wire; give the host a moment */
 	hw_reset(mode ? RESTART_BOOTLOADER : RESTART_REBOOT);
@@ -330,10 +426,9 @@ const char *bergamota_fastboot(uintptr_t dtb)
 	static struct fb fb;
 	static struct fb_transport tr;
 	static struct fb_platform pl;
-	con_clear(BG_BOOT);
-	con_set_scale(2);
+	fbui_init(entry_why);
+	fbui_status("STARTING", "", FBUI_NOBAR, LABEL);
 	con_str("SHIM", "Bergamota fastboot " BOARD_NAME);
-	con_skip();
 	const char *why = pick_buffer(dtb);
 
 	if (why)
@@ -341,10 +436,10 @@ const char *bergamota_fastboot(uintptr_t dtb)
 	const char *smmu_opt = cmdline_opt(dtb, "bergamota.smmu=");
 	int use_smmu = !(smmu_opt && *smmu_opt == '0');
 
+	ui_start_ms = ms_now();
 	con_str("USB", "starting controller...");
 	int rc = usb_dwc3_init(use_smmu);
 	if (rc) {
-		ui_draw();
 		usb_dwc3_stop();
 		return usb_dwc3_errstr(rc);
 	}
@@ -362,8 +457,8 @@ const char *bergamota_fastboot(uintptr_t dtb)
 	pl.reboot = p_reboot;
 	fb_init(&fb, &tr, &pl);
 	g_fb = &fb;
-	ui_draw();
 	ui_last_ms = ms_now();
+	ui_update();
 	fb_run(&fb);
 	usb_dwc3_stop();
 	return "fastboot ended";

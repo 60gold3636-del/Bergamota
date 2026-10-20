@@ -33,15 +33,15 @@ case ${BERGAMOTA:-} in
 1) CMDLINE="$CMDLINE bergamota.fastboot=1" ;;
 0) CMDLINE="$CMDLINE bergamota.fastboot=0" ;;
 esac
-for f in start.S shim.c console.c bootui.c mmu.c fdt.c loader.c ufs.c inflate.c usb_dwc3.c usb_power.c fastboot.c bergamota.c; do
+for f in start.S shim.c console.c bootui.c fbui.c mmu.c fdt.c loader.c ufs.c inflate.c usb_dwc3.c usb_power.c fastboot.c bergamota.c; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
 done
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$($READELF -r out/shim.o out/console.o out/bootui.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o out/usb_dwc3.o out/usb_power.o out/fastboot.o out/bergamota.o | grep -c ABS64 || true)
+abs=$($READELF -r out/shim.o out/console.o out/bootui.o out/fbui.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o out/usb_dwc3.o out/usb_power.o out/fastboot.o out/bergamota.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
 $CC $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
-	out/start.o out/shim.o out/console.o out/bootui.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o out/usb_dwc3.o out/usb_power.o out/fastboot.o out/bergamota.o -o out/shim.elf -lgcc
+	out/start.o out/shim.o out/console.o out/bootui.o out/fbui.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/inflate.o out/usb_dwc3.o out/usb_power.o out/fastboot.o out/bergamota.o -o out/shim.elf -lgcc
 $OBJCOPY -O binary out/shim.elf out/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
 size=$($NM out/shim.elf | awk '$3=="_end"{print $1}')
@@ -70,7 +70,7 @@ else
 fi
 # Host render of the console layout and the boot screen (out/host.ppm, out/preview/*.ppm).
 mkdir -p out/preview
-cc -O1 -Wall $([ "$BOARD" = beryllium ] && echo -DBOARD_BERYLLIUM) $([ "${BOOTLOG:-0}" = 0 ] || echo -DBOOTUI_LOG=1) -o out/host_test console.c bootui.c host_test.c && ./out/host_test
+cc -O1 -Wall $([ "$BOARD" = beryllium ] && echo -DBOARD_BERYLLIUM) $([ "${BOOTLOG:-0}" = 0 ] || echo -DBOOTUI_LOG=1) -o out/host_test console.c bootui.c fbui.c host_test.c && ./out/host_test
 # Host test of the fastboot protocol state machine.
 cc -O1 -Wall -Wextra -o out/fastboot_test fastboot.c fastboot_test.c && ./out/fastboot_test
 ls -l out/Image out/shim-boot.img

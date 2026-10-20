@@ -20,6 +20,8 @@ void con_clear(uint32_t bg);
 void con_skip(void);
 /* Re-print the recorded console lines (kept even while the boot-screen log is muted). */
 void con_replay(void);
+/* Like con_replay, but only the last n lines. */
+void con_replay_tail(unsigned n);
 void con_rect(int x, int y, int w, int h, uint32_t c);	/* clipped solid fill, 32-bit stores */
 /* Text at pixel position, transparent background; spacing = extra px between glyphs. */
 void con_text(int x, int y, int scale, int spacing, uint32_t fg, const char *s);

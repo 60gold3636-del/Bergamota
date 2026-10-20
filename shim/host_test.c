@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include "bootui.h"
 #include "console.h"
+#include "fbui.h"
 
 static uint32_t host_fb[FB_H * FB_STRIDE / 4];
 
@@ -67,5 +68,35 @@ int main(void)
 	con_str("PANIC", "sync exception");
 	con_hex("ESR", 0x96000010);
 	dump("out/preview/panic.ppm");
+
+	/* Bergamota fastboot screen states (bergamota.c derives the same strings from USB/protocol state). */
+	fbui_init("no payload");
+	fbui_status("CONNECT TO YOUR MAC", "plug in the USB cable", FBUI_NOBAR, FBUI_OK_COLOR);
+	dump("out/preview/fastboot-0-connect.ppm");
+	fbui_diag("usb no host  ev 00000012 rst 00000001 setup 00000000 last 00000000",
+		  "dwc3 id 5533330a dsts 00000000 gctl 00000000/00004000 qusb 00000000 pll 00000000 smmu 00000000/00000000",
+		  "buf b8000000+1024MiB  cmd getvar:max-download-size  reply OKAY");
+	dump("out/preview/fastboot-1-connect-diag.ppm");
+	fbui_diag(0, 0, 0);
+	fbui_status("CONNECTED", "waiting for fastboot commands", FBUI_NOBAR, TEXT);
+	dump("out/preview/fastboot-2-connected.ppm");
+	fbui_status("RECEIVING 0%", "(0.0 / 17.0 MiB)", 0, TEXT);
+	fbui_status("RECEIVING 34%", "(5.8 / 17.0 MiB)", 340, TEXT);
+	dump("out/preview/fastboot-3-receiving.ppm");
+	fbui_status("READY", "image in memory: 17.0 MiB", 1000, TEXT);
+	dump("out/preview/fastboot-4-ready.ppm");
+	fbui_status("BOOTING PAYLOAD", "stopping USB, handing over", 1000, TEXT);
+	dump("out/preview/fastboot-5-booting.ppm");
+	fbui_init("restart reason");
+	fbui_status("REBOOTING", "to the bootloader", FBUI_NOBAR, FBUI_OK_COLOR);
+	dump("out/preview/fastboot-6-rebooting.ppm");
+
+	/* error: the loader's recorded log replayed small under the red status */
+	fbui_init("cmdline");
+	fbui_error("inflate failed", "back to ABL fastboot in 20 s");
+	fbui_diag("usb configured  ev 00000412 rst 00000002 setup 00000031 last 00000680",
+		  "dwc3 id 5533330a dsts 00000800 gctl 00000000/00004000 qusb 00000000 pll 00000000 smmu 00000000/00000000",
+		  "buf b8000000+1024MiB  cmd boot  reply FAIL inflate failed");
+	dump("out/preview/fastboot-7-error.ppm");
 	return 0;
 }
