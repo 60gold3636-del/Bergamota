@@ -29,32 +29,46 @@ struct ActivityBannerView: View {
     }
 }
 
-/// Flashes the banner (three white blinks and a small pulse) whenever the state changes, so a
+/// A ray of light sweeps across the banner whenever its state changes (title or colour), so a
 /// change is noticed from across the room. Elapsed-time updates in the subtitle don't count.
 private struct StateFlash: ViewModifier {
     let key: String
     let radius: CGFloat
-    @State private var flash = 0.0
-    @State private var pulse = 1.0
+    @State private var phase: CGFloat = -1      // -1: ray left of the banner, 1: right of it
+    @State private var showing = false
     @State private var seen: String?
 
     func body(content: Content) -> some View {
         content
-            .overlay(RoundedRectangle(cornerRadius: radius).fill(.white).opacity(flash).allowsHitTesting(false))
-            .scaleEffect(pulse)
+            .overlay {
+                GeometryReader { geo in
+                    let w = geo.size.width, band = max(120, w * 0.18)
+                    LinearGradient(stops: [.init(color: .white.opacity(0), location: 0),
+                                           .init(color: .white.opacity(0.75), location: 0.5),
+                                           .init(color: .white.opacity(0), location: 1)],
+                                   startPoint: .leading, endPoint: .trailing)
+                        .frame(width: band, height: geo.size.height * 2)
+                        .rotationEffect(.degrees(20))
+                        .offset(x: (phase + 1) / 2 * (w + band * 2) - band * 1.5, y: -geo.size.height / 2)
+                        .blendMode(.plusLighter)
+                        .opacity(showing ? 1 : 0)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: radius))
+                .allowsHitTesting(false)
+            }
             .onAppear { seen = key }
             .onChange(of: key) { _, new in
                 guard seen != nil, seen != new else { seen = new; return }
                 seen = new
                 Task { @MainActor in
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.5)) { pulse = 1.03 }
-                    for _ in 0..<3 {
-                        withAnimation(.easeOut(duration: 0.08)) { flash = 0.85 }
-                        try? await Task.sleep(nanoseconds: 120_000_000)
-                        withAnimation(.easeIn(duration: 0.25)) { flash = 0 }
-                        try? await Task.sleep(nanoseconds: 260_000_000)
+                    for _ in 0..<2 {
+                        phase = -1
+                        showing = true
+                        withAnimation(.easeInOut(duration: 0.9)) { phase = 1 }
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
                     }
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { pulse = 1 }
+                    showing = false
+                    phase = -1
                 }
             }
     }
