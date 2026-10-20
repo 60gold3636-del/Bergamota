@@ -29,7 +29,9 @@
 		D9217A35E2DCCA2571765771 /* BootQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76903B852A256F83045809A3 /* BootQueue.swift */; };
 		D98F285E66ED92FFE9DCC6DC /* MediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C336382D40088FEC32DFE355 /* MediaView.swift */; };
 		EBC91199213853269848A876 /* PhoneTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0357E193A87BD78D0EDAC7C /* PhoneTools.swift */; };
+		EEE0A5DBD1FAB99B2D8F268B /* UserdataFlash.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6828D58FB3900E94C33ABDD /* UserdataFlash.swift */; };
 		F83F2C8569B4DB540DCF9592 /* ControlPlaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A42F44F37DC3FEED5F3D41 /* ControlPlaneView.swift */; };
+		F90B61A234ED8970DEC85954 /* FlashUserdataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 299DD6841170662BFEDCE97C /* FlashUserdataView.swift */; };
 		F9E63E038DABF4B851EF1680 /* BootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 703EEA9F919721AD4D98E5B8 /* BootView.swift */; };
 /* End PBXBuildFile section */
 
@@ -37,6 +39,7 @@
 		1287FE4F58266A0E0CB225D8 /* ActivityBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityBannerView.swift; sourceTree = "<group>"; };
 		20B70646D2F6E0947A6481F1 /* AppsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsView.swift; sourceTree = "<group>"; };
 		24B936B85666259BB68E2523 /* RemoteControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteControl.swift; sourceTree = "<group>"; };
+		299DD6841170662BFEDCE97C /* FlashUserdataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashUserdataView.swift; sourceTree = "<group>"; };
 		2E0006BEE820A89BEF4C071C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		47A42F44F37DC3FEED5F3D41 /* ControlPlaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlPlaneView.swift; sourceTree = "<group>"; };
 		48D311CBC40367F62751677D /* Bergamota.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bergamota.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -51,6 +54,7 @@
 		9689CF0534145D62FF6FDCCE /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		9E9BB85C4769A7EEEB93854A /* CIView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CIView.swift; sourceTree = "<group>"; };
 		B0B92F02006A156A7A40A6A7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B6828D58FB3900E94C33ABDD /* UserdataFlash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserdataFlash.swift; sourceTree = "<group>"; };
 		BB6E1461BFF3858229E88FC2 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		C336382D40088FEC32DFE355 /* MediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaView.swift; sourceTree = "<group>"; };
 		C3DACBCD7340496B4654CED4 /* CIModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CIModel.swift; sourceTree = "<group>"; };
@@ -85,6 +89,7 @@
 				D0357E193A87BD78D0EDAC7C /* PhoneTools.swift */,
 				24B936B85666259BB68E2523 /* RemoteControl.swift */,
 				935046D9F93402D85B583C91 /* Shell.swift */,
+				B6828D58FB3900E94C33ABDD /* UserdataFlash.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -110,6 +115,7 @@
 				2E0006BEE820A89BEF4C071C /* ContentView.swift */,
 				47A42F44F37DC3FEED5F3D41 /* ControlPlaneView.swift */,
 				BB6E1461BFF3858229E88FC2 /* DashboardView.swift */,
+				299DD6841170662BFEDCE97C /* FlashUserdataView.swift */,
 				D56F9CEB69DEBE9F6E432BBB /* LogView.swift */,
 				C336382D40088FEC32DFE355 /* MediaView.swift */,
 				9689CF0534145D62FF6FDCCE /* SettingsView.swift */,
@@ -210,6 +216,7 @@
 				27224D0BE64A7F5BDEB9C419 /* ContentView.swift in Sources */,
 				F83F2C8569B4DB540DCF9592 /* ControlPlaneView.swift in Sources */,
 				7102CC1B82D052FB3EF09B49 /* DashboardView.swift in Sources */,
+				F90B61A234ED8970DEC85954 /* FlashUserdataView.swift in Sources */,
 				633D6E56FD67DFDB7FB12FE2 /* LogStore.swift in Sources */,
 				AE6DA8C5C8B1AED24B85A5DA /* LogView.swift in Sources */,
 				D98F285E66ED92FFE9DCC6DC /* MediaView.swift in Sources */,
@@ -219,6 +226,7 @@
 				00E1F2BA24558405C7543157 /* RemoteControl.swift in Sources */,
 				8C6AB67C5E307BC48A5C44BF /* SettingsView.swift in Sources */,
 				A914B655C8FC74AB45CB9BD4 /* Shell.swift in Sources */,
+				EEE0A5DBD1FAB99B2D8F268B /* UserdataFlash.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -16,6 +16,7 @@ struct ControlPlaneView: View {
     @State private var window: NSWindow?
     @State private var tagFilter: Set<LogTag> = []
     @State private var confirmSend = false
+    @State private var showFlash = false
     @State private var actionMessage: String?
     @AppStorage("cpScreen") private var savedScreen = ""
     @AppStorage("cpFullScreen") private var wantFullScreen = false
@@ -56,6 +57,7 @@ struct ControlPlaneView: View {
         } message: {
             Text("If the last boot left ABL hung, sending again can hang it further. Press only after re-entering fastboot (hold Power + Volume Down).")
         }
+        .sheet(isPresented: $showFlash) { FlashPickerSheet() }
         .task { if model.ci.runs.isEmpty { await model.ci.refresh() }
             while !Task.isCancelled { try? await Task.sleep(nanoseconds: 120_000_000_000); await model.ci.refresh() } }
     }
@@ -97,7 +99,7 @@ struct ControlPlaneView: View {
                 Text(q.armed ? "ARMED" : "STOPPED").font(.system(size: 14, weight: .heavy)).padding(.horizontal, 8).padding(.vertical, 2)
                     .background(q.armed ? Color.orange : Color.gray.opacity(0.5), in: Capsule()).foregroundStyle(q.armed ? .black : .white)
                 Spacer()
-                if let first = q.pending.first, model.monitor.state == .fastboot, q.sending == nil {
+                if let first = q.pending.first, model.monitor.state == .fastboot, q.sending == nil, !q.flashing {
                     Button("Send now: \(first.name)") { confirmSend = true }.tint(.orange).controlSize(.large)
                 }
             }
@@ -200,7 +202,11 @@ struct ControlPlaneView: View {
                     .tint(.blue)
             }
             Button { confirmSend = true } label: { Label("Send now", systemImage: "paperplane.fill") }
-                .tint(.orange).disabled(m.state != .fastboot || q.pending.isEmpty || q.sending != nil)
+                .tint(.orange).disabled(m.state != .fastboot || q.pending.isEmpty || q.sending != nil || q.flashing)
+            if m.state == .fastboot {
+                Button { showFlash = true } label: { Label("Flash userdata", systemImage: "externaldrive.fill.badge.exclamationmark") }
+                    .tint(.red).disabled(q.sending != nil || q.flashing)
+            }
             Button { q.disarm() } label: { Label("Stop", systemImage: "stop.fill") }.tint(.red).disabled(!q.armed)
             if let a = actionMessage { Text(a).foregroundStyle(.secondary).lineLimit(1) }
             Spacer()

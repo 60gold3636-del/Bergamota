@@ -38,6 +38,15 @@ extension AppModel {
         if let n = tools.installing { return ActivityBanner(title: n.hasPrefix("uninstall") ? "REMOVING \(n.dropFirst(10).uppercased())" : "INSTALLING \(n.uppercased())", subtitle: "sideloading over SSH", color: .cyan, symbol: "square.and.arrow.down.fill") }
         if let n = tools.uploadingCount { return ActivityBanner(title: "UPLOADING \(n) FILE\(n == 1 ? "" : "S")", subtitle: "to the phone over SSH", color: .cyan, symbol: "arrow.up.circle.fill") }
         if build.building { return ActivityBanner(title: "BUILDING \(build.imageName.uppercased())", subtitle: "mkpayload + build.sh", color: .blue, symbol: "hammer.fill") }
+        if queue.flasher.active {
+            let f = queue.flasher
+            return ActivityBanner(title: "FLASHING USERDATA \(f.total > 0 ? f.progressText : "")".trimmingCharacters(in: .whitespaces),
+                                  subtitle: "\(f.fileName)  |  replaces the iOS install, do not unplug", color: .red, symbol: "externaldrive.fill.badge.exclamationmark")
+        }
+        if let l = queue.flasher.last, now.timeIntervalSince(l.at) < 300, queue.sending == nil, (lastSent?.sentAt ?? .distantPast) < l.at, st == .fastboot || !l.ok {
+            return l.ok ? ActivityBanner(title: "FLASHED", subtitle: "userdata \(queue.flasher.fileName). Boot the image or reboot.", color: .orange, symbol: "checkmark.seal.fill")
+                        : ActivityBanner(title: "FAILED", subtitle: "userdata flash failed. See the Flash page output.", color: .red, symbol: "xmark.octagon.fill")
+        }
         if let s = queue.sending { return ActivityBanner(title: "SENDING \(s.name.uppercased())", subtitle: "fastboot boot, do not unplug", color: .orange, symbol: "paperplane.fill") }
 
         if let sent = lastSent, let at = sent.sentAt {

@@ -2,6 +2,7 @@
 # CLI for the Bergamota app's file-based API (no network). Needs python3 for JSON only.
 #   bergamota enqueue IMG [--label L] [--no-arm] [--wait]
 #   bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--label L] [--no-enqueue] [--no-arm] [--wait]
+#   bergamota flash-userdata IMG [--then-boot BOOTIMG] [--label L] [--no-arm] [--wait]   (flashes ONLY userdata, replaces iOS)
 #   bergamota orangefox on|off
 #   bergamota install IPA [--wait]
 #   bergamota upload [--dest photos|/phone/folder] FILE... [--wait]
@@ -14,7 +15,7 @@ BASE="$HOME/Library/Application Support/Bergamota"
 INBOX="$BASE/inbox"
 
 die() { echo "bergamota: $*" >&2; exit 1; }
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # submit KIND JSON [wait]: write atomically (tmp name is not *.json), optionally wait for the result.
 submit() {
@@ -101,6 +102,28 @@ upload)
 	done
 	[ ${#files[@]} -gt 0 ] || die "upload needs at least one file"
 	submit "$(python3 -c 'import json,sys; print(json.dumps({"kind":"upload","dest":sys.argv[1],"paths":sys.argv[2:]}))' "$dest" "${files[@]}")" $wait ;;
+flash-userdata)
+	# The CLI invocation is the explicit act: it adds "confirm":"userdata" itself. Enqueues; the app flashes on the next fastboot appearance.
+	img=""; boot=""; label=""; arm=true; wait=0
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--then-boot) boot=$2; shift 2 ;;
+		--label) label=$2; shift 2 ;;
+		--no-arm) arm=false; shift ;;
+		--wait) wait=1; shift ;;
+		-h|--help) usage ;;
+		*) [ -z "$img" ] || die "unexpected argument $1"; img=$1; shift ;;
+		esac
+	done
+	[ -n "$img" ] || die "flash-userdata needs an image (.simg or .img)"
+	[ -z "$boot" ] || boot=$(abspath "$boot")
+	json=$(python3 -c 'import json,sys
+i,b,l,a=sys.argv[1:5]
+d={"kind":"flash_userdata","path":i,"confirm":"userdata","arm":a=="true"}
+if b: d["then_boot"]=b
+if l: d["label"]=l
+print(json.dumps(d))' "$(abspath "$img")" "$boot" "$label" "$arm")
+	submit "$json" $wait ;;
 orangefox)
 	case ${1:-} in on) v=true ;; off) v=false ;; *) die "orangefox on|off" ;; esac
 	submit "{\"kind\":\"orangefox_reboot\",\"enabled\":$v}" ${2:+1} ;;
@@ -131,8 +154,12 @@ print(f"          {q.get('status','')}")
 print(f"          auto-reboot-to-fastboot={q.get('autoRebootToFastboot')} {q.get('autoRebootStatus') or ''}")
 for it in q["items"]:
     print(f"  [{it['state']:7}] {it['label']}  {it['image']}" + (f"  sent {it['sentAt']}" if it.get('sentAt') else "") + ("  NEEDS MANUAL FASTBOOT" if it.get('needsManualFastboot') else ""))
+    if it.get("flashUserdata"): print(f"             flashes userdata: {it['flashUserdata']}")
     if it["state"] in ("sent", "failed") and it.get("result"):
         for line in it["result"].strip().splitlines()[-3:]: print("             " + line)
+fl = d.get("flash", {})
+if fl.get("active"): print(f"flash     FLASHING USERDATA {fl.get('progress')}  {fl.get('file')}")
+elif fl.get("last"): print(f"flash     {fl['last']['result']} {fl['last']['at']}  {fl['last']['message']}")
 print(f"liveLog   listening={l['listening']} saving={l.get('savingTo')} {l.get('linesPerSecond')} lines/s")
 b = d.get("build", {})
 print(f"build     {'RUNNING' if b.get('building') else 'idle'}  last={b.get('last')}")

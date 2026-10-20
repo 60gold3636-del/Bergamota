@@ -1,6 +1,6 @@
 # Bergamota
 
-A native macOS (14+) SwiftUI control panel for the iOS-on-Poco-F1 project: phone status, live kernel log, CI runs, and a boot queue that schedules `fastboot boot`.
+A native macOS (14+) SwiftUI control panel for the iOS-on-Poco-F1 project: phone status, live kernel log, CI runs, and a boot queue that schedules `fastboot boot` (and, as one narrowly guarded exception, `fastboot flash userdata`).
 No third-party packages. The app is **not sandboxed** (it runs `fastboot`, `adb`, `ssh`, `gh` and `python3`) and is ad-hoc signed ("Sign to Run Locally").
 
 ## Build
@@ -68,6 +68,18 @@ scripts/bergamota stop
 scripts/bergamota status
 ```
 
+## Flash userdata (the one flash exception)
+
+The app otherwise never flashes. At the owner's explicit request there is exactly ONE exception: `fastboot -s <serial> flash userdata <img>` for the iOS root image. Guards:
+
+- The partition name is the literal `userdata` in code (`UserdataFlash.flashArguments`); there is no partition field, request key or setting. No other partition can be flashed, and `erase`, `format` and `oem` are never run.
+- Image: an existing `.img`/`.simg` (sparse images are fine, fastboot splits them) of at least 64 MiB; name and size are shown. Picker, drop, path field or presets (`*.simg`/`*.img` in the repo root and `research/ipsw-x/`).
+- Only while the phone is in fastboot (Boot Queue > **Flash** tab; Control Plane **Flash userdata** button, shown only in fastboot). A sheet says it replaces the iOS install, shows file name, size and SHA-256 (computed in the background) and enables the Flash button only after you type `userdata`.
+- One flash command, no retries, output streamed live with progress from `Sending sparse ... (n/m)`. The activity banner shows `FLASHING USERDATA n/m` (red), then `FLASHED` or `FAILED`. While flashing the queue sends nothing, Send now is disabled, and auto-reboot is not started. After a manual flash the queue stays latched until the phone leaves fastboot (no boot follows by itself).
+- Queue items may carry a userdata image: `flash userdata X, then boot Y` runs the flash first and then exactly one `fastboot boot` in the same fastboot appearance (a failed flash skips the boot and marks the item failed). The boot image is optional (flash only). Stored in `queue.json` (`userdataImage`). Add from the Flash tab (also behind the typed confirmation).
+- Inbox: `{"kind":"flash_userdata","path":"<img under the repo>","then_boot":"shim/out/x.img","label":"...","confirm":"userdata","arm":true}`. `confirm` must be exactly `"userdata"`, otherwise the request is rejected (reason in `inbox/failed` and `lastRequest` in `status.json`). It only enqueues. CLI: `scripts/bergamota flash-userdata IMG [--then-boot BOOTIMG] [--label L] [--no-arm] [--wait]` (adds `confirm` itself: running the CLI is the explicit act).
+- `status.json` has a `flash` entry (`active`, `file`, `current`, `total`, `progress`, `last` = FLASHED/FAILED) and queue items carry `flashUserdata`/`flashUserdataBytes`.
+
 ## Reboot to fastboot
 
 Needs the Poco F1 kernel with patch 0137 and `/usr/local/bin/sweetreboot` on the phone (new root images get it from `tools/sweet-root-tweaks.py`; for a running phone, `scp research/sweetnet/sweetreboot root@192.168.7.2:/usr/local/bin/sweetreboot`, built by `tools/sweetnet/build.sh`; details in `docs/REBOOT_MODE.md`). The button and the `reboot` inbox request run `ssh root@<phone> /usr/local/bin/sweetreboot fastboot|recovery`; the SSH connection dies with the phone, so success is judged by the tool's "next reboot mode" line.
@@ -80,4 +92,4 @@ Needs the Poco F1 kernel with patch 0137 and `/usr/local/bin/sweetreboot` on the
 - The live log is saved automatically to `logs/usb-<timestamp>.txt` (Settings > Live log; turning Record off in the Live Log pauses it until the next launch).
 - The phone has no `sysctl`, so uptime is shown only if `ps -o etime= -p 1` is sane; the Dashboard also shows when Bergamota first saw iOS up.
 
-The app only ever runs `fastboot devices` and `fastboot boot`, plus `adb devices`, (opt-in) `adb reboot bootloader` and, over SSH, `sweetreboot fastboot|recovery` (button, inbox request, auto-reboot). It never flashes, erases or sends `oem` commands.
+The app only ever runs `fastboot devices`, `fastboot boot` and (the single exception above, confirmed) `fastboot flash userdata`, plus `adb devices`, (opt-in) `adb reboot bootloader` and, over SSH, `sweetreboot fastboot|recovery` (button, inbox request, auto-reboot). It never flashes any other partition, and never erases, formats or sends `oem` commands.

@@ -14,9 +14,22 @@ struct QueueItem: Identifiable, Hashable, Codable {
     var autoRebootTried = false
     /// The auto-reboot did not end in fastboot within 90 s (or could not be sent): enter fastboot by hand.
     var needsManualFastboot = false
-    var name: String { label.isEmpty ? (imagePath as NSString).lastPathComponent : label }
-    var isLarge: Bool { size > BootQueue.largeImageBytes }
-    var fileName: String { (imagePath as NSString).lastPathComponent }
+    /// Optional userdata root image flashed (`fastboot flash userdata`, the app's one flash exception) BEFORE the boot, in the same fastboot session.
+    /// `imagePath` may then be empty: flash only, no boot.
+    var userdataImage: String?
+    var userdataSize: Int64 = 0
+    var hasBoot: Bool { !imagePath.isEmpty }
+    var flashesUserdata: Bool { userdataImage != nil }
+    /// "flash userdata X, then boot Y" (or only the first half).
+    var autoLabel: String {
+        var parts: [String] = []
+        if let u = userdataImage { parts.append("flash userdata \((u as NSString).lastPathComponent)") }
+        if hasBoot { parts.append((userdataImage != nil ? "then boot " : "") + (imagePath as NSString).lastPathComponent) }
+        return parts.joined(separator: ", ")
+    }
+    var name: String { label.isEmpty ? autoLabel : label }
+    var isLarge: Bool { hasBoot && size > BootQueue.largeImageBytes }
+    var fileName: String { hasBoot ? (imagePath as NSString).lastPathComponent : autoLabel }
 }
 
 /// Sends exactly ONE `fastboot boot <img>` per fastboot appearance. A failed send is never retried:
@@ -51,11 +64,13 @@ final class BootQueue {
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let monitor: PhoneMonitor
     @ObservationIgnored private let tools: PhoneTools
+    let flasher: UserdataFlasher
 
-    init(settings: AppSettings, monitor: PhoneMonitor, tools: PhoneTools) {
+    init(settings: AppSettings, monitor: PhoneMonitor, tools: PhoneTools, flasher: UserdataFlasher) {
         self.settings = settings
         self.monitor = monitor
         self.tools = tools
+        self.flasher = flasher
         monitor.observers.append { [weak self] old, new in self?.handle(old: old, new: new) }
         load()
     }
@@ -92,6 +107,11 @@ final class BootQueue {
     var sending: QueueItem? { items.first { $0.status == .sending } }
 
     func add(_ path: String, label: String = "") { items.append(QueueItem(imagePath: path, label: label, size: Self.fileSize(path))) }
+    /// Item that flashes `userdata` (already validated) and then, if `bootPath` is non-empty, boots `bootPath`.
+    func addFlash(userdata: UserdataFlash.Info, bootPath: String = "", label: String = "") {
+        items.append(QueueItem(imagePath: bootPath, label: label, size: bootPath.isEmpty ? 0 : Self.fileSize(bootPath),
+                               userdataImage: userdata.path, userdataSize: userdata.size))
+    }
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .sending } }
     func clearFinished() { items.removeAll { $0.status == .sent || $0.status == .failed } }
     func move(_ id: UUID, by d: Int) {
@@ -109,8 +129,12 @@ final class BootQueue {
     }
     func disarm() { armed = false; rebootWatch = nil }
 
+    /// Everything that sends to the phone is blocked while a userdata flash runs.
+    var flashing: Bool { flasher.active }
+
     var statusText: String {
         if !armed { return pending.isEmpty ? "Queue is empty." : "Queue stopped. Press Start to arm it." }
+        if flasher.active { return "Flashing userdata \(flasher.progressText). Do not unplug." }
         if let s = sending { return "Sending \(s.name) ..." }
         if pending.isEmpty { return "Queue is empty." }
         if waitingForLeave {
@@ -205,7 +229,7 @@ final class BootQueue {
         if settings.notifyOnIOS && new == .ios && old != .ios && old != .unknown { Notifier.post("Bergamota", "iOS is up on the Poco F1.") }
 
         autoRebootStep(new: new)
-        guard armed, sending == nil, !pending.isEmpty else { return }
+        guard armed, sending == nil, !flasher.active, !pending.isEmpty else { return }
 
         if new == .recovery, settings.rebootFromRecovery, !recoveryRebootSent {
             recoveryRebootSent = true
@@ -228,6 +252,7 @@ final class BootQueue {
     /// Returns a short result for the caller (UI or remote request).
     func sendNow() async -> String {
         guard monitor.state == .fastboot else { return "phone is not in fastboot" }
+        guard !flasher.active else { return "a userdata flash is running" }
         guard sending == nil else { return "a send is already in progress" }
         guard !pending.isEmpty else { return "queue has nothing pending" }
         let id = pending[0].id
@@ -237,7 +262,7 @@ final class BootQueue {
     }
 
     private func sendNext(force: Bool = false) async {
-        guard sending == nil, force || !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
+        guard sending == nil, !flasher.active, force || !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
         guard let fb = settings.fastboot else { note = "fastboot not found"; return }
         // Latch first: whatever happens, no second send until the phone leaves fastboot.
         waitingForLeave = true
@@ -249,15 +274,43 @@ final class BootQueue {
         var args: [String] = []
         if let s = monitor.fastbootSerial { args += ["-s", s] }
         args += ["boot", path]
-        guard FileManager.default.fileExists(atPath: path) else {
-            finish(id, ok: false, output: "image not found: \(path)")
+        var out = ""
+        // Optional userdata flash first (the single flash exception), then exactly one `fastboot boot`.
+        if let ud = items[idx].userdataImage {
+            switch UserdataFlash.validate(ud) {
+            case .failure(let e): finish(id, ok: false, output: "userdata flash refused: \(e.message)"); return
+            case .success(let info):
+                let (ok, msg) = await flasher.flash(info)
+                out = flasher.output
+                if !ok { finish(id, ok: false, output: out + msg); return }
+                if path.isEmpty { finish(id, ok: true, output: out); return }
+                out += "\n"
+            }
+        }
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else {
+            finish(id, ok: false, output: out + "image not found: \(path)")
             return
         }
         let r = await Shell.run(fb, args, timeout: 180)
-        var out = "$ fastboot " + args.map(shellQuote).joined(separator: " ") + "\n" + r.combined
+        out += "$ fastboot " + args.map(shellQuote).joined(separator: " ") + "\n" + r.combined
         if r.timedOut { out += "\n[timed out]" }
         if let e = r.launchError { out += "\n\(e)" }
         finish(id, ok: r.ok, output: out)
+    }
+
+    /// Manual "Flash userdata" action (Boot page / Control Plane): only in fastboot, never while the queue sends,
+    /// and the queue stays latched until the phone leaves fastboot so no boot follows by itself.
+    func flashUserdataNow(_ info: UserdataFlash.Info) async -> String {
+        guard monitor.state == .fastboot else { return "phone is not in fastboot" }
+        guard !flasher.active else { return "a userdata flash is already running" }
+        guard sending == nil else { return "a queue send is in progress" }
+        guard monitor.fastbootSerial != nil else { return "no fastboot serial" }
+        waitingForLeave = true
+        sentSession = monitor.fastbootSession
+        let (_, msg) = await flasher.flash(info)
+        nonFastbootStreak = 0
+        if settings.notifyOnBoot { Notifier.post("Bergamota", msg) }
+        return msg
     }
 
     private func finish(_ id: UUID, ok: Bool, output: String) {
@@ -267,7 +320,7 @@ final class BootQueue {
             items[i].output = output
             lastSendFailed = !ok
             if settings.notifyOnBoot {
-                Notifier.post("Bergamota", ok ? "fastboot boot sent: \(items[i].name)" : "fastboot boot FAILED: \(items[i].name). Re-enter fastboot.")
+                Notifier.post("Bergamota", ok ? (items[i].hasBoot ? "fastboot boot sent: \(items[i].name)" : "userdata flashed: \(items[i].name)") : "fastboot boot FAILED: \(items[i].name). Re-enter fastboot.")
             }
         }
         nonFastbootStreak = 0

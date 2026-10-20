@@ -1,7 +1,7 @@
 import SwiftUI
 
 private enum BootTab: String, CaseIterable, Identifiable {
-    case queue = "Queue", images = "Images", build = "Build"
+    case queue = "Queue", images = "Images", build = "Build", flash = "Flash"
     var id: String { rawValue }
 }
 
@@ -20,6 +20,7 @@ struct BootView: View {
             case .queue: QueuePane()
             case .images: ImagesPane(tab: $tab)
             case .build: BuildPane(tab: $tab)
+            case .flash: FlashPane()
             }
         }
         .navigationTitle("Boot Queue")
@@ -80,9 +81,10 @@ private struct QueuePane: View {
                         HStack {
                             statusIcon(item.status)
                             Text(item.name).font(.body.bold())
+                            if item.flashesUserdata { Image(systemName: "externaldrive.fill.badge.exclamationmark").foregroundStyle(.red).help("flashes userdata first") }
                             Spacer()
                             if let t = item.sentAt { Text(t.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary) }
-                            if item.status == .pending, item.id == q.pending.first?.id, model.monitor.state == .fastboot, q.sending == nil {
+                            if item.status == .pending, item.id == q.pending.first?.id, model.monitor.state == .fastboot, q.sending == nil, !q.flashing {
                                 Button("Send now") { confirmSend = true }.controlSize(.small).tint(.orange)
                             }
                             if item.status == .pending {
@@ -90,6 +92,9 @@ private struct QueuePane: View {
                                 Button { q.move(item.id, by: 1) } label: { Image(systemName: "chevron.down") }.buttonStyle(.borderless)
                             }
                             if item.status != .sending { Button { q.remove(item.id) } label: { Image(systemName: "xmark") }.buttonStyle(.borderless) }
+                        }
+                        if item.flashesUserdata, item.name != item.autoLabel {
+                            Label(item.autoLabel, systemImage: "externaldrive.fill").font(.caption).foregroundStyle(.red)
                         }
                         if item.needsManualFastboot {
                             Label("needs manual fastboot (hold Power + Volume Down)", systemImage: "hand.tap.fill").font(.caption).foregroundStyle(.orange)

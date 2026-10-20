@@ -110,6 +110,21 @@ final class RemoteControl {
             return "queued \((path as NSString).lastPathComponent)" + largeNote(path) + armNote(req)
         case "build":
             return try await handleBuild(req)
+        case "flash_userdata":
+            // The app's one flash exception. Requires "confirm":"userdata"; only enqueues (the flash runs in fastboot, armed queue).
+            guard (req["confirm"] as? String) == UserdataFlash.confirmWord else {
+                throw RemoteError("flash_userdata rejected: needs \"confirm\":\"userdata\"")
+            }
+            guard let p = req["path"] as? String, !p.isEmpty else { throw RemoteError("missing \"path\"") }
+            let info: UserdataFlash.Info
+            switch UserdataFlash.validate(try resolve(p, under: "", suffix: nil)) {
+            case .success(let i): info = i
+            case .failure(let e): throw RemoteError(e.message)
+            }
+            var boot = ""
+            if let b = req["then_boot"] as? String, !b.isEmpty { boot = try resolve(b, under: "shim/out", suffix: ".img") }
+            queue.addFlash(userdata: info, bootPath: boot, label: (req["label"] as? String) ?? "")
+            return "queued flash userdata \(info.name)" + (boot.isEmpty ? "" : ", then boot \((boot as NSString).lastPathComponent)") + largeNote(boot) + armNote(req)
         case "orangefox_reboot":
             guard let en = req["enabled"] as? Bool else { throw RemoteError("missing boolean \"enabled\"") }
             settings.rebootFromRecovery = en
@@ -186,6 +201,7 @@ final class RemoteControl {
 
     /// Absolute or repo-relative path that must exist inside `repo/<under>` (symlinks resolved).
     private func resolve(_ input: String, under: String, suffix: String?) throws -> String {
+        let under = under.isEmpty ? "." : under
         let expanded = (input as NSString).expandingTildeInPath
         let full = expanded.hasPrefix("/") ? expanded : settings.repoFile(expanded)
         let url = URL(fileURLWithPath: full).standardizedFileURL.resolvingSymlinksInPath()
@@ -223,16 +239,24 @@ final class RemoteControl {
             case .sent: st = "sent"
             case .failed: st = "failed"
             }
-            return ["id": it.id.uuidString, "label": it.label.isEmpty ? it.fileName : it.label, "image": it.imagePath,
+            var d: [String: Any] = ["id": it.id.uuidString, "label": it.label.isEmpty ? it.fileName : it.label, "image": it.imagePath,
                     "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400)),
                     "sizeBytes": it.size, "warning": it.isLarge ? BootQueue.largeWarning : "",
                     "needsManualFastboot": it.needsManualFastboot, "autoRebootTried": it.autoRebootTried]
+            if let u = it.userdataImage { d["flashUserdata"] = u; d["flashUserdataBytes"] = it.userdataSize }
+            return d
         }
+        let f = queue.flasher
+        var flash: [String: Any] = ["active": f.active, "file": f.fileName, "current": f.current, "total": f.total,
+                                    "progress": f.active ? f.progressText : ""]
+        if let l = f.last { flash["last"] = ["result": l.ok ? "FLASHED" : "FAILED", "at": iso(l.at), "message": l.message] }
+        else { flash["last"] = NSNull() }
         return [
             "phone": phone,
             "queue": ["armed": queue.armed, "status": queue.statusText, "items": items,
                       "orangefoxReboot": settings.rebootFromRecovery, "remoteStartAllowed": settings.allowRemoteStart,
                       "autoRebootToFastboot": settings.autoRebootToFastboot, "autoRebootStatus": (queue.autoStatusText as Any?) ?? NSNull()],
+            "flash": flash,
             "liveLog": ["listening": logs.listening, "savingTo": logs.recording ? ((logs.recordPath as Any?) ?? NSNull()) : NSNull(),
                         "linesPerSecond": logs.linesPerSecond, "totalReceived": logs.totalReceived],
             "build": ["building": build.building, "last": (build.lastResult as Any?) ?? NSNull()],
