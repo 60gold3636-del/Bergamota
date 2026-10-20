@@ -12,6 +12,8 @@
 #include "console.h"
 #include "mmu.h"
 #include "loader.h"
+#include "bergamota.h"
+#include "usb_power.h"
 #include "ufs.h"
 #include "fdt.h"
 
@@ -373,6 +375,23 @@ static uint32_t to_us(uint64_t ticks)
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
+
+	/* Cold power-on: ABL leaves USB off unless it entered fastboot. No-op when already alive. */
+	stage = "usb power";
+	usb_power_up();
+
+	/*
+	 * Bergamota fastboot (bergamota.c): boot.img cmdline "bergamota.fastboot=1", or no payload in
+	 * the ramdisk. Returns only when it could not start; then fall through to the old paths.
+	 */
+	if (bergamota_wanted(dtb)) {
+		stage = "fastboot";
+		const char *fwhy = bergamota_fastboot(dtb);
+		con_skip();
+		con_str("FASTBOOT", fwhy);
+		con_str("NEXT", "legacy loader/diagnostics in 30 s");
+		delay_ms(30000);
+	}
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";

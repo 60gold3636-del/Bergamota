@@ -101,6 +101,65 @@ static void inflate_progress(uint64_t done)
 	bootui_mib("INFLATE", (infl_base + done) >> 20, infl_total >> 20, PM_MMU, PM_INFLATE_END);
 }
 
+/*
+ * Side-effect-free validation of a payload at [rd_start, rd_end): header sane, every
+ * file range inside the payload, every destination inside the payload's own RAM window.
+ * Payloads from the ABL ramdisk were trusted blindly; payloads that arrive over the
+ * Bergamota fastboot link must not be able to write anywhere else.
+ */
+const char *loader_check(uintptr_t rd_start, uintptr_t rd_end)
+{
+	const struct payload *p = (const struct payload *)rd_start;
+	uint64_t size = rd_end - rd_start;
+
+	if (rd_end < rd_start || size < sizeof(struct payload))
+		return "payload too short";
+	if (!magic_ok(p->magic))
+		return "no SWEETXNU payload";
+	if ((p->version != 1 && p->version != 2) || (p->adt_off & 7) || (rd_start & 7))
+		return "bad payload header";
+	const unsigned stride = p->version == 2 ? 40 : 32;
+	if (p->nsegs == 0 || p->nsegs > 64 || sizeof(struct payload) + (uint64_t)p->nsegs * stride > size)
+		return "bad segment table";
+	uint64_t ram_lo = p->phys_base, ram_hi = p->phys_base + p->mem_size;
+	if (ram_hi <= ram_lo)
+		return "bad RAM window";
+	if (rd_end > ram_lo && rd_start < ram_hi)
+		return "ramdisk overlaps kernel memory";
+	if (p->adt_off > size || p->adt_size > size - p->adt_off)
+		return "ADT outside payload";
+	uint64_t pa_of_va_base = p->phys_base - p->virt_base;
+	uint64_t kend_pa = p->kernel_end + pa_of_va_base;
+	if (kend_pa < ram_lo || kend_pa >= ram_hi || p->adt_size > ram_hi - kend_pa ||
+	    ram_hi - kend_pa - p->adt_size < 2 * PAGE_16K)
+		return "kernel end outside RAM";
+	for (uint32_t i = 0; i < p->nsegs; i++) {
+		const struct payload_seg *s = (const struct payload_seg *)(p->segs + (uint64_t)i * stride);
+		uint64_t pa = s->vmaddr + pa_of_va_base;
+		if (s->file_off > size || s->file_size > size - s->file_off)
+			return "segment outside payload";
+		if (pa < ram_lo || pa > kend_pa || s->vmsize > kend_pa - pa)
+			return "segment outside RAM";
+		if (p->version == 2 && s->raw_size) {
+			if (s->raw_size > s->vmsize)
+				return "segment inflates past its size";
+		} else if (s->file_size > s->vmsize) {
+			return "segment larger than its size";
+		}
+	}
+	return 0;
+}
+
+int loader_has_payload(uintptr_t dtb)
+{
+	uint64_t rd_start, rd_end;
+
+	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
+	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end) || rd_end < rd_start + 8)
+		return 0;
+	return magic_ok((const char *)rd_start);
+}
+
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start, rd_end;
@@ -108,14 +167,27 @@ const char *loader_boot(uintptr_t dtb)
 	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
 	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
 		return "no initrd in /chosen";
+	return loader_boot_payload(rd_start, rd_end, 0);
+}
 
+/*
+ * Boot the payload in [rd_start, rd_end) (ABL ramdisk or the fastboot download); returns only on error.
+ * verify: run loader_check() first (always for downloads; the ABL ramdisk path keeps its old trust).
+ */
+const char *loader_boot_payload(uintptr_t rd_start, uintptr_t rd_end, int verify)
+{
 	const struct payload *p = (const struct payload *)rd_start;
-	if (!magic_ok(p->magic))
+	if (rd_end < rd_start + 8 || !magic_ok(p->magic))
 		return "no SWEETXNU payload";
 	/* A real payload: switch to the branded boot screen (con_* output becomes its log window). */
 	bootui_init();
 	bootui_progress(PM_INITRD, "INITRD FOUND");
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+	if (verify) {
+		const char *bad = loader_check(rd_start, rd_end);
+		if (bad)
+			return bad;
+	}
 	if ((p->version != 1 && p->version != 2) || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
 	const unsigned stride = p->version == 2 ? 40 : 32;
