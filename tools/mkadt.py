@@ -2,7 +2,7 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium] [--display-scale 3|2] [--points WxH]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium] [--display-scale 3|2] [--points WxH] [--lowpool BASE:SIZE]
 """
 import hashlib, os, struct, sys
 
@@ -99,7 +99,20 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, points=(375, 812)):
+# SWEET low pool for zero-copy scanout (kernel boot-arg sweetfb_zc=1, docs/DISPLAY_HW.md
+# section 3): a window of the low DDR bank that the kernel does not manage. The kernel
+# has the same default built in (0xb0400000 + 252 MiB) and validates whatever it is given
+# against the live reserved-memory regions; --lowpool BASE:SIZE (hex) writes
+# /arm-io/disp0 "sweet-lowpool" = <u64 base, u64 size> to override it.
+LOWPOOL_MIN, LOWPOOL_MAX = 0x9f800000, 0xfd000000
+
+
+def parse_lowpool(text):
+    base, size = (int(v, 0) for v in text.split(':'))
+    return base, size
+
+
+def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, points=(375, 812), lowpool=None):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     b = BOARDS[board]
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
@@ -108,6 +121,14 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
             phys_base, mem_size = b['mem']
     fb, fb_size = b['fb']
     fb_w, fb_h = b['fb_wh']
+    if lowpool is not None:
+        lp_base, lp_size = lowpool
+        if board != 'beryllium' or qemu:
+            raise SystemExit('--lowpool: Poco F1 only (--board beryllium, not --qemu)')
+        if lp_base < LOWPOOL_MIN or lp_base + lp_size > LOWPOOL_MAX or lp_base & 0x3fff or lp_size & 0x3fff:
+            raise SystemExit(f'--lowpool {lp_base:#x}:{lp_size:#x}: must be 16K aligned inside {LOWPOOL_MIN:#x}..{LOWPOOL_MAX:#x}')
+        if lp_base < phys_base + mem_size and phys_base < lp_base + lp_size:
+            raise SystemExit(f'--lowpool {lp_base:#x}:{lp_size:#x} overlaps the kernel RAM {phys_base:#x}+{mem_size:#x}')
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
@@ -221,7 +242,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
             # a red "rdar:45025538" banner instead; 414x896 @2x is a real one.
             ('canvas-width', u32(points[0] * display_scale)),
             ('canvas-height', u32(points[1] * display_scale)),
-        ])])
+        ] + ([('sweet-lowpool', u64(lp_base, lp_size))] if lowpool is not None else []))])
 
     fbcon = node('sweet-fbcon', [
         ph(),
@@ -281,7 +302,8 @@ if __name__ == '__main__':
     board = sys.argv[sys.argv.index('--board') + 1] if '--board' in sys.argv else 'sweet'
     scale = int(sys.argv[sys.argv.index('--display-scale') + 1]) if '--display-scale' in sys.argv else 3
     points = tuple(int(v) for v in sys.argv[sys.argv.index('--points') + 1].split('x')) if '--points' in sys.argv else (375, 812)
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board, display_scale=scale, points=points)
+    lowpool = parse_lowpool(sys.argv[sys.argv.index('--lowpool') + 1]) if '--lowpool' in sys.argv else None
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board, display_scale=scale, points=points, lowpool=lowpool)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
