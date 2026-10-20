@@ -20,11 +20,14 @@ os=$(abs "$1") sysos=$(abs "$2") appos=$(abs "$3") out=$4 size=${5:-16g}
 
 work=$(mktemp -d /tmp/mkiosroot.XXXXXX)
 devs=()
+done_ok=0
 cleanup() {
 	for d in "${devs[@]}"; do
 		hdiutil detach -force "$d" >/dev/null 2>&1 || true
 	done
 	rmdir "$work"/* "$work" 2>/dev/null || true
+	# A half-built image is useless: remove it so a rerun can start over.
+	[[ $done_ok == 1 || ! -e $out ]] || { rm -f "$out"; echo "removed incomplete $out" >&2; }
 }
 trap cleanup EXIT
 
@@ -55,7 +58,9 @@ devs=("$dev" "${devs[@]}")
 newfs_hfs -s -J -v iOSRoot "${dev/disk/rdisk}"
 mkdir "$work/root"
 mount -t hfs "$dev" "$work/root"
-diskutil enableOwnership "$work/root" >/dev/null
+# A root mount_hfs honours owners (no noowners); show the options to be sure.
+mount | grep " on $work/root " || true
+mount | grep " on $work/root " | grep -q noowners && { echo "root volume mounted noowners" >&2; exit 1; }
 
 copy() {
 	echo "copying ${1#"$work/"} -> /${2#"$work/root"}"
@@ -113,4 +118,5 @@ df -h "$work/root"
 umount "$work/root"
 fsck_hfs -fy "${dev/disk/rdisk}" || true
 fsck_hfs -fn "${dev/disk/rdisk}"
+done_ok=1
 echo "done: $out"
