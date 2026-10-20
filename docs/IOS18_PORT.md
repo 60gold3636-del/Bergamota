@@ -189,3 +189,115 @@ ABL ramdisk budget (`--compress`, inflate) -> 0138 mach_ports_lookup3 reply layo
 0139 exclaves_ctl_trap KERN_NOT_SUPPORTED (SIGSYS in launchd's exclaves-boot) -> keep /usr/libexec/xpcproxy
 in the pruned root -> pacstrip PACGA with a constant rotation (Foundation _NSThreadData MAC, brk in
 __NSThreadPoisoned; docs/IOS18_XPCPROXY.md). Next: the full system on userdata (tools/ios18/*full*).
+
+
+## 12. Full iOS 18.7.8 root on userdata (`tools/ios18/mkroot-full.py`)
+
+Goal: the whole iOS 18 system (SpringBoard, daemons, default wallpapers) as an HFS+ image for the `userdata` partition,
+flashed like the iOS 16 image (`fastboot -S 512M flash userdata X.simg`) and booted with `rd=ufsroot0 ufsrw=1 rootrw=1`.
+Nothing here was flashed or booted (not allowed in this session): everything below was verified offline.
+
+### Source files
+IPSW iPhone11,8 18.7.8 (22H352): root `094-31934-020.dmg.aea` (6.6 GB), SystemOS cryptex `094-32062-020.dmg.aea` (1.7 GB),
+AppOS cryptex `094-32850-020.dmg` (plain). Fetched with `ipsw download ipsw --device iPhone11,8 --version 18.7.8 --pattern
+'^094-(31934|32062|32850)-020\.dmg(\.aea)?$' --flat` (about 8.3 GB, ~25 min) and decrypted with `ipsw fw aea X.dmg.aea -o DIR`
+(the fcs-key is fetched from wkms-public.apple.com; 4-15 s each). Decrypted they are raw APFS (OS 7.0 GB, SystemOS 4.3 GB,
+apparent file size of the OS volume 11.4 GiB because decmpfs files are written uncompressed). The AEA files are deleted after
+decryption and each dmg after it was copied (27 GB Mac).
+
+### Layout decisions
+* **Merged root, no cryptex mounting.** SystemOS and AppOS are ditto-ed into `/` first, the OS volume on top. The 42 symlinks
+  of the OS volume that point into `/System/Cryptexes/{OS,App}/...` (WebKit.framework, Safari bundles, ...) meet the real
+  directories of the merge and are dropped (ditto: "Is a directory"; the script counts them); `/etc /var /tmp` stay symlinks
+  (ditto would follow them as a source argument: `copy_tree` recreates symlinks itself).
+* `/System/Cryptexes/{OS,App}` -> `../../private/preboot/Cryptexes/{OS,App}` (as shipped) and those two are symlinks to `../../..`
+  (= `/`): `/System/Cryptexes/OS/System/Library/...` resolves into the merged root.
+* **dyld cache stays at `/System/Library/Caches/com.apple.dyld/`** (its place in the SystemOS cryptex). dyld 18 contains
+  libignition (strings: `System/Library/Caches/com.apple.dyld/`, `no shared cache in cryptex`, `cryptex prefix`,
+  `/System/Cryptexes/OS`, `ignition_level` stages). With `ignition_level=1` (boot-arg, already in the cmdline) it looks in the root
+  at that path only (same as iOS 16, see NOTES), so no hard links or second copy are needed. 67 files: `dyld_shared_cache_arm64e`
+  + `.01 .. .66` (`.35.dylddata`, `.36.dyldreadonly`, `.37.dyldlinkedit`, ...) + `.atlas`; `.symbols` (870 MB, symbolication only)
+  is not copied.
+* Not copied (disk): `usr/standalone/update` (OTA ramdisk firmware, 206 MB), `System/Library/NanoTimeKit` (Apple Watch faces,
+  284 MB). Everything else is there: `/Library/Wallpaper/{Collections,DefaultWallpapers~iphone.plist}`, `PosterBoard*.framework`,
+  `PreinstalledAssetsV2`, `staged_system_apps` (Home.app, Music.app, ... see risks).
+
+### Build
+```sh
+cd /Users/zesmoi/git/iAndroid/ios-beryllium-ios18
+tools/ios18/mkroot-full.sh [--delete-sources]     # copy,macho,cache,tweaks,seal,verify,simg (needs the decrypted dmgs in research/ios18/ipsw/22H352__iPhone11,8/)
+```
+Stages of `mkroot-full.py` (`--stages a,b,c`, re-runnable on the same image): `copy` (owner map by lstat of an owners-on mount of each
+source, copy from a noowners mount because root-only files such as `/etc/master.passwd` are unreadable otherwise; newfs_hfs -s,
+unjournaled), `macho` (pacstrip + `codesign -f -s -` with the entitlements re-applied of EVERY Mach-O, in parallel,
+hard links by inode), `cache` (`pacstrip_cache.py`), `tweaks` (below), `seal` (`hfs_trim.py`, `hfsroot_owners.py`, `fsck_hfs`), `verify`,
+`simg` (`img2simg.py --consume`). Helper tools: `hfsroot_owners.py` (catalog editor: real owner/group/permission bits from the map
+for every record, hard links through their `iNode<N>` file, everything else root:wheel; follows the extents-overflow file),
+`hfs_trim.py` (F_PUNCHHOLE over HFS-free blocks: the image is a sparse file and HFS frees blocks that the host keeps; 4.9 GiB were
+given back after the copy+rewrite), `img2simg.py` (`--consume` punches 16 MiB holes behind the reader so RAW+SIMG never exist
+together; needed because raw 15 GiB + simg 15 GiB does not fit the disk).
+
+### PAC rewrite
+* Standalone Mach-Os: unchanged `pacstrip.py` (the NEW PACGA rule from commit 7d52748, `EOR ... ROR #13`, is used; nothing was
+  stripped before that rule existed). ~3060 Mach-O files outside the cache, 2927 rewritten and re-signed.
+* **dyld shared cache: `tools/ios18/pacstrip_cache.py CACHE_DIR`** rewrites every file in place. Parses the main header
+  (image table, sub-cache array with suffixes), the mapping table of each of the 67 files (addresses are global), finds the
+  Mach-O header of each of the 3861 images + dyld-in-cache through the mappings and rewrites only the executable SECTIONS
+  (10,320 sections, 2378 MiB of code) with `pacstrip.rewrite_word`. 4 KiB pages that changed are collected per file and the **CodeDirectory
+  page hashes (SHA-256, 16 KiB pages, version 0x20400) are recomputed in place** (no size change; `--verify-sig` checks every page hash of
+  every file: on the pristine cache 258,805/258,805 correct, after the rewrite 0 wrong). Runtime: 38 s for the scan, ~45 s for the
+  rewrite with 8-10 processes (the per-word Python loop is fast enough; no C needed).
+  Result on the real cache: AUTDA 3.4 M, BLRAA 4.7 M, BRAA 3.2 M, RETAB 4.5 M, PACIA 2.2 M, PACDA 2.1 M, PACIAZ 678 k, XPACD 831 k, PACDB 272 k,
+  PACGA 502 ... ; **re-scan finds no rewritable PAC word left**. Left alone: **FJCVTZS 474** (JavaScriptCore/WebCore) and
+  one unencodable LDRAB; LDRAA/LDRAB-looking words only inside images of a whitelist (libc++abi, libobjc, libdispatch, libsystem_*, dyld, ...:
+  22 rewritten); `TextToSpeechMauiSupport` has 1595 LDRAA-looking words that are data (not touched, as the study predicted).
+  r-x mapping bytes outside image sections (stubs islands do not exist here) were scanned too: only random data matches.
+* Not done: slide info v5 and the kernel side of the cache (below).
+
+### First-boot tweaks (`root_tweaks18.py` = `sweet-root-tweaks.py`, owners recorded instead of chown)
+`launchd.plist` (`/System/Library/xpc/launchd.plist`, still the job cache in 18.7.8, 628 jobs): 9 `_PanicOnCrash` renamed, 2 CommCenter jobs removed;
+`/private/var/containers/{Bundle(33),Data/System,Shared/SystemGroup,Temp}`; configd USB Ethernet service ue0 (192.168.7.2/24); sweetnetcfg job,
+sweetreboot, **dropbear + dash (/bin/sh) + toybox with your public key (key-only ssh on 192.168.7.2:22, job `org.sweet.dropbear`)** from the
+main checkout's `research/ssh-build/out` and `research/sweetnet` (iOS 16 arm64 builds, untested under iOS 18 dyld); VirtualAudio plugin
+disabled, `StartRecorderServer=false`; preferences: Setup skipped (purplebuddy), `LastSystemVersion=22H352`, SpringBoard `BKNoWatchdogs`;
+logd directories (owner 272) and the system keybag as in `mkiosroot-macos.sh`; bring-up job `org.sweet.ios18.hello` (console: "launchd runs
+jobs, 6*7=42", `toybox uname -a`, master.passwd). Bluetooth stub (iOS 16 bluetoothd specific), mobileactivationd data ark (no container yet) and
+the LaunchServices cache removal are not applied. The stock RAM-disk removals of `mkroot.py` do not apply (a full OS has no restored_external);
+no extra "USB" daemon removal was done beyond CommCenter.
+
+### Boot image
+`tools/ios18/mkboot-full.sh [KERNEL] [ADT] [OUT]` (defaults `xnu/out-0139/kernel.development.sweet`, `../ios-beryllium/shim/out/beryllium-hi-3x.adt`)
+-> `research/ios18/shim-boot-ios18full.img` (17.3 MB, payload checked against the unpacked ramdisk). Cmdline = the RAM-disk cmdline of section 9 with
+`rd=md0` replaced by `rd=ufsroot0` and `ufsrw=1 rootrw=1` added:
+```
+debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetfb_flip=1 sweetusb=2 sweetbattery=1 sweetfb_hw=1 sweetarm64e=1 launchd_disable_all_timeouts=1
+```
+Flash/boot (NOT done): `fastboot -S 512M flash userdata research/ios18/ios18-root-full.simg`, re-enter fastboot by hand after the flash (ABL hangs,
+NOTES), then `fastboot boot research/ios18/shim-boot-ios18full.img`. iOS 16 comes back with `fastboot -S 512M flash userdata research/ipsw-x/ios16-root-20H392-b3.simg`
+(main checkout, untouched) and its old boot image.
+
+### Risks (what the phone will show first)
+1. **Kernel: dyld shared cache with slide info v5 and `map_with_linking_np`.** The RAM-disk boot has no cache. xnu-8796 knows slide info v1-v4 only;
+   the branch has no v5 patch (docs section 7 step 2b: `vm_shared_region_slide_page_v5`, `shared_region_map_and_slide_2_np`). Expect the first process
+   (launchd's dyld) to fail mapping the cache (kernel log `shared_region`/`slide`): this is the next kernel patch, the image is ready for it. Also
+   the shared region's trust/SIP checks that iOS 16 needed patches for (NOTES 0031r) apply to the arm64e cache files too.
+2. FJCVTZS (474 sites in the cache, JavaScriptCore) are left: SIGILL if executed; JSC checks `FEAT_JSCVT`.
+3. The cache signature is ad hoc-recomputed (page hashes only); prebuilt loader sets inside the cache (programs) hold the old cdhashes of the OS
+   executables, dyld may reject them and build loaders itself (slower, not fatal).
+4. Entitlements of `/private/var/staged_system_apps/Home.app/Home` and `Music.app/Music` were lost: the first codesign in the parallel pass failed, the manual
+   re-sign did not re-apply them (the OS dmg was already deleted). They are installed to the data volume at first boot only; SpringBoard does not need them.
+   One bundle (`SpringBoardDiagnosticExtension.appex`) reports an invalid bundle resource seal with `codesign -v` (the kernel stand-in does not check resources).
+5. dropbear/toybox/dash are iOS 16 arm64 (non-e) builds: whether iOS 18 dyld accepts non-e executables against the arm64e cache is untested; ssh may not come up.
+6. Unjournaled HFS+ (like the RAM-disk root): power loss mid-boot needs fsck (the kernel mounts dirty unjournaled root rw, see NOTES).
+7. Case-sensitive volume (as iOS 16 here); owners/modes come from the IPSW (appos/sysos owner map was lost with their dmgs: root:wheel, modes kept).
+
+### Result of the first build (2026-10-20)
+* `research/ios18/ios18-root-full.simg` 15,978,818,944 bytes (15.2 GiB; 5,242,880 blocks = a 20 GiB HFSX volume `iOSRoot`, 35,718 chunks, structure
+  checked, volume header `HX`), SHA256 `290ef23f...4713` (`research/ios18/SHA256SUMS-full`). `fsck_hfs -fn`: OK. 422,679 catalog records, 414,346 with the IPSW's
+  owner/mode, 19,985 hard-link records, 0 HFS-compressed files, 15 GiB used / 4.8 GiB free inside.
+* `research/ios18/shim-boot-ios18full.img` 17,256,448 bytes (kernel xnu/out-0139, beryllium-hi-3x.adt), SHA256 `ac40023f...1228`.
+* Offline checks (all passed): launchd, dyld, SpringBoard, xpcproxy, launchd.plist, 5 wallpaper collections, PosterBoard, SystemVersion present; all 3068 Mach-Os outside the
+  cache re-scanned: 0 PAC words left; codesign -v on 150 random ones OK; cache: 258 k page hashes valid, re-scan 0 rewritable words; owner spot check of 3000 paths OK.
+* Time: download ~27 min (8.3 GB), decrypt 20 s, copy ~6 min, macho 5 min (3 000 files, 8 cores), cache 45 s, seal+verify 4 min, simg 2 min.
+* The raw image no longer exists (consumed into the .simg); to modify the root afterwards rebuild (tools/ios18/fetch-root.sh again, ~35 min) or write a simg->raw
+  converter. Mounting the result on the Mac needs that conversion; the checks above were done on the raw image before it was consumed.

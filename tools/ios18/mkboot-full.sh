@@ -1,0 +1,22 @@
+#!/bin/bash
+# Boot image for the FULL iOS 18 root on the userdata partition (rd=ufsroot0), no RAM disk.
+#   tools/ios18/mkboot-full.sh [KERNEL] [ADT] [OUT.img]
+# defaults: xnu/out-0139/kernel.development.sweet, ../ios-beryllium/shim/out/beryllium-hi-3x.adt,
+#           research/ios18/shim-boot-ios18full.img
+# Test it with `fastboot boot OUT.img` (the phone must hold the image from tools/ios18/mkroot-full.sh
+# flashed to userdata: docs/IOS18_PORT.md section 12). Nothing is flashed or booted here.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+KERNEL=${1:-xnu/out-0139/kernel.development.sweet}
+ADT=${2:-../ios-beryllium/shim/out/beryllium-hi-3x.adt}
+OUT=${3:-research/ios18/shim-boot-ios18full.img}
+# RAM-disk cmdline of docs/IOS18_PORT.md section 9 with rd=md0 -> rd=ufsroot0 ufsrw=1 rootrw=1.
+# ignition_level=1: dyld's libignition looks for the cache in /System/Library/Caches/com.apple.dyld only.
+CMDLINE=${CMDLINE:-"debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetfb_flip=1 sweetusb=2 sweetbattery=1 sweetfb_hw=1 sweetarm64e=1 launchd_disable_all_timeouts=1"}
+mkdir -p shim/out
+python3 tools/mkpayload.py "$KERNEL" "$ADT" shim/out/payload-ios18full.bin --cmdline "$CMDLINE"
+BOARD=beryllium shim/build.sh "$PWD/shim/out/payload-ios18full.bin"
+cp shim/out/shim-boot.img "$OUT"
+python3 tools/unpack_bootv2.py "$OUT" shim/out/check-ios18full >/dev/null 2>&1 && cmp shim/out/check-ios18full/ramdisk shim/out/payload-ios18full.bin && echo "payload check: ramdisk == payload"
+ls -l "$OUT"
+echo "cmdline: $CMDLINE"
