@@ -115,8 +115,13 @@ int usb_power_up(void)
 	con_hex2("USBPWR", "cold gdsc=", gd, "master=", m);
 	con_hex2("USBPWR", "cfgnoc=", n, "aggre=", rd(GCC + AGGRE_CBCR));
 
-	/* config-NoC / aggregate NoC paths and the AHB to the PHY block first */
-	int ok = clk_on(CFG_NOC_CBCR) & clk_on(AGGRE_CBCR) & clk_on(AHB2PHY_CBCR);
+	/* config-NoC / aggregate NoC paths and the AHB to the PHY block first. A clock that does not report
+	 * ON in time is logged by name and we go on: boot 0140dbg stopped at 'clk fail' with master and NoC
+	 * already ON, leaving the controller and the QUSB2 PHY unreset/unpowered (no USB on cold boot). */
+	unsigned bad = 0;
+	bad |= !clk_on(CFG_NOC_CBCR) << 0;
+	bad |= !clk_on(AGGRE_CBCR) << 1;
+	bad |= !clk_on(AHB2PHY_CBCR) << 2;
 	wr(GCC + CLKREF_EN, rd(GCC + CLKREF_EN) | 1u);
 
 	/* USB30_PRIM power domain: clear SW_COLLAPSE, wait PWR_ON */
@@ -131,13 +136,17 @@ int usb_power_up(void)
 	udelay(100);
 
 	/* master 66.67 MHz (GPLL0 600 MHz / 9, enough for high speed: DT core-clk-rate-hs), mock UTMI / aux 19.2 MHz (XO) */
-	ok &= rcg_set(MASTER_RCG, 1, 17);
-	ok &= rcg_set(MOCK_UTMI_RCG, 0, 0);
-	ok &= rcg_set(PHY_AUX_RCG, 0, 0);
-	ok &= clk_on(MASTER_CBCR) & clk_on(SLEEP_CBCR) & clk_on(MOCK_UTMI_CBCR) & clk_on(PHY_AUX_CBCR);
-	if (!ok) {
-		con_hex2("USBPWR", "clk fail master=", rd(GCC + MASTER_CBCR), "noc=", rd(GCC + CFG_NOC_CBCR));
-		return -2;
+	bad |= !rcg_set(MASTER_RCG, 1, 17) << 3;
+	bad |= !rcg_set(MOCK_UTMI_RCG, 0, 0) << 4;
+	bad |= !rcg_set(PHY_AUX_RCG, 0, 0) << 5;
+	bad |= !clk_on(MASTER_CBCR) << 6;
+	bad |= !clk_on(SLEEP_CBCR) << 7;
+	bad |= !clk_on(MOCK_UTMI_CBCR) << 8;
+	bad |= !clk_on(PHY_AUX_CBCR) << 9;	/* USB3 PHY aux: may never report ON on this USB2-only port */
+	if (bad) {
+		/* bits: 0 cfgnoc 1 aggre 2 ahb2phy 3 master-rcg 4 utmi-rcg 5 aux-rcg 6 master 7 sleep 8 utmi 9 aux */
+		con_hex2("USBPWR", "slow clks=", bad, "aux=", rd(GCC + PHY_AUX_CBCR));
+		con_hex2("USBPWR", "utmi=", rd(GCC + MOCK_UTMI_CBCR), "sleep=", rd(GCC + SLEEP_CBCR));
 	}
 
 	/* controller and PHY resets, then the PHY init sequence ending in power-up (PWR_CTRL1 0x22) */
