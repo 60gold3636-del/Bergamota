@@ -1,9 +1,9 @@
 import Foundation
 import Observation
 
-struct QueueItem: Identifiable, Hashable {
-    enum Status: Hashable { case pending, sending, sent, failed }
-    let id = UUID()
+struct QueueItem: Identifiable, Hashable, Codable {
+    enum Status: String, Hashable, Codable { case pending, sending, sent, failed }
+    var id = UUID()
     var imagePath: String
     var label: String = ""
     var size: Int64 = 0
@@ -31,8 +31,8 @@ final class BootQueue {
         ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
     }
 
-    var items: [QueueItem] = []
-    var armed = false
+    var items: [QueueItem] = [] { didSet { save() } }
+    var armed = false { didSet { if armed != oldValue { save() } } }
     var waitingForLeave = false
     var lastSendFailed = false
     var recoveryRebootSent = false
@@ -57,6 +57,35 @@ final class BootQueue {
         self.monitor = monitor
         self.tools = tools
         monitor.observers.append { [weak self] old, new in self?.handle(old: old, new: new) }
+        load()
+    }
+
+    // MARK: persistence (a Bergamota restart used to drop the queue)
+
+    private struct Saved: Codable { var items: [QueueItem]; var armed: Bool }
+    @ObservationIgnored private var loading = false
+    private static var storeURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Bergamota")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("queue.json")
+    }
+
+    private func save() {
+        guard !loading, let data = try? JSONEncoder().encode(Saved(items: items, armed: armed)) else { return }
+        try? data.write(to: Self.storeURL, options: .atomic)
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: Self.storeURL), var saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
+        // A send interrupted by the restart may or may not have reached ABL: never resend it automatically.
+        for i in saved.items.indices where saved.items[i].status == .sending {
+            saved.items[i].status = .failed
+            saved.items[i].output += "\nBergamota restarted during the send"
+        }
+        loading = true
+        items = saved.items
+        armed = saved.armed
+        loading = false
     }
 
     var pending: [QueueItem] { items.filter { $0.status == .pending } }

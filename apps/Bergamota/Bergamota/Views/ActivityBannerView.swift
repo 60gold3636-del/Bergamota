@@ -62,8 +62,9 @@ private struct StateFlash: ViewModifier {
                 seen = new
                 Task { @MainActor in
                     for _ in 0..<2 {
-                        phase = -1
+                        phase = -1      // snap back without animation, let it render, then sweep
                         showing = true
+                        try? await Task.sleep(nanoseconds: 30_000_000)
                         withAnimation(.easeInOut(duration: 0.9)) { phase = 1 }
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                     }
