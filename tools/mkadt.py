@@ -2,7 +2,7 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium] [--display-scale 3|2]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium] [--display-scale 3|2] [--points WxH]
 """
 import hashlib, os, struct, sys
 
@@ -99,7 +99,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3):
+def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, points=(375, 812)):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     b = BOARDS[board]
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
@@ -216,8 +216,11 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3):
             # iPhone X: 375x812 points; @3x = 1125x2436, @2x = 750x1624
             # (2.25x fewer pixels for the CPU renderer; the kernel scales
             # the canvas onto the panel, patch 0100).
-            ('canvas-width', u32(375 * display_scale)),
-            ('canvas-height', u32(812 * display_scale)),
+            # --points 414x896 (iPhone XR/11 geometry): UIKit has no status bar
+            # visual provider for 375x812 at @2x, which no iPhone has, and shows
+            # a red "rdar:45025538" banner instead; 414x896 @2x is a real one.
+            ('canvas-width', u32(points[0] * display_scale)),
+            ('canvas-height', u32(points[1] * display_scale)),
         ])])
 
     fbcon = node('sweet-fbcon', [
@@ -277,7 +280,8 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3):
 if __name__ == '__main__':
     board = sys.argv[sys.argv.index('--board') + 1] if '--board' in sys.argv else 'sweet'
     scale = int(sys.argv[sys.argv.index('--display-scale') + 1]) if '--display-scale' in sys.argv else 3
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board, display_scale=scale)
+    points = tuple(int(v) for v in sys.argv[sys.argv.index('--points') + 1].split('x')) if '--points' in sys.argv else (375, 812)
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board, display_scale=scale, points=points)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
