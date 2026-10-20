@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack an xnu kernel Mach-O + ADT into the payload the sweet shim boots.
 
-  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE]
+  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE] [--compress]
 
 The kernel is linked as a PIE with LC_DYLD_CHAINED_FIXUPS. Nobody else
 (no kmutil, no iBoot) resolves those for us, and xnu only rebases static
@@ -20,13 +20,17 @@ Payload layout (little endian, all offsets from payload start):
   0x048  char  cmdline[608]
   0x2a8  seg[nsegs] { u64 vmaddr, vmsize, file_off(in payload), file_size }
 
+--compress (payload version 2, needs the shim with inflate.c): every segment/ramdisk piece of 1 MiB or more is stored
+as raw DEFLATE and the shim inflates it into place. The segment table then has 5 u64 per entry (raw_size last).
+ABL places the boot.img ramdisk just below 0x85600000 (docs/IOS18_PORT.md section 11): a 200 MB payload does not fit.
+
 --ramdisk appends IMAGE as one more segment right after the kernel and moves
 kernel_end past it, so the shim needs no changes: the image lands below the
 ADT and boot_args, inside topOfKernelData (never handed to the VM), and the
 ADT gets /chosen/memory-map "RAMDisk" = <phys, size> for IOFindBSDRoot to
 turn into md0 (boot with rd=md0).
 """
-import argparse, os, struct, sys
+import argparse, os, struct, sys, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
@@ -140,7 +144,7 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -168,25 +172,32 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
         adt_blob = add_ramdisk_to_adt(adt_blob, rd_pa, rd_size)
         ramdisk = (hex(rd_pa), hex(rd_size))
 
-    hdr_size = SEG_TABLE + 32 * len(pieces)
+    stride = 40 if compress else 32
+    hdr_size = SEG_TABLE + stride * len(pieces)
     out = bytearray(hdr_size)
     seg_table = []
     for vmaddr, vmsize, data in pieces:
+        raw = 0
+        if compress and len(data) >= 1 << 20:
+            co = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+            z = co.compress(bytes(data)) + co.flush()
+            if len(z) < len(data):
+                raw, data = len(data), z
         off = len(out)
         out += data
         out += b'\0' * (-len(out) & 0xf)
-        seg_table.append((vmaddr, vmsize, off, len(data)))
+        seg_table.append((vmaddr, vmsize, off, len(data), raw) if compress else (vmaddr, vmsize, off, len(data)))
     adt_off = len(out)
     out += adt_blob
     out += b'\0' * (-len(out) & 0xf)
 
-    struct.pack_into('<8sII', out, 0, b'SWEETXNU', 1, len(pieces))
+    struct.pack_into('<8sII', out, 0, b'SWEETXNU', 2 if compress else 1, len(pieces))
     struct.pack_into('<7Q', out, 0x10, virt_base, m['entry'], adt_off, len(adt_blob), kernel_end,
                      PHYS_BASE, MEM_SIZE)
     cl = cmdline.encode()[:BOOT_LINE_LENGTH - 1]
     out[CMDLINE:CMDLINE + len(cl)] = cl
     for i, t in enumerate(seg_table):
-        struct.pack_into('<4Q', out, SEG_TABLE + 32 * i, *t)
+        struct.pack_into('<5Q' if compress else '<4Q', out, SEG_TABLE + stride * i, *t)
     info = dict(cputype=hex(m['cputype']), cpusub=m['cpusub'], fixups=nfix, virt_base=hex(virt_base),
                 entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, size=len(out),
                 segs=[(s['name'], hex(s['vmaddr']), hex(s['vmsize'])) for s in segs])
@@ -198,8 +209,9 @@ if __name__ == '__main__':
     ap.add_argument('kernel'); ap.add_argument('adt'); ap.add_argument('out')
     ap.add_argument('--cmdline', default='debug=0xc serial=3 cpus=1 keepsyms=1')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
+    ap.add_argument('--compress', action='store_true', help='deflate big segments (payload v2)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':

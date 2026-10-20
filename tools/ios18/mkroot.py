@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage the iOS 18 restore ramdisk as a bootable root (stage 1b, docs/IOS18_PORT.md section 9).
 
-  mkroot.py RAMDISK_MOUNT STAGEDIR [--stock-daemons] [--keep-standalone] [--keep-all]
+  mkroot.py RAMDISK_MOUNT STAGEDIR [--stock-daemons] [--keep-standalone] [--keep-all] [--no-strip]
 
 1. copies the ramdisk into STAGEDIR (uncompressed: the kernel has no decmpfs, no xattrs/quarantine),
 2. drops what a RAM-disk boot does not need (/usr/standalone firmware blobs, /usr/local restore tools,
@@ -100,6 +100,23 @@ def main():
             with open(p, 'rb') as fh:
                 if fh.read(4) in MAGICS:
                     machos.append(p)
+    if '--no-strip' not in flags:
+        # local symbols are ~25% of every dylib and nothing at run time needs them (dyld uses the export trie and
+        # the chained-fixup import names); the payload has to be small (docs/IOS18_PORT.md section 11)
+        import struct
+        before = after = 0
+        for p in machos:
+            with open(p, 'rb') as fh:
+                hdr = fh.read(16)
+            if struct.unpack_from('<I', hdr, 12)[0] != 6:       # MH_DYLIB only; dyld/launchd/tools stay intact
+                continue
+            before += os.path.getsize(p)
+            os.chmod(p, os.stat(p).st_mode | 0o200)
+            r = subprocess.run(['xcrun', 'strip', '-x', '-no_code_signature_warning', p], capture_output=True, text=True)
+            if r.returncode:
+                print(f'strip failed for {p}: {r.stderr.strip()}', file=sys.stderr)
+            after += os.path.getsize(p)
+        print(f'strip -x on dylibs: {before >> 20} MiB -> {after >> 20} MiB')
     print(f'{len(machos)} Mach-O files to rewrite')
     bad = 0
     for p in machos:
