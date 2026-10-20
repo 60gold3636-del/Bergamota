@@ -137,7 +137,7 @@ tools/ios18/fetch-ramdisk.sh                  # mounts research/ios18/ramdisk/mn
 tools/ios18/mkramdisk-root.sh                 # -> research/ios18/ios18-root.hfs (about 1 minute, no sudo)
 # kernel: 0131 + 0133 (hw.targettype) + 0134 (dyld pager) must be in the CI build
 python3 tools/mkpayload.py xnu/out-NNNN/kernel.development.sweet shim/out/beryllium-hi-3x.adt shim/out/payload-ios18rd.bin \
-    --ramdisk research/ios18/ios18-root.hfs \
+    --ramdisk research/ios18/ios18-root.hfs --compress \
     --cmdline "debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=md0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetfb_flip=1 sweetusb=2 sweetbattery=1 sweetfb_hw=1 sweetarm64e=1 launchd_disable_all_timeouts=1"
 BOARD=beryllium shim/build.sh shim/out/payload-ios18rd.bin && cp shim/out/shim-boot.img shim/out/shim-boot-ios18rd.img
 tools/sweet-usbnet.sh logs/live-ios18rd.txt &          # kernel log over USB (sweetusb=2)
