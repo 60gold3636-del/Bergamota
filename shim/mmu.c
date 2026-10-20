@@ -54,8 +54,9 @@
 
 extern char _head[], _end[];
 
-/* 1 L2 + up to 2 L3 tables, plus slack to align to 16K at runtime */
-static uint64_t pt_pool[4 * NENT] __attribute__((aligned(4096)));
+/* 1 L2 + up to MAX_L3 L3 tables, plus slack to align to 16K at runtime */
+#define MAX_L3		10
+static uint64_t pt_pool[(MAX_L3 + 2) * NENT] __attribute__((aligned(4096)));
 
 static void dcache_inval_range(uintptr_t start, uintptr_t end)
 {
@@ -72,19 +73,37 @@ static void zero_table(uint64_t *t)
 		t[i] = 0;
 }
 
+static int in_ranges(uint64_t pa, const struct mmu_range *r, int n)
+{
+	for (int i = 0; i < n; i++)
+		if (pa >= r[i].lo && pa < r[i].hi)
+			return 1;
+	return 0;
+}
+
 int mmu_enable(struct mmu_info *info)
+{
+	return mmu_enable_ranges(info, 0, 0);
+}
+
+int mmu_enable_ranges(struct mmu_info *info, const struct mmu_range *extra, int n_extra)
 {
 	uintptr_t img_lo = (uintptr_t)_head & ~(PG_SIZE - 1);
 	uintptr_t img_hi = ((uintptr_t)_end + PG_SIZE - 1) & ~(PG_SIZE - 1);
 	uintptr_t pool = ((uintptr_t)pt_pool + PG_SIZE - 1) & ~(PG_SIZE - 1);
 	uint64_t *l2 = (uint64_t *)pool;
-	int n_l3 = 0;
+	struct mmu_range wb[4];
+	int n = 0, n_l3 = 0;
 
 	info->img_lo = img_lo;
 	info->img_hi = img_hi;
 	info->ttbr = pool;
-	if (((img_hi - 1) >> BLK_SHIFT) - (img_lo >> BLK_SHIFT) > 1)
-		return -1;	/* only room for two L3 tables */
+	if (n_extra > 3)
+		return -1;
+	wb[n++] = (struct mmu_range){ img_lo, img_hi };
+	for (int i = 0; i < n_extra; i++)
+		wb[n++] = (struct mmu_range){ extra[i].lo & ~(PG_SIZE - 1),
+					      (extra[i].hi + PG_SIZE - 1) & ~(PG_SIZE - 1) };
 
 	/* L2: Device everywhere RAM or MMIO can be (first 8GB), rest unmapped */
 	zero_table(l2);
@@ -92,21 +111,31 @@ int mmu_enable(struct mmu_info *info)
 		l2[i] = (i << BLK_SHIFT) | DEV_FLAGS | D_BLOCK;
 	l2[FB_PHYS >> BLK_SHIFT] = (FB_PHYS & ~(BLK_SIZE - 1)) | NC_FLAGS | D_BLOCK;
 
-	/* L3 for each block that holds part of the image */
-	for (uint64_t blk = img_lo >> BLK_SHIFT; blk <= (img_hi - 1) >> BLK_SHIFT; blk++) {
-		uint64_t *l3 = (uint64_t *)(pool + (1 + n_l3++) * PG_SIZE);
-		uint64_t base = blk << BLK_SHIFT;
-		for (int i = 0; i < NENT; i++) {
-			uint64_t pa = base + ((uint64_t)i << PG_SHIFT);
-			int ours = pa >= img_lo && pa < img_hi;
-			l3[i] = pa | (ours ? WB_FLAGS : DEV_FLAGS) | D_PAGE;
+	/* Write-back: whole blocks inside a range, an L3 table for blocks it only partly covers */
+	for (int r = 0; r < n; r++) {
+		for (uint64_t blk = wb[r].lo >> BLK_SHIFT; blk <= (wb[r].hi - 1) >> BLK_SHIFT; blk++) {
+			uint64_t base = blk << BLK_SHIFT;
+			if ((l2[blk] & 3) == D_TABLE)
+				continue;	/* already split (ranges share a block) */
+			if (wb[r].lo <= base && wb[r].hi >= base + BLK_SIZE) {
+				l2[blk] = base | WB_FLAGS | D_BLOCK;
+				continue;
+			}
+			if (n_l3 == MAX_L3)
+				return -1;
+			uint64_t *l3 = (uint64_t *)(pool + (1 + n_l3++) * PG_SIZE);
+			for (int i = 0; i < NENT; i++) {
+				uint64_t pa = base + ((uint64_t)i << PG_SHIFT);
+				l3[i] = pa | (in_ranges(pa, wb, n) ? WB_FLAGS : DEV_FLAGS) | D_PAGE;
+			}
+			l2[blk] = (uintptr_t)l3 | D_TABLE;
 		}
-		l2[blk] = (uintptr_t)l3 | D_TABLE;
 	}
 	info->n_l3 = n_l3;
 
-	/* Image lines may be stale in the cache from ABL; we wrote memory directly. */
-	dcache_inval_range(img_lo, img_hi);
+	/* Lines may be stale in the cache from ABL; we wrote memory directly. */
+	for (int r = 0; r < n; r++)
+		dcache_inval_range(wb[r].lo, wb[r].hi);
 	__asm__ volatile("ic iallu; dsb sy; isb" ::: "memory");
 
 	wsr("mair_el1", MAIR_VAL);

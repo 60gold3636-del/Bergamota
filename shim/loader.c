@@ -6,12 +6,18 @@
  * segments to phys_base + (vmaddr - virt_base), place the ADT and
  * boot_args behind the kernel, and jump to the entry point with the MMU
  * and caches off, x0 = boot_args (physical).
+ *
+ * The copy/inflate runs with the MMU and D-cache on (payload, kernel
+ * destination and our image write-back, everything else Device as before):
+ * the bit-at-a-time inflater was ~10 MiB/min on uncached Device memory.
+ * mmu_off_jump cleans it all to memory before xnu starts.
  */
 #include <stdint.h>
 #include "console.h"
 #include "fdt.h"
 #include "inflate.h"
 #include "loader.h"
+#include "mmu.h"
 
 #define BOOT_LINE_LENGTH	608
 #define PAGE_16K		0x4000UL
@@ -82,8 +88,6 @@ static int magic_ok(const char *m)
 	return 1;
 }
 
-typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
-
 static void inflate_progress(uint64_t done)
 {
 	static unsigned calls;
@@ -116,6 +120,19 @@ const char *loader_boot(uintptr_t dtb)
 	if (rd_end > p->phys_base && rd_start < p->phys_base + p->mem_size)
 		return "ramdisk overlaps kernel memory";
 
+	/* Kernel destination through boot_args (see below), and the payload: cacheable while we work. */
+	uint64_t kend_pa = p->kernel_end + pa_of_va_base;
+	uint64_t top_pa = ((kend_pa + p->adt_size + PAGE_16K - 1) & ~(PAGE_16K - 1)) + PAGE_16K;
+	struct mmu_range wb[3] = {
+		{ p->phys_base, top_pa },
+		{ rd_start, rd_end },
+		{ 0, 0 },	/* the image: filled in from mmu_info */
+	};
+	struct mmu_info mi;
+	int mmu_rc = mmu_enable_ranges(&mi, wb, 2);
+	con_hex2("MMU", "rc=", (uint32_t)mmu_rc, "l3=", (uint32_t)mi.n_l3);
+	wb[2] = (struct mmu_range){ mi.img_lo, mi.img_hi };
+
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = (const struct payload_seg *)(p->segs + (uint64_t)i * stride);
 		uintptr_t dst = s->vmaddr + pa_of_va_base;
@@ -143,6 +160,8 @@ const char *loader_boot(uintptr_t dtb)
 	copy64(adt_pa, rd_start + p->adt_off, p->adt_size);
 	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_16K - 1) & ~(PAGE_16K - 1);
 	uintptr_t top = ba_pa + PAGE_16K;
+	if (top != top_pa)
+		return "boot_args placement mismatch";
 
 	zero64(ba_pa, PAGE_16K);
 	volatile struct boot_args *ba = (volatile struct boot_args *)ba_pa;
@@ -169,8 +188,6 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex("JUMP", entry_pa);
 	con_str("XNU", "jumping (fbcon clears screen)");
 
-	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
-	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
-	((xnu_entry_t)entry_pa)(ba_pa);
-	return "xnu returned";
+	/* Clean to memory, MMU and caches off, invalidate, jump (also right when mmu_rc failed). */
+	mmu_off_jump(entry_pa, ba_pa, wb);
 }

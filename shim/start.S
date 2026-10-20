@@ -126,3 +126,52 @@ exc_common:
 	add	sp, sp, #(30 * 8)
 	ldp	x29, x30, [sp], #16
 	eret
+
+/*
+ * mmu_off_jump(entry, arg, ranges[3] = {lo, hi} x 3): see mmu.h. The ranges
+ * are loaded into registers first; after that nothing touches memory.
+ */
+	.macro	civac_range lo, hi
+	bic	x15, \lo, x14
+1:	cmp	x15, \hi
+	b.hs	2f
+	dc	civac, x15
+	add	x15, x15, x13
+	b	1b
+2:
+	.endm
+
+	.globl mmu_off_jump
+mmu_off_jump:
+	msr	daifset, #0xf
+	mov	x16, x0			/* entry */
+	mov	x17, x1			/* arg */
+	ldp	x3, x4, [x2, #0]
+	ldp	x5, x6, [x2, #16]
+	ldp	x7, x8, [x2, #32]
+	mrs	x9, ctr_el0		/* DminLine: log2 words */
+	ubfx	x9, x9, #16, #4
+	mov	x13, #4
+	lsl	x13, x13, x9		/* line bytes */
+	sub	x14, x13, #1
+	dsb	sy
+	civac_range x3, x4
+	civac_range x5, x6
+	civac_range x7, x8
+	dsb	sy
+	mrs	x9, sctlr_el1
+	mov	x10, #((1 << 0) | (1 << 2))	/* M, C */
+	orr	x10, x10, #(1 << 12)		/* I */
+	bic	x9, x9, x10
+	msr	sctlr_el1, x9
+	isb
+	civac_range x3, x4
+	civac_range x5, x6
+	civac_range x7, x8
+	dsb	sy
+	tlbi	vmalle1
+	ic	iallu
+	dsb	sy
+	isb
+	mov	x0, x17
+	br	x16
