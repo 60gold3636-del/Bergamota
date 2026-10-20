@@ -117,7 +117,11 @@ final class RemoteControl {
             }
             guard let p = req["path"] as? String, !p.isEmpty else { throw RemoteError("missing \"path\"") }
             let info: UserdataFlash.Info
-            switch UserdataFlash.validate(try resolve(p, under: "", suffix: nil)) {
+            // Root images live in the repo or in the sibling ios18 worktree's research/ios18/ (the iOS 18 full root).
+            let resolved: String
+            if let r = try? resolve(p, under: "", suffix: nil) { resolved = r }
+            else { resolved = try resolve(p, under: "../ios-beryllium-ios18/research/ios18", suffix: nil) }
+            switch UserdataFlash.validate(resolved) {
             case .success(let i): info = i
             case .failure(let e): throw RemoteError(e.message)
             }
