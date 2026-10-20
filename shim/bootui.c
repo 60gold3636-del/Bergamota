@@ -13,7 +13,7 @@
 
 #define NOTCH_PX	128			/* status bar / notch area, nothing is drawn above */
 #define LOG_SCALE	2
-#define LOG_ROWS	14
+#define LOG_ROWS	24
 #define LOG_Y		(FB_H - 24 - LOG_ROWS * 16 * LOG_SCALE)
 
 #define TITLE_SCALE	5
