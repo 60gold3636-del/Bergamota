@@ -284,5 +284,15 @@ const char *loader_boot_payload(uintptr_t rd_start, uintptr_t rd_end, int verify
 	con_str("XNU", "jumping (fbcon clears screen)");
 
 	/* Clean to memory, MMU and caches off, invalidate, jump (also right when mmu_rc failed). */
+#ifdef BOOT_PAUSE_MS
+	/* debug builds (BOOTPAUSE=ms build.sh): leave the log on screen long enough for a photo */
+	{
+		uint64_t f, t0, t;
+		__asm__ volatile("mrs %0, cntfrq_el0; mrs %1, cntvct_el0" : "=r"(f), "=r"(t0));
+		do
+			__asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+		while (t - t0 < f / 1000 * BOOT_PAUSE_MS);
+	}
+#endif
 	mmu_off_jump(entry_pa, ba_pa, wb);
 }
