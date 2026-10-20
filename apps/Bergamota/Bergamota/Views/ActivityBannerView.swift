@@ -22,8 +22,23 @@ struct ActivityBannerView: View {
             .foregroundStyle(fg)
             .padding(big ? 24 : 16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(b.color.gradient, in: RoundedRectangle(cornerRadius: big ? 28 : 14))
-            .modifier(StateFlash(key: b.title + "|\(b.color)", radius: big ? 28 : 14))
+            .background {
+                let shape = RoundedRectangle(cornerRadius: big ? 28 : 14)
+                if let p = b.progress {
+                    // progress bar: dimmed track, the filled part in the banner colour
+                    ZStack(alignment: .leading) {
+                        shape.fill(b.color.opacity(0.35))
+                        GeometryReader { g in
+                            Rectangle().fill(b.color.gradient).frame(width: g.size.width * max(0, min(1, p)))
+                                .animation(.linear(duration: 1), value: p)
+                        }
+                    }
+                    .clipShape(shape)
+                } else {
+                    shape.fill(b.color.gradient)
+                }
+            }
+            .modifier(StateFlash(key: (b.progress == nil ? b.title : b.symbol) + "|\(b.color)", radius: big ? 28 : 14))  // percent ticks are not a state change
             .accessibilityElement(children: .combine)
         }
     }

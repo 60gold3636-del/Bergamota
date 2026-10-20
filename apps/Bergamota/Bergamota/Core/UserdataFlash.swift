@@ -67,6 +67,11 @@ final class UserdataFlasher {
     var current = 0
     var total = 0
     var output = ""
+    /// For the progress bar / ETA: when the flash started, the image size, and when the chunk before
+    /// `current` finished (fastboot only reports per sparse chunk, so the bar interpolates inside one).
+    var startedAt: Date?
+    var bytes: Int64 = 0
+    var lastChunkDoneAt: Date?
     /// Outcome of the last flash (ok, when, message).
     var last: (ok: Bool, at: Date, message: String)?
 
@@ -76,6 +81,26 @@ final class UserdataFlasher {
 
     var progressText: String { total > 0 ? "\(current)/\(total)" : "starting" }
 
+    /// 0...1, or nil until the first sparse chunk is done (no rate known yet).
+    func fraction(now: Date = Date()) -> Double? {
+        guard active, total > 0, current >= 1, let t0 = startedAt else { return nil }
+        let done = Double(current - 1)
+        guard done > 0, let last = lastChunkDoneAt else { return nil }
+        let perChunk = last.timeIntervalSince(t0) / done
+        let inChunk = perChunk > 0 ? min(0.97, now.timeIntervalSince(last) / perChunk) : 0
+        return min(1, (done + inChunk) / Double(total))
+    }
+
+    /// "37%  |  4.1 of 11.0 GB  |  48 MB/s  |  ETA 3:12", or nil before a rate is known.
+    func progressDetail(now: Date = Date()) -> String? {
+        guard let f = fraction(now: now), f > 0, let t0 = startedAt else { return nil }
+        let elapsed = now.timeIntervalSince(t0)
+        let gb = { (b: Double) in String(format: "%.1f", b / 1_073_741_824) }
+        let sent = Double(bytes) * f
+        let rate = sent / max(elapsed, 1) / 1_048_576
+        return "\(Int(f * 100))%  |  \(gb(sent)) of \(gb(Double(bytes))) GB  |  \(Int(rate)) MB/s  |  ETA \(formatElapsed(elapsed / f - elapsed))"
+    }
+
     /// ONE `fastboot -s <serial> flash userdata <img>`. No retry. Caller must have checked fastboot state and queue busy.
     func flash(_ info: UserdataFlash.Info) async -> (ok: Bool, message: String) {
         guard !active else { return (false, "a flash is already running") }
@@ -83,6 +108,7 @@ final class UserdataFlasher {
         guard let serial = monitor.fastbootSerial, !serial.isEmpty else { return (false, "no fastboot serial") }
         active = true
         fileName = info.name; current = 0; total = 0
+        startedAt = Date(); bytes = info.size; lastChunkDoneAt = nil
         let args = UserdataFlash.flashArguments(serial: serial, image: info.path)
         output = "$ fastboot " + args.map(shellQuote).joined(separator: " ") + "\n"
         DebugLog.write("FLASH userdata start \(info.path) (\(info.size) bytes)")
@@ -94,7 +120,10 @@ final class UserdataFlasher {
                 guard let self else { return }
                 self.output += chunk
                 if self.output.count > 200_000 { self.output = String(self.output.suffix(100_000)) }
-                if let p { self.current = p.0; self.total = p.1 }
+                if let p {
+                    if p.0 != self.current, p.0 > 1 { self.lastChunkDoneAt = Date() }
+                    self.current = p.0; self.total = p.1
+                }
             }
         })
         var ok = r.ok
