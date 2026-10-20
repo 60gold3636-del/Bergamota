@@ -107,7 +107,47 @@ Goal: stop using the ramdisk dylibs; run iOS 18's own 4.8 GB `dyld_shared_cache_
 4. launchd and the rest: rewrite `/sbin/launchd` and every executable the same way (the rewriter already handles a Mach-O executable and re-signs), then userland bring-up as in feasibility section 5.
 5. Rebase vs backport: stay on xnu-8796 plus 0131 plus the v5 port; revisit if iOS 18 daemons need newer syscalls.
 
+## 8a. First on-device run and the Bus error (patch 0134)
+First run (kernel with 0131): dyld honoured the AMFI answer (`DYLD_PRINT_*` output), resolved all 117 images (after the frameworks fix), ran libSystem's initializer and died with `Bus error: 10`, `far` in libdispatch `__AUTH_CONST`. Diagnosis (from `research/ios18/last-run.txt`):
+* **No VA overlap**: all 674 distinct segment ranges listed by `DYLD_PRINT_SEGMENTS` were checked, the only "overlap" is `__PAGEZERO` vs the first `__TEXT`. (MobileSystemServices `__AUTH_CONST+0x4e0` has the same offset as libdispatch's by coincidence of the page offset, not the VA.)
+* The log line before every data segment is `Setting up kernel page-in linking for <image>`: iOS 18 dyld defaults to `pageInLinkingMode = 2` (not changeable without an internal install: `DYLD_PAGEIN_LINKING=0` is honoured only if `internalInstall()`), so data segments with chained fixups are mapped through `map_with_linking_np` (xnu-8796 has it, `bsd/vm/vm_unix.c`) and the fixups are applied **by the kernel's dyld pager at page-in** (`osfmk/vm/vm_dyld_pager.c fixup_page`).
+* That pager handled `DYLD_CHAINED_PTR_ARM64E`, `_USERLAND` and `_USERLAND24` only under `#if defined(HAS_APPLE_PAC)`, which our build does not define. For every arm64e image it printed `unknown pointer_format` (kernel log) and returned `KERN_FAILURE`; the first touch of such a page (here libdispatch `__AUTH_CONST+0x4e0`, `pc` = libdispatch `__TEXT+0x3cc08` right after libSystem's initializer started) is `KERN_MEMORY_ERROR` = SIGBUS code 0x10000000a. Not a rewriter problem.
+* **Fix: `xnu/patches/0134-ios18-dyld-pager-arm64e-nopac.patch`**: build `fixupPageAuth64` always and, without PAC, make `signPointer()` the identity (pointers stay unsigned, which is what the rewritten code expects: the AUTx instructions are NOPs). Auth and non-auth rebases/binds are walked exactly as in the PAC build (stride 8, 24-bit ordinals, offset- or vmaddr-based targets). Compiles with `tools/xnu-cc.py`; applies on bt130. It needs a new kernel (CI) but no other change: same bundle, same `tools/ios18/run-poc.sh`. Only arm64e images use these pointer formats, so arm64 processes are unaffected.
+* If it still faults, the kernel log now says why: `fixupPageAuth64(): ...` lines.
+
 ## 8. Limits of what was verified here
 * Rewriter: counted over the whole bundle; re-disassembled with `llvm-objdump` (PAuth on): zero remaining PAC instructions outside hint space in dyld, libobjc, libc++abi, libsystem_c, expr; with PAuth off the only undecodable words are SHA3 (dyld, gated) and data. Signed bundle passes `codesign -v`.
 * Not verified: any execution; the AMFI struct layout (read from disassembly); that the kernel's AMFI stand-in accepts the new ad-hoc blobs; behaviour of the iOS 18 libs on this kernel after dyld (syscalls/sysctls/commpage), expected to need more patches (feasibility 5.1).
 * Sources: iOS 18.7.8 22H352 IPSW (iPhone11,8), dyld-1286.10 source (`apple-oss-distributions/dyld`), xnu bt130 tree.
+
+
+## 9. Stage 1b: boot the iOS 18 restore ramdisk itself as the root (launchd 18 as PID 1)
+
+"For fun" version of the bring-up: no phone filesystem, no iOS 16: the kernel mounts the rewritten iOS 18.7.8 restore ramdisk as the root (`rd=md0`) and runs **its** `/sbin/launchd` (arm64e, rewritten, signed) as PID 1 with **its** `/usr/lib/dyld` and libs at their native paths (no DYLD_* env needed: the paths exist; dyld finds no cache and loads from disk).
+
+### Image
+* APFS: our xnu-8796 has no APFS (closed kext), so `tools/ios18/mkramdisk-root.sh` converts: stage (`tools/ios18/mkroot.py`: ditto without compression/xattrs, prune, pacstrip --sign of every Mach-O) -> case-sensitive **unjournaled** HFS+ (`newfs_hfs -s`, the kernel's built-in hfs, same as the iOS 16 root) built **without sudo**: attached as a user raw image, populated with ditto, then `tools/ios18/hfsroot_chown.py` sets owner/group of every catalog record to 0:0 in place (the unprivileged Mac user cannot chown; the catalog B-tree leaf walk is 60 lines).
+* Pruned: `/usr/standalone` (49 MB firmware), `/usr/local` (restore tools), `Filesystems`, every Mach-O not reachable from `launchd`, `dyld` and `/bin/*` (183 files) -> 125 Mach-O files, **185 MB** image (143 MB when HFS compresses nothing: the ramdisk's 140 MB APFS data inflates because decmpfs-compressed files are written uncompressed; the kernel has no decmpfs). Whole boot payload with an existing kernel: **201 MB** (`mkpayload` checked), the ABL fastboot limit is 768 MiB (NOTES).
+* Stock LaunchDaemons (restored_external, camera, driverkitd, ...) are removed (`--stock-daemons` keeps them): they would fight over USB and crash-loop. Two jobs are added that print to the console: `org.sweet.ios18.expr` (`/bin/expr 6 * 7` -> `42`) and `org.sweet.ios18.passwd` (`/bin/cat /etc/master.passwd`).
+
+### Build and boot
+```sh
+cd /Users/zesmoi/git/iAndroid/ios-beryllium-ios18
+tools/ios18/fetch-ramdisk.sh                  # mounts research/ios18/ramdisk/mnt
+tools/ios18/mkramdisk-root.sh                 # -> research/ios18/ios18-root.hfs (about 1 minute, no sudo)
+# kernel: 0131 + 0133 (hw.targettype) + 0134 (dyld pager) must be in the CI build
+python3 tools/mkpayload.py xnu/out-NNNN/kernel.development.sweet shim/out/beryllium-hi-3x.adt shim/out/payload-ios18rd.bin \
+    --ramdisk research/ios18/ios18-root.hfs \
+    --cmdline "debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=md0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetfb_flip=1 sweetusb=2 sweetbattery=1 sweetfb_hw=1 sweetarm64e=1 launchd_disable_all_timeouts=1"
+BOARD=beryllium shim/build.sh shim/out/payload-ios18rd.bin && cp shim/out/shim-boot.img shim/out/shim-boot-ios18rd.img
+tools/sweet-usbnet.sh logs/live-ios18rd.txt &          # kernel log over USB (sweetusb=2)
+fastboot boot shim/out/shim-boot-ios18rd.img
+```
+Differences from the usual cmdline: `rd=md0` instead of `rd=ufsroot0`, no `ufsrw=1 rootrw=1` (userdata is not touched at all), no Wi-Fi/BT/net/sample options; `launchd_disable_all_timeouts=1` is a launchd 18 boot-arg (string in the binary) so slow first launches are not killed. `shim/out/beryllium-hi-3x.adt` is the @3x ADT; use whichever your last image used (the cmdline above is the last image's, `payload-ios18.bin`, minus the changes listed). `sweetarm64e=1` is mandatory.
+
+### What to expect [U], and how to read the log
+1. Usual kernel boot, then `BSD root: md0`, `hfs: mounted iOSRoot on device ...`, `SWEET: root volume is not authenticated ...; continuing unsealed`, `load_init_program: /sbin/launchd`.
+2. No exec error if grading works (`Bad CPU type` / panic `initproc failed to start` with exec error 86 = boot-arg missing).
+3. launchd 18 starts (dyld loads libSystem etc. from `/usr/lib`): first signs on the console are `launchd[1]` lines (it prints to `/dev/console`), then the two jobs print `42` and the passwd file. That would be the whole success criterion: iOS 18 PID 1 runs jobs.
+4. Failure modes and where they show: **panic `initproc exited`/`unexpected SIGKILL of launchd`** with namespace/code: 9/0xe = platform check (alien binary, boot-arg `unentitled_ios_sim_launch=1` is in the cmdline), 2/0xa SIGBUS = the pager fixup (should be fixed by 0134; kernel log has `fixupPageAuth64()` or `dyld_pager` lines), 2/0x4 SIGILL = an instruction class the rewriter does not cover (find the pc offset in the Mach-O, `pacstrip.py --scan`), 2/0xb SIGSEGV; code-signing kills (`CS_KILLED`, `cs_invalid_page`) mean an ad-hoc blob was refused. launchd asserts print the message on the console: known one that is handled: `sysctl hw.targettype was not set` (0133 adds the sysctl); likely next ones: `kern.*`/`hw.*` sysctls that do not exist in xnu-8796, `host_set_special_port`/`task_set_exception_ports` policy calls, `sandbox_init` and AMFI selectors other than 0x5a/0x60 (the "SWEET AMFI: ... __mac_syscall("AMFI", 0x..)" lines list every new op once), coalition/memorystatus/`proc_info` flavours, `reboot3`. The panic string and the last 20 kernel log lines are what to send back.
+5. launchd 18 in a restore ramdisk wants `/System/Library/LaunchDaemons` plists only; there is no `xpcproxy`, `launchctl`, `logd` etc. in this ramdisk, so `xpc` services that launchd normally spawns for itself may report errors; they are expected noise.
