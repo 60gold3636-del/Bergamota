@@ -2,7 +2,7 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium] [--display-scale 3|2]
 """
 import hashlib, os, struct, sys
 
@@ -99,7 +99,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, board='sweet'):
+def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     b = BOARDS[board]
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
@@ -132,7 +132,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
         # from /chosen, the pixel size from IOMobileFramebuffer. Scale 0 makes
         # SpringBoard's FBSDisplayMode "infxinf@0x" invalid. 1080x2400 @3x =
         # 360x800 points (like iPhone X class devices).
-        ('display-scale', u32(3)),
+        ('display-scale', u32(display_scale)),
         # XNU derives IOPlatformUUID (gethostuuid) from these on arm; without
         # them CFPreferences cannot use kCFPreferencesCurrentHost (no ByHost
         # files), so e.g. DataMigration never records LastSystemVersion and
@@ -213,8 +213,11 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
             ph(),
             ('device_type', cstr('display-subsystem')),
             ('compatible', cstr('sweet,display')),
-            ('canvas-width', u32(1125)),
-            ('canvas-height', u32(2436)),
+            # iPhone X: 375x812 points; @3x = 1125x2436, @2x = 750x1624
+            # (2.25x fewer pixels for the CPU renderer; the kernel scales
+            # the canvas onto the panel, patch 0100).
+            ('canvas-width', u32(375 * display_scale)),
+            ('canvas-height', u32(812 * display_scale)),
         ])])
 
     fbcon = node('sweet-fbcon', [
@@ -267,7 +270,8 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
 
 if __name__ == '__main__':
     board = sys.argv[sys.argv.index('--board') + 1] if '--board' in sys.argv else 'sweet'
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board)
+    scale = int(sys.argv[sys.argv.index('--display-scale') + 1]) if '--display-scale' in sys.argv else 3
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board, display_scale=scale)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
