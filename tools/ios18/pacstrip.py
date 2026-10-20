@@ -86,8 +86,10 @@ def rewrite_word(w):
             rd, rn, rm = w & 31, (w >> 5) & 31, (w >> 16) & 31
             if rm == 31:                          # modifier is SP: cannot be an EOR operand
                 return 0xAA0003E0 | rn << 16 | rd, 'PACGA'   # MOV Xd, Xn (ORR Xd, XZR, Xn)
-            # EOR Xd, Xn, Xm, ROR #k (k varies with the registers so chained hashes do not cancel out)
-            k = 7 + (rd * 5 + rn * 3 + rm) % 50
+            # EOR Xd, Xn, Xm, ROR #13. k must NOT depend on the registers: code that stores a PACGA MAC and
+            # re-verifies it elsewhere (Foundation _NSThreadData setTarget: -> __NSThreadPoisoned brk #1, which
+            # killed xpcproxy) uses different registers at the two sites and must still get the same value.
+            k = 13
             return 0xCA000000 | 3 << 22 | rm << 16 | k << 10 | rn << 5 | rd, 'PACGA'
         return None, None
     if top == 0xF8:
