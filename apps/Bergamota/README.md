@@ -23,7 +23,7 @@ Sidebar sections:
 - **Boot Queue**
   - *Build*: pick a kernel (`xnu/out-*/kernel.development.sweet`), an ADT (`shim/out/*.adt`, default `beryllium-hi-3x.adt`), a cmdline (presets in `~/Library/Application Support/Bergamota/presets.json`, seeded with "default @3x", "bluetooth test", "ios18 poc") and an image name. It runs `tools/mkpayload.py`, then `BOARD=beryllium ./build.sh` in `shim/`, then copies `shim/out/shim-boot.img` to `shim/out/shim-boot-<name>.img`, streaming the output.
   - *Images*: lists `shim/out/*.img`; add any to the queue.
-  - *Queue*: press **Start** to arm. When the phone is in fastboot (seen on two consecutive polls) the app sends exactly **one** `fastboot boot <img>`, records the result and time, and will not send again until the phone has left fastboot (a failed send leaves ABL hung; re-enter fastboot yourself, there is never an automatic retry). Optional toggle (off by default): when the phone is in OrangeFox, run `adb reboot bootloader` once first. The queue disarms itself when it is empty. Optional notifications when a boot is sent and when iOS comes up.
+  - *Queue*: press **Start** to arm. When the phone is in fastboot (seen on two consecutive polls) the app sends exactly **one** `fastboot boot <img>`, records the result and time, and will not send again until the phone has left fastboot (a failed send leaves ABL hung; re-enter fastboot yourself, there is never an automatic retry). After a send the next item re-arms as soon as the phone is seen outside fastboot for one poll, or when the fastboot device re-enumerates on USB (best-effort `ioreg -p IOUSB` registry id/sessionID/locationID change), because a bad image can leave ABL sitting in fastboot. The first pending item also has a **Send now** button (only while the phone is in fastboot, with a confirmation: sending again after a hung ABL can hang it further, so press it only after re-entering fastboot). Images over 64 MiB get a yellow warning ("large boot image: ABL may not start it") in the queue, the image list and after a build; they are not blocked. Optional toggle (off by default): when the phone is in OrangeFox, run `adb reboot bootloader` once first. The queue disarms itself when it is empty. Optional notifications when a boot is sent and when iOS comes up.
 - **Settings** (also Cmd+,): repo path (default `/Users/zesmoi/git/iAndroid/ios-beryllium`), phone IP, GitHub repo, and tool paths (`fastboot`, `adb`, `gh`, `python3`, `ssh`; empty means resolve via `PATH` plus `/opt/homebrew/bin` and `/usr/local/bin`).
 
 ## Remote control (file-based API, no network)
@@ -35,10 +35,11 @@ Bergamota watches `~/Library/Application Support/Bergamota/inbox/` for `*.json` 
 {"kind":"build","name":"N","kernel":"xnu/out-.../kernel.development.sweet","adt":"shim/out/beryllium-hi-3x.adt","preset":"default @3x","enqueue":true,"arm":true}
 {"kind":"build","name":"N","kernel":"...","adt":"...","cmdline":"debug=0xc ..."}
 {"kind":"orangefox_reboot","enabled":true}
+{"kind":"send_now"}
 {"kind":"stop"}
 ```
 
-Paths are absolute or repo-relative; images and ADTs must live under `shim/out/` (`.img` / `.adt`), kernels under `xnu/`. `"arm": true` only arms the queue when Settings > "Allow remote requests to start the queue" is on (default on; the Boot Queue header shows a "remote control on" badge). Otherwise items are added and you press Start. The one-`fastboot boot`-per-fastboot-appearance rule applies unchanged.
+Paths are absolute or repo-relative; images and ADTs must live under `shim/out/` (`.img` / `.adt`), kernels under `xnu/`. `"arm": true` only arms the queue when Settings > "Allow remote requests to start the queue" is on (default on; the Boot Queue header shows a "remote control on" badge). Otherwise items are added and you press Start. The one-`fastboot boot`-per-fastboot-appearance rule applies unchanged. `send_now` sends the next pending item immediately; it is refused unless the phone is in fastboot and remote start is allowed.
 
 `status.json` (same folder) is rewritten atomically on every state change and at least every 5 s: `phone` (state, `ios` battery/charging/kernel/uptime when known), `queue` (armed, items with `state` pending|waiting|sent|failed, `sentAt`, `result`), `liveLog` (listening, `savingTo`), `build`.
 

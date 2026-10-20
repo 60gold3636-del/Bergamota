@@ -104,19 +104,29 @@ final class RemoteControl {
             guard let image = req["image"] as? String, !image.isEmpty else { throw RemoteError("missing \"image\"") }
             let path = try resolve(image, under: "shim/out", suffix: ".img")
             queue.add(path, label: (req["label"] as? String) ?? "")
-            return "queued \((path as NSString).lastPathComponent)" + armNote(req)
+            return "queued \((path as NSString).lastPathComponent)" + largeNote(path) + armNote(req)
         case "build":
             return try await handleBuild(req)
         case "orangefox_reboot":
             guard let en = req["enabled"] as? Bool else { throw RemoteError("missing boolean \"enabled\"") }
             settings.rebootFromRecovery = en
             return "orangefox reboot to bootloader \(en ? "enabled" : "disabled")"
+        case "send_now":
+            guard settings.allowRemoteStart else { throw RemoteError("remote start is disabled in Settings") }
+            guard monitor.state == .fastboot else { throw RemoteError("phone is not in fastboot (state: \(monitor.state.rawValue))") }
+            let r = await queue.sendNow()
+            if r.hasPrefix("FAILED") || r == "not sent" || r.hasPrefix("a send") || r.hasPrefix("queue") { throw RemoteError(r) }
+            return r
         case "stop":
             queue.disarm()
             return "queue disarmed"
         default:
             throw RemoteError("unknown kind \"\(kind)\"")
         }
+    }
+
+    private func largeNote(_ path: String) -> String {
+        BootQueue.fileSize(path) > BootQueue.largeImageBytes ? " (WARNING: \(BootQueue.largeWarning))" : ""
     }
 
     private func armNote(_ req: [String: Any]) -> String {
@@ -146,7 +156,7 @@ final class RemoteControl {
         var msg = "built \((img as NSString).lastPathComponent)"
         if (req["enqueue"] as? Bool) ?? true {
             queue.add(img, label: (req["label"] as? String) ?? name)
-            msg += ", queued" + armNote(req)
+            msg += ", queued" + largeNote(img) + armNote(req)
         }
         return msg
     }
@@ -191,7 +201,8 @@ final class RemoteControl {
             case .failed: st = "failed"
             }
             return ["id": it.id.uuidString, "label": it.label.isEmpty ? it.fileName : it.label, "image": it.imagePath,
-                    "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400))]
+                    "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400)),
+                    "sizeBytes": it.size, "warning": it.isLarge ? BootQueue.largeWarning : ""]
         }
         return [
             "phone": phone,

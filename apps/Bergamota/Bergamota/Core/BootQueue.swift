@@ -6,10 +6,12 @@ struct QueueItem: Identifiable, Hashable {
     let id = UUID()
     var imagePath: String
     var label: String = ""
+    var size: Int64 = 0
     var status: Status = .pending
     var sentAt: Date?
     var output = ""
     var name: String { label.isEmpty ? (imagePath as NSString).lastPathComponent : label }
+    var isLarge: Bool { size > BootQueue.largeImageBytes }
     var fileName: String { (imagePath as NSString).lastPathComponent }
 }
 
@@ -18,6 +20,13 @@ struct QueueItem: Identifiable, Hashable {
 @Observable
 @MainActor
 final class BootQueue {
+    /// ABL silently failed to start a 206 MB boot image; warn above this size.
+    nonisolated static let largeImageBytes: Int64 = 64 << 20
+    static let largeWarning = "large boot image: ABL may not start it"
+    static func fileSize(_ path: String) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
+    }
+
     var items: [QueueItem] = []
     var armed = false
     var waitingForLeave = false
@@ -27,6 +36,7 @@ final class BootQueue {
 
     @ObservationIgnored private var fastbootStreak = 0
     @ObservationIgnored private var nonFastbootStreak = 0
+    @ObservationIgnored private var sentSession: String?
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let monitor: PhoneMonitor
 
@@ -39,7 +49,7 @@ final class BootQueue {
     var pending: [QueueItem] { items.filter { $0.status == .pending } }
     var sending: QueueItem? { items.first { $0.status == .sending } }
 
-    func add(_ path: String, label: String = "") { items.append(QueueItem(imagePath: path, label: label)) }
+    func add(_ path: String, label: String = "") { items.append(QueueItem(imagePath: path, label: label, size: Self.fileSize(path))) }
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .sending } }
     func clearFinished() { items.removeAll { $0.status == .sent || $0.status == .failed } }
     func move(_ id: UUID, by d: Int) {
@@ -62,8 +72,8 @@ final class BootQueue {
         if pending.isEmpty { return "Queue is empty." }
         if waitingForLeave {
             return lastSendFailed
-                ? "Send failed. ABL may be hung: re-enter fastboot (hold Power + Volume Down). Next item arms once the phone leaves fastboot."
-                : "Boot sent. Waiting for the phone to leave fastboot before arming the next item."
+                ? "Send failed. ABL may be hung: re-enter fastboot (hold Power + Volume Down). Next item arms once the phone leaves fastboot or re-enumerates."
+                : "Boot sent. Waiting for the phone to leave fastboot (or re-enumerate) before arming the next item."
         }
         switch monitor.state {
         case .fastboot: return "Phone is in fastboot. Confirming, then sending exactly one boot."
@@ -79,7 +89,12 @@ final class BootQueue {
         if new == .fastboot { fastbootStreak += 1; nonFastbootStreak = 0 }
         else {
             fastbootStreak = 0; nonFastbootStreak += 1
-            if waitingForLeave && nonFastbootStreak >= 3 { waitingForLeave = false; lastSendFailed = false }
+            // One poll away from fastboot is enough: a bad image leaves ABL in fastboot, so the absence can be short.
+            if waitingForLeave && nonFastbootStreak >= 1 { waitingForLeave = false; lastSendFailed = false }
+        }
+        // Still in fastboot but re-enumerated on USB (force restart into fastboot between two polls): a new appearance.
+        if new == .fastboot, waitingForLeave, let s = monitor.fastbootSession, let old = sentSession, s != old {
+            waitingForLeave = false; lastSendFailed = false; fastbootStreak = 1
         }
         if new != .recovery { recoveryRebootSent = false }
         if settings.notifyOnIOS && new == .ios && old != .ios && old != .unknown { Notifier.post("Bergamota", "iOS is up on the Poco F1.") }
@@ -103,11 +118,24 @@ final class BootQueue {
         note = "adb reboot bootloader: " + (r.ok ? "sent" : "failed (\(r.combined.trimmingCharacters(in: .whitespacesAndNewlines)))")
     }
 
-    private func sendNext() async {
-        guard sending == nil, !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
+    /// Manual send of the next pending item, ignoring the leave-fastboot latch. Only while the phone is in fastboot.
+    /// Returns a short result for the caller (UI or remote request).
+    func sendNow() async -> String {
+        guard monitor.state == .fastboot else { return "phone is not in fastboot" }
+        guard sending == nil else { return "a send is already in progress" }
+        guard !pending.isEmpty else { return "queue has nothing pending" }
+        let id = pending[0].id
+        await sendNext(force: true)
+        let r = items.first { $0.id == id && ($0.status == .sent || $0.status == .failed) }
+        return r.map { "\($0.status == .sent ? "sent" : "FAILED"): \($0.name)" } ?? "not sent"
+    }
+
+    private func sendNext(force: Bool = false) async {
+        guard sending == nil, force || !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
         guard let fb = settings.fastboot else { note = "fastboot not found"; return }
         // Latch first: whatever happens, no second send until the phone leaves fastboot.
         waitingForLeave = true
+        sentSession = monitor.fastbootSession
         lastSendFailed = false
         items[idx].status = .sending
         let path = items[idx].imagePath

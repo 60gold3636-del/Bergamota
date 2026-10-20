@@ -40,6 +40,7 @@ struct IOSInfo: Equatable, Sendable {
 
 private struct Probe: Sendable {
     var fastbootSerial: String?
+    var fastbootSession: String?
     var adbSerial: String?
     var adbState: String?
     var iface: String?
@@ -65,6 +66,8 @@ final class PhoneMonitor {
     var state: PhoneState = .unknown
     var stateSince = Date()
     var fastbootSerial: String?
+    /// USB enumeration identity of the fastboot device; changes when the phone re-enumerates (e.g. force restart back into fastboot).
+    var fastbootSession: String?
     var adbSerial: String?
     var adbState: String?
     var ifaceName: String?
@@ -121,6 +124,7 @@ final class PhoneMonitor {
         if settings.adb == nil { warnings.append("adb not found (set it in Settings)") }
         toolWarnings = warnings
         fastbootSerial = p.fastbootSerial
+        fastbootSession = p.fastbootSession
         adbSerial = p.adbSerial
         adbState = p.adbState
         ifaceName = p.iface
@@ -170,6 +174,10 @@ final class PhoneMonitor {
                 if f.count >= 2, f[1] == "fastboot" || f[1] == "fastbootd" { p.fastbootSerial = String(f[0]); break }
             }
         }
+        if let serial = p.fastbootSerial {
+            let io = await Shell.run("/usr/sbin/ioreg", ["-p", "IOUSB", "-l", "-w0"], timeout: 3)
+            if io.ok { p.fastbootSession = usbSession(io.stdout, serial: serial) }
+        }
         if let r = await adbR, r.ok {
             for line in r.stdout.split(whereSeparator: \.isNewline) {
                 if line.hasPrefix("*") || line.hasPrefix("List of") { continue }
@@ -197,6 +205,24 @@ final class PhoneMonitor {
             p.tcpErr = t.err
         }
         return p
+    }
+
+    /// Best effort: find the IOUSB entry of the fastboot device (by serial, else Google/Qualcomm VID 0x18d1)
+    /// and join its registry id, sessionID and locationID. A new enumeration changes at least the registry id.
+    nonisolated static func usbSession(_ text: String, serial: String) -> String? {
+        var blocks: [[Substring]] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.contains("+-o ") { blocks.append([line]) } else if !blocks.isEmpty { blocks[blocks.count - 1].append(line) }
+        }
+        func value(_ key: String, _ b: [Substring]) -> String? {
+            for l in b { if let r = l.range(of: "\"\(key)\" = ") { return String(l[r.upperBound...]).trimmingCharacters(in: .whitespaces) } }
+            return nil
+        }
+        let hit = blocks.first { b in b.contains { $0.contains("\"USB Serial Number\" = \"\(serial)\"") } }
+            ?? blocks.first { b in value("idVendor", b) == "6353" }
+        guard let b = hit else { return nil }
+        let parts = [value("IORegistryEntryID", b), value("sessionID", b), value("locationID", b)].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "/")
     }
 
     nonisolated static func parseInterface(_ text: String, mac: String, phoneIP: String = "") -> (String, Bool, Bool, Bool)? {

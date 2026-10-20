@@ -31,6 +31,7 @@ struct BootView: View {
 
 private struct QueuePane: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmSend = false
 
     var body: some View {
         @Bindable var settings = model.settings
@@ -74,11 +75,18 @@ private struct QueuePane: View {
                             Text(item.name).font(.body.bold())
                             Spacer()
                             if let t = item.sentAt { Text(t.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary) }
+                            if item.status == .pending, item.id == q.pending.first?.id, model.monitor.state == .fastboot, q.sending == nil {
+                                Button("Send now") { confirmSend = true }.controlSize(.small).tint(.orange)
+                            }
                             if item.status == .pending {
                                 Button { q.move(item.id, by: -1) } label: { Image(systemName: "chevron.up") }.buttonStyle(.borderless)
                                 Button { q.move(item.id, by: 1) } label: { Image(systemName: "chevron.down") }.buttonStyle(.borderless)
                             }
                             if item.status != .sending { Button { q.remove(item.id) } label: { Image(systemName: "xmark") }.buttonStyle(.borderless) }
+                        }
+                        if item.isLarge {
+                            Label("\(BootQueue.largeWarning) (\(sizeFmt.string(fromByteCount: item.size)))", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption).foregroundStyle(.yellow)
                         }
                         if !item.output.isEmpty {
                             Text(item.output).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
@@ -86,6 +94,11 @@ private struct QueuePane: View {
                     }
                     .padding(.vertical, 2)
                 }
+            }
+            .confirmationDialog("Send the next image now?", isPresented: $confirmSend, titleVisibility: .visible) {
+                Button("Send fastboot boot now", role: .destructive) { Task { _ = await q.sendNow() } }
+            } message: {
+                Text("If the last boot left ABL hung, sending again can hang it further. Press only after re-entering fastboot (hold Power + Volume Down).")
             }
             .overlay { if q.items.isEmpty { ContentUnavailableView("Queue is empty", systemImage: "tray", description: Text("Add images from the Images or Build tab.")) } }
         }
@@ -117,7 +130,12 @@ private struct ImagesPane: View {
             Divider()
             Table(model.build.images) {
                 TableColumn("Name") { Text($0.name) }
-                TableColumn("Size") { Text(sizeFmt.string(fromByteCount: $0.size)) }.width(90)
+                TableColumn("Size") { img in
+                    HStack(spacing: 4) {
+                        Text(sizeFmt.string(fromByteCount: img.size))
+                        if img.size > BootQueue.largeImageBytes { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(BootQueue.largeWarning) }
+                    }
+                }.width(110)
                 TableColumn("Date") { Text($0.date.formatted(date: .abbreviated, time: .shortened)) }.width(150)
                 TableColumn("") { img in
                     Button("Add to queue") { model.queue.add(img.path); tab = .queue }.controlSize(.small)
@@ -175,6 +193,9 @@ private struct BuildPane: View {
                         } label: { Label("Build image", systemImage: "hammer.fill") }
                             .buttonStyle(.borderedProminent).disabled(!b.canBuild)
                         if b.building { ProgressView().controlSize(.small) }
+                        if let img = b.lastBuiltImage, BootQueue.fileSize(img) > BootQueue.largeImageBytes {
+                            Label(BootQueue.largeWarning, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.yellow)
+                        }
                         if let r = b.lastResult { Text(r).foregroundStyle(b.lastBuiltImage != nil ? .green : .red) }
                         Spacer()
                         if let img = b.lastBuiltImage { Button("Add to queue") { model.queue.add(img); tab = .queue } }
