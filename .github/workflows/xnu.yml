@@ -32,13 +32,14 @@ env:
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
   # Bump to throw away every cache (host tools + ccache) at once. See docs/CI_CACHE.md.
-  CACHE_VERSION: v1
+  CACHE_VERSION: v2
   # ccache: xnu's makedefs honour `CCACHE ?=` (KCC/KC++ = $(CCACHE) $(CC)), so the env var is
   # enough; it deliberately does not wrap $(CC), which would confuse mig.
   CCACHE: ccache
   CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_BASEDIR: ${{ github.workspace }}
-  CCACHE_NOHASHDIR: "1"
+  # NOT CCACHE_BASEDIR / CCACHE_NOHASHDIR: base_dir rewrote __FILE__ to ../../../../../xnu/... in
+  # the kernel (functionally harmless, but not byte-identical to an uncached build). The
+  # runner workspace path is constant, so absolute paths in the hash cost nothing.
   CCACHE_COMPRESS: "1"
   CCACHE_MAXSIZE: 2G
   # fresh checkouts/generated headers have new mtimes; contents are still hashed
