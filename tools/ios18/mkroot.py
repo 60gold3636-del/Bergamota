@@ -78,8 +78,11 @@ def main():
 
     machos = []
     if '--keep-all' not in flags:
-        # every Mach-O not reachable from launchd, dyld and /bin/* is dead weight in a RAM disk
-        keep = closure(stage, [os.path.join(stage, 'sbin/launchd'), os.path.join(stage, 'usr/lib/dyld')] +
+        # every Mach-O not reachable from launchd, dyld, xpcproxy and /bin/* is dead weight in a RAM disk;
+        # launchd starts every job through the /usr/libexec/xpcproxy trampoline (exec, not linked: boot 0139
+        # got 'Could not spawn process /usr/libexec/xpcproxy: 2' for every job)
+        keep = closure(stage, [os.path.join(stage, 'sbin/launchd'), os.path.join(stage, 'usr/lib/dyld'),
+                               os.path.join(stage, 'usr/libexec/xpcproxy')] +
                        [os.path.join(stage, 'bin', b) for b in os.listdir(os.path.join(stage, 'bin'))])
         removed = 0
         for root, dirs, files in os.walk(stage):
