@@ -97,3 +97,13 @@ Alternatives / fallbacks:
 - https://github.com/ry-diffusion/ios-beryllium README (GPU not working; CLCD/IOSurface 0046)
 - https://gitlab.freedesktop.org/mesa/mesa src/freedreno/vulkan/{tu_knl.h,tu_knl.cc,tu_knl_kgsl.cc}
 - Linux drivers/gpu/drm/msm/adreno/*, arch/arm64/boot/dts/qcom/sdm845.dtsi (from memory; local copies under /Users/zesmoi/git/iAndroid/ios-beryllium/research/linux-src and linux-dts should be used to confirm every register base/IRQ/stream ID above)
+
+## Update 2026-10-20: closest phase-1 reference (Adreno 618 on XNU, hardware)
+
+**mxtpasontop/ios-sweet, branch `gpu`** (https://github.com/mxtpasontop/ios-sweet/commits/gpu), Redmi Note 10 Pro (SM7150, **Adreno 618 = a6xx gen1 like our A630, GMU + HFI v1**), boot-arg `sweetgpu=N`, patches 0078-0095 on top of upstream sweet:
+- 0078 read-only GPU probe; 0079 CX domain + GMU clocks; 0080 GPU SMMU dump, GMU ITCM/DTCM writes; 0081 GMU firmware cold boot
+- 0082-0085 GMU memory, GPU SMMU context bank, first HFI messages; one exact SMR per GMU stream ID; notes: "exact SMRs stick, HFI v1 works, GMU fw 1.17"; 0083 fixes a 32-bit truncation in `pmap_sync_page_attributes_phys`
+- 0086 GMU DCVS/bandwidth tables, H2F_MSG_TEST; 0087 **GX power-on through the GMU** ("RBBM_STATUS read, clean slumber")
+- 0088 SCM/PAS availability probe; 0089-0090 crypto-path BCM vote via RPMh; 0091-0092 **signed zap shader loaded and authenticated through PAS with GX on**
+- 0093-0095 CP buffers, SQE, SID0 translation context, CP registers with the SQE halted (in progress)
+This is phase 1 of the plan above, done step by step on hardware under the same XNU and the same sweet drivers. For the Poco F1 the logic should carry over almost entirely; tables change (SDM845 gpucc/GDSC, `a630_gmu.bin`/`a630_sqe.fw`/`a630_zap.mbn`, register bases, GMU/GPU SMMU stream IDs). Prefer it over UniXNU's A740 code for GMU/HFI/zap. (Read from the commit list only; patches not reviewed yet; treat as unverified.)
