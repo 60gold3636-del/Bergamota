@@ -26,6 +26,11 @@ screen (image versions v8-v14 in NOTES.md):
   activation      mobileactivationd data ark seeded; the actual Activated state
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
+  bluetooth       sweetbt=1 transport (docs/BT_IOS_TRANSPORT.md): BT_HCI_TRANSPORT (+ BT_DEVICE_ADDRESS)
+                  in bluetoothd's launchd job, and the BlueTool stub (tools/sweetnet/bluetool-stub.c)
+                  as /usr/sbin/BlueTool with the original kept as BlueTool.orig; skipped if the stub
+                  is not built. `sweet-root-tweaks.py --bt-plist IN OUT` applies only the launchd part
+                  to a copied launchd.plist (tools/sweet-bt-install.sh uses it on the live phone)
   ssh             key-only dropbear on 192.168.7.2:22 + dash (/bin/sh) + toybox
                   from tools/ssh/build.sh, authorized_keys from the Mac user's
                   public key, host keys, launchd job (docs/SSH_OVER_USB.md);
@@ -73,6 +78,54 @@ def launchd(root):
         del jobs[k]
     save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     print(f'launchd.plist: {renamed} _PanicOnCrash renamed, {len(removed)} CommCenter jobs removed')
+
+
+BT_LABEL = 'com.apple.bluetoothd'
+# H4BC over the POSIX driver on the plain kernel control (no Skywalk channel), at the 3 Mbaud the
+# kernel left the controller at; BT_DEVICE_ADDRESS is the same synthetic address as the ADT
+# /arm-io/bluetooth local-mac-address (tools/mkadt.py BT_MAC) and also satisfies bluetoothd if the
+# ADT node is missing.
+BT_ENV = {'BT_HCI_TRANSPORT': 'H4BC:POSIX:com.apple.uart.bluetooth,3000000',
+          'BT_DEVICE_ADDRESS': '02:00:5e:77:b0:01'}
+BLUETOOL_STUB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'research', 'sweetnet', 'bluetool-stub')
+
+
+def bluetoothd_env(plist):
+    """Set BT_ENV in every bluetoothd job of a launchd.plist dict; returns the number of jobs."""
+    n = 0
+    for job in plist['LaunchDaemons'].values():
+        if job.get('Label') == BT_LABEL:
+            job.setdefault('EnvironmentVariables', {}).update(BT_ENV)
+            n += 1
+    return n
+
+
+def bluetooth(root):
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = load(path)
+    n = bluetoothd_env(plist)
+    if n == 0:
+        print('bluetooth: no', BT_LABEL, 'job in launchd.plist: skipped')
+        return
+    save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('bluetooth: BT_HCI_TRANSPORT set for', BT_LABEL)
+    if not os.path.exists(BLUETOOL_STUB):
+        print('bluetooth: BlueTool stub not built (tools/sweetnet/build.sh): BlueTool left alone')
+        return
+    dst = os.path.join(root, 'usr/sbin/BlueTool')
+    orig = dst + '.orig'
+    with open(BLUETOOL_STUB, 'rb') as f:
+        stub = f.read()
+    if os.path.exists(dst) and not os.path.exists(orig):
+        with open(dst, 'rb') as f:
+            if f.read() != stub:
+                shutil.copy2(dst, orig)
+                print('bluetooth: original BlueTool kept as BlueTool.orig')
+    shutil.copy2(BLUETOOL_STUB, dst)
+    os.chown(dst, 0, 0)
+    os.chmod(dst, 0o755)
+    print('bluetooth: /usr/sbin/BlueTool is the stub')
 
 
 def containers(root):
@@ -352,6 +405,14 @@ def audio(root):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == '--bt-plist':
+        plist = load(sys.argv[2])
+        if bluetoothd_env(plist) == 0:
+            sys.exit('no %s job in %s' % (BT_LABEL, sys.argv[2]))
+        with open(sys.argv[3], 'wb') as f:
+            plistlib.dump(plist, f, fmt=plistlib.FMT_BINARY)
+        print('%s: %s environment %s' % (sys.argv[3], BT_LABEL, BT_ENV))
+        return
     if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
         sys.exit(__doc__)
     root = sys.argv[1]
@@ -361,6 +422,7 @@ def main():
     usbnet(root)
     netcfg(root)
     ssh(root)
+    bluetooth(root)
     activation(root)
     audio(root)
     merge_pref(root, 'com.apple.migration', {

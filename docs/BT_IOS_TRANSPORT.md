@@ -293,3 +293,119 @@ Each step is read-only or reversible; stop at the first surprise.
 - BlueTool `usr/sbin/BlueTool`: UART open `0x10001da38` (`com.apple.uart.bluetooth`), `device` command `0x10001ca84`, transport id `0x10003e188`/`0x10003e2f8`, `transport-speed` `0x10003e030`, `local-mac-address` `0x10003e33c`, power/reset/wake `0x10003eccc`/`0x10003f15c`/`0x10003f580`, script lookup `0x100015fa4`, platform hash `0x10004075c`.
 - kernelcache (`kernelcache.release.iphone10b`, vm base `0xfffffff004dc8000` prelink text): `AppleOnboardSerialBSDClient` sk/plain control creation `0xfffffff00581ba78` / `0xfffffff00581cb44`, devfs `uart.%s%s` `0xfffffff00581c9d4`, `BTReset::start` `0xfffffff006270370`.
 - ADT: `research/ipsw-x/d22ap.adt` (`/arm-io/uart1/bluetooth`), `shim/out/beryllium-hi-2x.adt` (no uart/bluetooth nodes).
+
+## 8. Implemented: patch 0136 (xnu/patches/0136-beryllium-bt-hci-kctl.patch) and the userland pieces
+
+Base `research/bt133/xnu` (0001-0133); `git apply --check` clean on a fresh copy, `xnu-cc.py` clean (objects built; the
+new undefined symbols `ctl_register`, `ctl_enqueuedata`, `mbuf_data/len/next/freem`, `SecureDTLookupEntry/GetProperty`,
+`lck_mtx_*` are all defined in the tree and kern_control.c / kpi_mbuf.c are built by the sweet config). **Nothing here
+has run on the phone.** The patch is named 0136 for the ios18 branch's collision; renumber on merge.
+
+### 8.1 Kernel
+
+Files: `bsd/dev/beryllium_bt_hci.c` (new: kctl, RX ring, TX framer, termios), `bsd/dev/beryllium_wlan.c` (UART/IBS side),
+`bsd/conf/files`. Gate: boot-arg **`sweetbt=1`** together with `sweetwlan=2` (default off; without `sweetwlan=2` it is
+ignored with a log line). Other boot-args: `sweetbtsk=1` also registers `com.apple.uart.sk.bluetooth` (same stream; bluetoothd
+would still need the IOAOSSKY* socket options, so it only serves plain-socket clients), `sweetbtlog=N` HCI packet trace lines
+(default 64, 0 = none), `sweetbtaddr=0` skips programming the BD_ADDR. All log lines start `SWEET BT:`.
+
+After the BT stage's firmware step succeeds (`sweetbtfast=1 sweetbtibs=1` as in the NOTES entry) the stage no longer
+restores clocks/RCG/pins: the stage thread itself becomes the RX loop and never returns. The order is: read ADT
+`/arm-io/bluetooth local-mac-address` (fallback 02:00:5e:77:b0:01), **set the controller's BD_ADDR** (btqca.c `qca_set_bdaddr`:
+vendor `0xFC14`, address least-significant byte first; the stage reads Read_BD_ADDR first, skips the command when it
+already matches, re-reads afterwards, tries one HCI Reset if the new address is not visible yet and logs `MISMATCH` if it
+still is not: [U] whether the WCN3990 applies it immediately), switch the framer on, force hardware flow control on,
+register the controls.
+
+* **RX path.** Polled kernel thread, no GENI IRQ plumbing exists in this tree (an IRQ would be SPI 607 [U, from the
+  mainline dtsi]). The loop reads the FIFO under the UART lock (`wl_hw_lock`), feeds each byte to an H4 framer
+  (`wl_xport_feed`), and every complete packet goes to a **64 KiB ring** (whole packets only: when the ring is full the packet is
+  dropped, framing survives) from which `bt_hci_rx_service()` enqueues up to 4 KiB at a time with `ctl_enqueuedata`
+  (socket receive buffer 128 KiB; `ENOBUFS` = flow control: the bytes stay in the ring and the next round retries).
+  Justification of the timing: the RX FIFO has `rx_depth` words (logged: `RX FIFO N words`) and RFR deasserts at
+  `rx_depth - 2` words, so after a poll the controller may send about `(rx_depth-2)*4` bytes before it is held off by RTS;
+  at 3 Mbaud (10 bits per byte) that is ~190 us for a 16-word FIFO. While traffic flows the loop polls every ~30 us; after 200
+  empty polls it sleeps 300 us per round (2 ms with no client), and the first bytes of a burst are simply held by RFR. A
+  transmitter that wants the UART makes the RX loop step aside for 50 us so the mutex is not starved. The ring is only for a slow
+  userland: 64 KiB is 218 ms of a saturated 3 Mbaud line, plus the 128 KiB socket buffer. **Measured, not assumed:** every
+  10 s of activity the kernel prints `SWEET BT: UART RX <bytes> B in <polls> polls, max burst B / FIFO words (depth N), FIFO
+  errors E ...` and `SWEET BT: HCI: rx ... (ring peak P of 65536 B, dropped ..., socket full ...)`. `max FIFO words` close to
+  `depth` or `FIFO errors > 0` means the margin was exceeded and the loop needs an interrupt.
+* **IBS, transparent.** Between packets, `0xFC` WAKE_ACK, `0xFD` WAKE_IND and `0xFE` SLEEP_IND are consumed in the kernel (state
+  `ibs_asleep`, WAKE_IND is acknowledged with 0xFC by the RX loop, never inside a TX packet); userland never sees them. Before
+  every packet from userland the existing `wl_ibs_wake` runs (0xFD, wait for 0xFC or the controller's own 0xFD, 100 ms x 3,
+  then "sending anyway"). The host never sends SLEEP_IND itself. The first 24 handshakes are logged, then only the counters
+  (`IBS: sleeps N wakes N (failed N)`). The H4 framer drops a byte that is not a packet type (logged, 8 times) and resyncs.
+* **TX path.** `ctl_send` copies the mbuf chain through a small H4 framer (userland's SOCK_STREAM writes may split packets) and
+  transmits each complete packet through `wl_xport_tx` (UART lock, IBS wake, FIFO-sized chunks).
+* **Kernel control.** `ctl_register("com.apple.uart.bluetooth", CTL_FLAG_REG_SOCK_STREAM)`, **not privileged** (bluetoothd and
+  BlueTool run as `mobile`), dynamic unit, one client at a time (a second `connect` gets `EBUSY`), registered only once the
+  controller is up (before that `CTLIOCGINFO` fails with ENOENT). A disconnect leaves the controller powered and untouched.
+* **termios "ioctls": no gap.** They are `getsockopt/setsockopt(sock, SYSPROTO_CONTROL, 0x40487413/0x80487414, struct termios)`,
+  which `kern_control.c` hands to `ctl_getopt/ctl_setopt` with the option name as `opt`; handled there (0x80487415/6 =
+  TIOCSETAW/F are accepted too). Get returns the stored termios with the speed in effect and CRTSCTS set; set accepts anything and
+  **answers as already-at-3M**: the controller's speed was fixed by the 0xFC48 step and a host-only switch would break the link,
+  so a different requested speed, or a request to turn hardware flow control off, is logged and ignored. Broadcom baud
+  vendor commands that H4BC might send after that go to the controller as they are and come back as Unknown Command [U].
+* **Not implemented.** No devfs nodes (`/dev/uart.bluetooth`, `/dev/cu.bluetooth`, `/dev/btwake`): the ADT node satisfies
+  bluetoothd's device check (see 1.3), `/dev/btwake` is optional. No vendor-command shim (3.3): add it only if the phone shows a
+  fatal VSC.
+
+### 8.2 ADT (tools/mkadt.py, board beryllium only; the sweet ADT is byte-identical apart from `random-seed`)
+
+`/arm-io/bluetooth`: `device_type bluetooth`, `compatible bluetooth,wcn3990`, `local-mac-address 02:00:5e:77:b0:01` (same value as
+`/chosen mac-address-bluetooth0`, `BT_MAC` in the script; the kernel programs it into the controller), `transport-encoding 3`,
+`transport-speed 3000000`, `vendor-id 0x05ac`, `product-id 0x12a0`. No new kernel code publishes it: `SweetPlatformExpert` already
+makes a nub for every `/arm-io` child except `gic`, and the nub's registry name is `bluetooth` (what
+`IOServiceNameMatching("bluetooth")` finds; [U] until `ioreg` confirms).
+**transport-encoding 3 (H4BC), not 1:** the stock iPhone X value, the path I verified in bluetoothd (H4BC = POSIX driver, mode 0,
+`/dev/btwake` tolerated) and the same one `BT_HCI_TRANSPORT=H4BC:...` forces, so the ADT and the env agree and BlueTool/bluetoothd
+never see a mixed configuration. Our socket carries plain H4 and the Broadcom-specific parts of H4BC (baud, wake) are not driven over
+it by anything we know [U]; if bluetoothd misbehaves with H4BC, set the env to `H4:POSIX:com.apple.uart.bluetooth,3000000` and/or
+`transport-encoding` 1. **No `function-*` properties** (the doc's 3.2 table and 1.4: they are only read by the AppleBluetooth `BTReset` kext, which this kernel does not
+have; `function-bt_wake` / `function-power_enable` without a consumer would be dead data, and without `function-power_enable` no
+`/dev/btpoweroff` exists, which makes BlueTool's power/reset commands no-ops, as wanted). Rebuild the ADT with
+`tools/mkadt.py OUT --board beryllium ...` (or `shim/build.sh`) to get the node.
+
+### 8.3 Root image / live phone
+
+* `tools/sweetnet/bluetool-stub.c` (built by `tools/sweetnet/build.sh`, ad-hoc signed with `bluetool.entitlements`: platform-application,
+  no-container, no-sandbox, skip-library-validation): listens on the Mach service `com.apple.BlueTool` (launchd job `BlueTool -R`, user
+  mobile) and answers **every** dictionary with `result` = int64 0, `firmware`, `output`, `manufacturer` strings and `btaddress`
+  echoed back when the request carried one. It does not depend on the (unverified) message shape and writes each request and reply
+  description to `/private/var/tmp/bluetool-stub.log`, so the first boot shows the real shape. `xpc_connection_create_mach_service` is
+  marked unavailable in the iOS SDK, so it is resolved with `dlsym`. Started with other arguments it just exits 0.
+* `tools/sweet-root-tweaks.py` (new `bluetooth` step, also `--bt-plist IN OUT`): `EnvironmentVariables` of the `com.apple.bluetoothd`
+  job in the cached `launchd.plist` get `BT_HCI_TRANSPORT=H4BC:POSIX:com.apple.uart.bluetooth,3000000` and
+  `BT_DEVICE_ADDRESS=02:00:5e:77:b0:01`; the stub replaces `/usr/sbin/BlueTool`, the original is kept as `BlueTool.orig`.
+* `tools/sweet-bt-install.sh [-n|-u]`: the same on the live phone over SSH: pulls `/System/Library/xpc/launchd.plist`, edits it with
+  plistlib on the Mac (copy kept in `research/bt-install/`), backs the phone's file up once as `launchd.plist.pre-bt`, writes it back
+  in place, installs the stub (`BlueTool.orig` once) and `hcitest` to `/usr/local/bin`. `-n` shows the diff only, `-u` restores.
+  launchd reads the cache at boot, so reboot afterwards. Build first: `TOOLS="hcitest bluetool-stub" tools/sweetnet/build.sh`.
+* `tools/sweetnet/hcitest.c` (`hcitest [-n ctl] [-b baud] [-l secs]`): opens the control exactly like BlueTool (`socket(32,1,2)`,
+  `CTLIOCGINFO`, `connect`, TIOCGETA/TIOCSETA 3 Mbaud with the termios bluetoothd builds), sends HCI Reset, Read Local Version, Read
+  BD_ADDR and prints the raw events decoded; exit 0 only when all three complete with status 0.
+
+### 8.4 Phone test order (each step stops at the first surprise)
+
+1. **Kernel + ADT only.** Boot the patched kernel with the beryllium ADT rebuilt from this mkadt.py and
+   `sweetwlan=2 sweetbt=1 sweetbtfast=1 sweetbtibs=1` (default `sweetwlandelay=90`, i.e. the stage starts ~90 s after boot; lower it
+   only if you accept a risky MMIO access earlier). Wait for `SWEET BT: transport up:` in the kernel log; before it, the
+   `SWEET WLAN:` firmware lines of the NOTES entry must be unchanged and `SWEET BT: controller BD_ADDR ... BD_ADDR now ...` shows
+   the 0xFC14 result. Without the log line nothing below can work.
+2. **hcitest, bluetoothd not involved.** If `bluetoothd` already runs it holds the (single) connection: `launchctl bootout
+   system/com.apple.bluetoothd` (it exits 0 anyway on a stock image without the ADT node). Install the tools without touching
+   launchd yet: `scp -O research/sweetnet/hcitest root@192.168.7.2:/usr/local/bin/` (or run `tools/sweet-bt-install.sh`, step 3), then
+   `ssh root@192.168.7.2 hcitest -l 5`. Expect `connected`, TIOCGETA/TIOCSETA, `Command Complete for 0x0c03, status 0`,
+   `HCI version 9 ... manufacturer 0x001d`, `BD_ADDR 02:00:5e:77:b0:01` and kernel lines `client connected`, `TX cmd`, `RX evt`.
+   Check the `UART RX` / `HCI:` statistics lines (FIFO words vs depth, ring peak). Failure triage: ENOENT on CTLIOCGINFO = control not
+   registered (step 1), EBUSY = other client, no reply = look at `BT IBS` lines and the TX line.
+3. **Userland install.** `tools/sweet-bt-install.sh -n`, then without `-n`; reboot with the same boot-args.
+4. **BlueTool stub.** After boot `cat /private/var/tmp/bluetool-stub.log` (the file exists once bluetoothd contacted the service) shows the
+   real request/reply shape; if bluetoothd logs "BlueTool failed to run boot script", fix the reply keys there.
+5. **bluetoothd.** The control only exists ~100-120 s after boot (stage delay + firmware download), later than bluetoothd's first
+   start, which then fails to connect: after `SWEET BT: transport up` run `launchctl kickstart -k system/com.apple.bluetoothd`. Unified log (`tools/sweet-ios-pull.sh`, process bluetoothd): "HCI Transport is set to H4BC", the POSIX open of
+   `com.apple.uart.bluetooth`, "Booting chipset" / "Powering on chipset", then HCI traffic in the kernel `SWEET BT: TX/RX` trace (raise
+   `sweetbtlog=` to see more) and vendor commands that return Unknown Command (VSC shim candidates, 3.3). If it fails earlier:
+   `ReleaseType`/sandbox (risk 4), `connect ... Operation not permitted`.
+6. **Settings -> Bluetooth** toggle, scan; watch the `UART RX` statistics for FIFO errors under load.
