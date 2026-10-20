@@ -3,11 +3,16 @@
 
 #include "board.h"
 
-#define RED	0xffff0000U
-#define BLUE	0xff0000a0U
+/* Bergamota palette (apps/Bergamota icon): bergamot leaf, rind, pulp. */
+#define BG_BOOT	0xff1a5933U	/* dark bergamot green: normal boot screens */
+#define BG_PANIC 0xff7a1414U	/* deep red: shim exceptions */
+#define LABEL	0xffccec59U	/* lime rind */
+#define TEXT	0xfffff78cU	/* pale bergamot yellow */
 #define WHITE	0xffffffffU
-#define YELLOW	0xffffff00U
 #define GREEN	0xff00ff00U
+
+/* First text row: rows 0-1 sit under the notch/status area. */
+#define TOP_ROWS 2
 
 extern volatile uint32_t *con_fb;
 
