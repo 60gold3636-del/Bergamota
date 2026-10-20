@@ -1,4 +1,6 @@
-# Working on ios-sweet
+# Working on ios-beryllium (fork of ios-sweet)
+
+- Do NOT add a `Co-Authored-By: dipa-studio` (or any other co-author) trailer to commits in this fork; that rule in NOTES.md is upstream ios-sweet's. Credit upstream in README.md only.
 
 - Read `NOTES.md` before starting; it contains the project goal, hardware facts,
   current blocker, local artifact locations and the next concrete action.

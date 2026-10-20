@@ -4,7 +4,7 @@
 
 ### >>> ios-beryllium: iOS on the Poco F1 (beryllium, SDM845) - read first <<<
 
-This repo is `ry-diffusion/ios-beryllium` (fork of dipa-studio/ios-sweet, remote `upstream`); work on `main`, CI (`xnu.yml`) runs on push. Kernel patches 0001-0081 are upstream sweet; 0082+ add the Poco F1. One kernel serves both phones: drivers pick the board from the ADT root compatible `xiaomi,beryllium` (`bsd/dev/sweet_board.h`).
+This repo is `ry-diffusion/ios-beryllium` (fork of dipa-studio/ios-sweet, remote `upstream`); work on `main`, CI (`xnu.yml`) runs on push. **Commits here carry NO `Co-Authored-By: dipa-studio` trailer**: the trailer instructions further down in this file are upstream sweet's rule for their own repo; the Poco F1 work is not theirs (ios-sweet is credited in README.md). Commits 0082-0097 wrongly carried it (2026-10-19). Kernel patches 0001-0081 are upstream sweet; 0082+ add the Poco F1. One kernel serves both phones: drivers pick the board from the ADT root compatible `xiaomi,beryllium` (`bsd/dev/sweet_board.h`).
 
 **The phone (2026-10-19):** Poco F1 global (M1805E10A), 6 GB, **Tianma panel** (`msm_drm.dsi_display0=dsi_tianma_fhd_nt36672a_video_display`; Android input "NVTCapacitiveTouchScreen" 1080x2246), custom ROM aosp_beryllium-**userdebug** Android 16 (BP2A.250605) -> `adb root` works. Bootloader **unlocked** (`fastboot oem device-info`; the ROM fakes flash.locked/green). userdata = **sda21 (LUN 0)**, 54791 MiB; system sde48.
 **Backups:** `backup/*.img` (79 partitions, all except userdata/system/cust/cache/logdump/minidump, SHA256SUMS verified against the phone). Live FDT `dtb/beryllium/live.dtb/.dts`, cmdline `dtb/beryllium/cmdline.txt`. Not in git.
