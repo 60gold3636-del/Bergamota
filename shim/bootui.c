@@ -92,6 +92,8 @@ void bootui_init(void)
 	status(LABEL, "STARTING");
 	con_set_scale(LOG_SCALE);
 	con_window(BOOTUI_LOG ? LOG_Y : 0, BOOTUI_LOG ? LOG_ROWS : -1);
+	if (BOOTUI_LOG)
+		con_replay();	/* lines printed before the boot screen existed (e.g. usb_power_up) */
 	active = 1;
 }
 
