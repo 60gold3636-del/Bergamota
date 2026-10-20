@@ -19,11 +19,22 @@ phone). 0137 adds one (`bsd/dev/sweet_reboot.c`, hooked in
    (NOTES.md: IMEM alone did not select fastboot on SDM845, hence the PON byte.)
 3. `PS_HOLD` (0x0c264000) = 0; after 2 s PSCI SYSTEM_RESET.
 
+## Bergamota mode (kernel patch 0140)
+
+`bergamota` reboots into **Bergamota fastboot**, the fastboot our own boot shim
+speaks (serial `bergamota0001`, `getvar version-bootloader` = `bergamota-1`),
+instead of Qualcomm ABL fastboot. The kernel writes IMEM `restart_reason`
+(0x146bf65c) = 0x42455247 (`BERG`) and the PON reason field = 0 (normal), so ABL
+boots the boot partition normally, where the shim lives; the shim sees `BERG`,
+clears the word and enters Bergamota fastboot. Needs 0140 on top of 0137 and a
+shim that handles `BERG`. `sweetreboot bergamota` (and `sweetreboot -n bergamota`).
+Panics are unaffected (`sweetreboot=bergamota` as boot-arg only sets the default mode).
+
 ## Control
 
-- Boot-arg `sweetreboot=bootloader|recovery|normal` (default `normal`).
+- Boot-arg `sweetreboot=bootloader|recovery|bergamota|normal` (default `normal`).
 - `sysctl kern.sweet_reboot_mode` (root, string) overrides it for the next
-  reboot: `bootloader` (alias `fastboot`), `recovery`, `normal`.
+  reboot: `bootloader` (alias `fastboot`), `recovery`, `bergamota`, `normal`.
 - Panic: unchanged (the phone stays up on the panic screen) unless
   `sweetreboot=bootloader` is a boot-arg; then the panic also resets into
   fastboot. The sysctl does not affect panics.
@@ -31,7 +42,7 @@ phone). 0137 adds one (`bsd/dev/sweet_reboot.c`, hooked in
 ## Tool
 
 `tools/sweetnet/sweetreboot.c` (built by `tools/sweetnet/build.sh` into
-`research/sweetnet/sweetreboot`, ad-hoc signed): `sweetreboot fastboot|recovery|normal`
+`research/sweetnet/sweetreboot`, ad-hoc signed): `sweetreboot fastboot|recovery|bergamota|normal`
 sets the sysctl, syncs and calls `reboot(RB_AUTOBOOT)`; `-n` only sets the mode.
 
 Install on a running phone (no image rebuild):

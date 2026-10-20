@@ -16,6 +16,8 @@ struct ActivityBanner: Equatable {
 final class ControlPlaneHooks {
     /// Reboots the phone to fastboot; returns a short result. nil = feature not available.
     var rebootToFastboot: (@MainActor () async -> String)?
+    /// Reboots iOS into Bergamota fastboot (`sweetreboot bergamota`).
+    var rebootToBergamota: (@MainActor () async -> String)?
 }
 
 func formatElapsed(_ t: TimeInterval) -> String {
@@ -49,11 +51,14 @@ extension AppModel {
                                   subtitle: "\(detail)  |  \(f.fileName)  |  do not unplug", color: .red,
                                   symbol: "externaldrive.fill.badge.exclamationmark", progress: frac ?? (f.total > 0 ? 0 : nil))
         }
-        if let l = queue.flasher.last, now.timeIntervalSince(l.at) < 300, queue.sending == nil, (lastSent?.sentAt ?? .distantPast) < l.at, st == .fastboot || !l.ok {
+        if let l = queue.flasher.last, now.timeIntervalSince(l.at) < 300, queue.sending == nil, (lastSent?.sentAt ?? .distantPast) < l.at, st.isFastboot || !l.ok {
             return l.ok ? ActivityBanner(title: "FLASHED", subtitle: "userdata \(queue.flasher.fileName). Boot the image or reboot.", color: .orange, symbol: "checkmark.seal.fill")
                         : ActivityBanner(title: "FAILED", subtitle: "userdata flash failed. See the Flash page output.", color: .red, symbol: "xmark.octagon.fill")
         }
         if let s = queue.sending { return ActivityBanner(title: "SENDING \(s.name.uppercased())", subtitle: "fastboot boot, do not unplug", color: .orange, symbol: "paperplane.fill") }
+
+        if tools.enteringBergamota { return ActivityBanner(title: "ENTERING BERGAMOTA FASTBOOT", subtitle: "fastboot boot bergamota-fastboot.img, do not unplug", color: .lime, symbol: "leaf.circle.fill") }
+        if let n = tools.rebooting { return ActivityBanner(title: "REBOOTING TO \(n.uppercased())", subtitle: "sweetreboot over SSH", color: n == "bergamota" ? .lime : .orange, symbol: "arrow.triangle.2.circlepath") }
 
         if let sent = lastSent, let at = sent.sentAt {
             let el = now.timeIntervalSince(at)
@@ -61,24 +66,25 @@ extension AppModel {
             if !up && el < Self.bootTimeout {
                 var hint = "elapsed \(formatElapsed(el))"
                 if let l = logs.lastSweetLine, let t = logs.lastSweetAt, now.timeIntervalSince(t) < 20 { hint += "  |  " + String(l.prefix(110)) }
-                if st == .fastboot && el > 20 {
-                    return ActivityBanner(title: "STILL IN FASTBOOT", subtitle: "\(sent.name) did not start (\(formatElapsed(el)) after send). Re-enter fastboot.", color: .orange, symbol: "exclamationmark.triangle.fill")
+                if st.isFastboot && el > 20 {
+                    return ActivityBanner(title: "STILL IN \(st.title.uppercased())", subtitle: "\(sent.name) did not start (\(formatElapsed(el)) after send). Re-enter fastboot.", color: .orange, symbol: "exclamationmark.triangle.fill")
                 }
                 if st != .recovery { return ActivityBanner(title: "BOOTING \(sent.name.uppercased())", subtitle: hint, color: .yellow, symbol: "hourglass") }
             }
         }
-        if st == .fastboot, queue.armed, !queue.pending.isEmpty {
-            return ActivityBanner(title: "IN FASTBOOT", subtitle: "queue armed: sending next boot", color: .orange, symbol: "bolt.horizontal.circle.fill")
+        if st.isFastboot, queue.armed, !queue.pending.isEmpty {
+            return ActivityBanner(title: "IN \(st.title.uppercased())", subtitle: "queue armed: sending next boot", color: stateColor(st), symbol: st.symbol)
         }
-        if queue.armed, !queue.pending.isEmpty, st != .fastboot {
-            return ActivityBanner(title: "WAITING FOR FASTBOOT", subtitle: "hold Power + Volume Down  |  next: \(queue.pending[0].name)", color: .orange, symbol: "bolt.horizontal.circle")
+        if queue.armed, !queue.pending.isEmpty, !st.isFastboot {
+            return ActivityBanner(title: "WAITING FOR FASTBOOT", subtitle: "hold Power + Volume Down (ABL)  |  next: \(queue.pending[0].name)", color: .orange, symbol: "bolt.horizontal.circle")
         }
         switch st {
         case .ios:
             var sub = "up since seen \(formatUptime(now.timeIntervalSince(monitor.stateSince)))"
             if let i = monitor.info, let b = i.batteryPercent { sub = "battery \(b)%" + (i.isCharging == true ? " charging" : "") + "  |  " + sub }
             return ActivityBanner(title: "iOS UP", subtitle: sub, color: .green, symbol: "apple.logo")
-        case .fastboot: return ActivityBanner(title: "IN FASTBOOT", subtitle: "ready for fastboot boot", color: .orange, symbol: "bolt.horizontal.circle.fill")
+        case .fastboot: return ActivityBanner(title: "ABL FASTBOOT", subtitle: "Qualcomm ABL (serial \(monitor.fastbootSerial ?? "?")): fastboot boot and flash userdata", color: .orange, symbol: st.symbol)
+        case .bergamotaFastboot: return ActivityBanner(title: "BERGAMOTA FASTBOOT", subtitle: "our shim (\(monitor.fastbootVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "serial \(monitor.fastbootSerial ?? "?")")): fastboot boot only, no flash", color: .lime, symbol: st.symbol)
         case .recovery: return ActivityBanner(title: "IN ORANGEFOX", subtitle: "recovery over adb", color: .purple, symbol: "wrench.and.screwdriver.fill")
         case .android: return ActivityBanner(title: "ANDROID", subtitle: "adb device", color: .teal, symbol: "android.fill")
         case .iosBooting: return ActivityBanner(title: "iOS BOOTING", subtitle: "USB network is up, waiting for SSH", color: .yellow, symbol: "hourglass")

@@ -99,7 +99,7 @@ struct ControlPlaneView: View {
                 Text(q.armed ? "ARMED" : "STOPPED").font(.system(size: 14, weight: .heavy)).padding(.horizontal, 8).padding(.vertical, 2)
                     .background(q.armed ? Color.orange : Color.gray.opacity(0.5), in: Capsule()).foregroundStyle(q.armed ? .black : .white)
                 Spacer()
-                if let first = q.pending.first, model.monitor.state == .fastboot, q.sending == nil, !q.flashing {
+                if let first = q.pending.first, model.monitor.state.isFastboot, q.sending == nil, !q.flashing {
                     Button("Send now: \(first.name)") { confirmSend = true }.tint(.orange).controlSize(.large)
                 }
             }
@@ -108,7 +108,7 @@ struct ControlPlaneView: View {
                 HStack(spacing: 10) {
                     Image(systemName: icon(it.status)).foregroundStyle(color(it.status))
                     Text(it.name).font(.system(size: 22, weight: .semibold)).lineLimit(1)
-                    if it.isLarge { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(BootQueue.largeWarning) }
+                    if q.largeWarns(it) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(BootQueue.largeWarning) }
                     Spacer()
                     if let t = it.sentAt { Text(t.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary) }
                 }
@@ -198,12 +198,18 @@ struct ControlPlaneView: View {
         let q = model.queue, m = model.monitor
         return HStack(spacing: 14) {
             if let reboot = model.hooks.rebootToFastboot, [.ios, .recovery, .android].contains(m.state) {
-                Button { Task { actionMessage = await reboot() } } label: { Label("Reboot to fastboot", systemImage: "arrow.triangle.2.circlepath") }
+                Button { Task { actionMessage = await reboot() } } label: { Label("Reboot to ABL fastboot", systemImage: "arrow.triangle.2.circlepath") }
                     .tint(.blue)
             }
+            if let reboot = model.hooks.rebootToBergamota, m.state == .ios {
+                Button { Task { actionMessage = await reboot() } } label: { Label("Reboot to Bergamota fastboot", systemImage: "leaf.circle.fill") }
+                    .tint(.lime).foregroundStyle(.black)
+            }
             Button { confirmSend = true } label: { Label("Send now", systemImage: "paperplane.fill") }
-                .tint(.orange).disabled(m.state != .fastboot || q.pending.isEmpty || q.sending != nil || q.flashing)
+                .tint(.orange).disabled(!m.state.isFastboot || q.pending.isEmpty || q.sending != nil || q.flashing)
             if m.state == .fastboot {
+                Button { Task { actionMessage = await model.tools.enterBergamota().1 } } label: { Label("Enter Bergamota fastboot", systemImage: "leaf.circle.fill") }
+                    .tint(.lime).foregroundStyle(.black).disabled(model.tools.enteringBergamota || q.sending != nil || q.flashing)
                 Button { showFlash = true } label: { Label("Flash userdata", systemImage: "externaldrive.fill.badge.exclamationmark") }
                     .tint(.red).disabled(q.sending != nil || q.flashing)
             }

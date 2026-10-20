@@ -36,6 +36,7 @@ final class AppModel {
         remote.tools = tools
         remote.bannerProvider = { [unowned self] in self.activityBanner() }
         hooks.rebootToFastboot = { [unowned self] in await self.tools.rebootIOS(to: "fastboot").1 }
+        hooks.rebootToBergamota = { [unowned self] in await self.tools.rebootIOS(to: "bergamota").1 }
         build.rescan()
         monitor.start()
         logs.start()

@@ -16,10 +16,16 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     }
 }
 
+extension Color {
+    /// Bergamota fastboot (ABL fastboot is orange).
+    static let lime = Color(red: 0.62, green: 0.88, blue: 0.12)
+}
+
 func stateColor(_ s: PhoneState) -> Color {
     switch s {
     case .ios: .green
     case .fastboot: .orange
+    case .bergamotaFastboot: .lime
     case .recovery: .purple
     case .android: .teal
     case .iosBooting: .yellow

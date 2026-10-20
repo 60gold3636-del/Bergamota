@@ -23,6 +23,12 @@ final class AppSettings {
     /// Reboot the phone from iOS into fastboot (SSH `sweetreboot fastboot`) when a queued image is waiting.
     var autoRebootToFastboot: Bool { didSet { d.set(autoRebootToFastboot, forKey: "autoRebootToFastboot") } }
 
+    /// Prefer Bergamota fastboot (our shim's) over ABL fastboot for the automatic reboot of queued boots; falls back to ABL when `sweetreboot bergamota` fails.
+    var preferBergamotaFastboot: Bool { didSet { d.set(preferBergamotaFastboot, forKey: "preferBergamotaFastboot") } }
+    /// Image `fastboot boot`ed from ABL fastboot by "Enter Bergamota fastboot".
+    var bergamotaImagePath: String { didSet { d.set(bergamotaImagePath, forKey: "bergamotaImagePath") } }
+    static let defaultBergamotaImage = "/Users/zesmoi/git/iAndroid/ios-beryllium-ios18/shim/out/bergamota-fastboot.img"
+
     init() {
         let d = UserDefaults.standard
         repoPath = d.string(forKey: "repoPath") ?? Self.defaultRepo
@@ -38,6 +44,8 @@ final class AppSettings {
         allowRemoteStart = d.object(forKey: "allowRemoteStart") as? Bool ?? true
         autoSaveLog = d.object(forKey: "autoSaveLog") as? Bool ?? true
         notifyOnIOS = d.object(forKey: "notifyOnIOS") as? Bool ?? true
+        preferBergamotaFastboot = d.object(forKey: "preferBergamotaFastboot") as? Bool ?? true
+        bergamotaImagePath = d.string(forKey: "bergamotaImagePath") ?? Self.defaultBergamotaImage
         autoRebootToFastboot = d.object(forKey: "autoRebootToFastboot") as? Bool ?? true
     }
 

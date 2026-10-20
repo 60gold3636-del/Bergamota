@@ -1,5 +1,5 @@
 /*
- * sweetreboot fastboot|recovery|normal: reboot the Poco F1 into that mode.
+ * sweetreboot fastboot|recovery|bergamota|normal: reboot the Poco F1 into that mode.
  *
  * Sets the root-only sysctl kern.sweet_reboot_mode (kernel patch 0137), syncs
  * and calls the reboot(2) syscall (RB_AUTOBOOT), which reaches the kernel's
@@ -37,11 +37,13 @@ main(int argc, char **argv)
 		mode = "bootloader";
 	} else if (want && !strcmp(want, "recovery")) {
 		mode = "recovery";
+	} else if (want && !strcmp(want, "bergamota")) {
+		mode = "bergamota";	/* kernel patch 0140: IMEM 'BERG', shim enters Bergamota fastboot */
 	} else if (want && !strcmp(want, "normal")) {
 		mode = "normal";
 	}
 	if (!mode) {
-		fprintf(stderr, "usage: sweetreboot [-n] fastboot|recovery|normal\n");
+		fprintf(stderr, "usage: sweetreboot [-n] fastboot|recovery|bergamota|normal\n");
 		return 2;
 	}
 	if (geteuid() != 0) {
@@ -49,7 +51,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 	if (sysctlbyname("kern.sweet_reboot_mode", NULL, NULL, (void *)mode, strlen(mode) + 1) != 0) {
-		perror("sweetreboot: sysctl kern.sweet_reboot_mode (kernel without patch 0137?)");
+		perror("sweetreboot: sysctl kern.sweet_reboot_mode (kernel without patch 0137, or 0140 for bergamota?)");
 		return 1;
 	}
 	char got[32] = "";

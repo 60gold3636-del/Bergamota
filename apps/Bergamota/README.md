@@ -17,13 +17,13 @@ The project is generated from `project.yml` with [XcodeGen](https://github.com/y
 
 Sidebar sections:
 
-- **Dashboard**: polls every 2 s and shows one of fastboot (`fastboot devices`), OrangeFox/recovery (`adb devices`), iOS (USB Ethernet MAC `02:00:5e:77:ee:01` up in `ifconfig -a`, ping of the phone IP, TCP 22 open), Android (adb `device`), or offline. When iOS is up it SSHes as `root@192.168.7.2` (`BatchMode=yes`, `ConnectTimeout=3`, your normal `known_hosts`) every ~10 s for `uname -a`, `kern.boottime` and `/usr/local/bin/sweetps` (battery %, charging, power source). It also shows the Mac's `net.inet.ip.forwarding` (read only; enable NAT with `tools/sweet-mac-nat.sh`). While iOS is up the iOS card has a **Reboot to fastboot** button (confirmation dialog): it runs `/usr/local/bin/sweetreboot fastboot` over SSH (see *Reboot to fastboot* below).
+- **Dashboard**: polls every 2 s and shows one of fastboot (`fastboot devices`), OrangeFox/recovery (`adb devices`), iOS (USB Ethernet MAC `02:00:5e:77:ee:01` up in `ifconfig -a`, ping of the phone IP, TCP 22 open), Android (adb `device`), or offline. When iOS is up it SSHes as `root@192.168.7.2` (`BatchMode=yes`, `ConnectTimeout=3`, your normal `known_hosts`) every ~10 s for `uname -a`, `kern.boottime` and `/usr/local/bin/sweetps` (battery %, charging, power source). It also shows the Mac's `net.inet.ip.forwarding` (read only; enable NAT with `tools/sweet-mac-nat.sh`). While iOS is up the iOS card has a **Reboot to ABL fastboot** and **Reboot to Bergamota fastboot** buttons (confirmation dialogs): it runs `/usr/local/bin/sweetreboot fastboot` over SSH (see *Reboot to fastboot* below).
 - **Live Log**: listens on UDP 5140 for the phone's kernel console (same stream as `tools/sweet-usbnet.sh`; quit that script first, only one listener can bind). Ring buffer of 300k lines, UI updates batched every 100 ms, search box, filter chips (SWEET USB / GPU / WLAN / FB / CRASH), follow/pause, copy. "Record to logs/" appends every incoming line to `logs/usb-<timestamp>.txt` in the repo; "Save buffer" dumps the whole buffer there.
 - **CI**: `gh run list` for `xnu.yml` on `main`, `ios18`, `ci-cache` (status, branch, sha, age, duration). "Download kernel" runs `gh run download <id> -n xnu-kernel -D xnu/out-<branch>-<id>` in the repo (needs `gh auth login`).
 - **Boot Queue**
   - *Build*: pick a kernel (`xnu/out-*/kernel.development.sweet`), an ADT (`shim/out/*.adt`, default `beryllium-hi-3x.adt`), a cmdline (presets in `~/Library/Application Support/Bergamota/presets.json`, seeded with "default @3x", "bluetooth test", "ios18 poc") and an image name. It runs `tools/mkpayload.py`, then `BOARD=beryllium ./build.sh` in `shim/`, then copies `shim/out/shim-boot.img` to `shim/out/shim-boot-<name>.img`, streaming the output.
   - *Images*: lists `shim/out/*.img`; add any to the queue.
-  - *Queue*: press **Start** to arm. When the phone is in fastboot (seen on two consecutive polls) the app sends exactly **one** `fastboot boot <img>`, records the result and time, and will not send again until the phone has left fastboot (a failed send leaves ABL hung; re-enter fastboot yourself, there is never an automatic retry). After a send the next item re-arms as soon as the phone is seen outside fastboot for one poll, or when the fastboot device re-enumerates on USB (best-effort `ioreg -p IOUSB` registry id/sessionID/locationID change), because a bad image can leave ABL sitting in fastboot. The first pending item also has a **Send now** button (only while the phone is in fastboot, with a confirmation: sending again after a hung ABL can hang it further, so press it only after re-entering fastboot). Images over 64 MiB get a yellow warning ("large boot image: ABL may not start it") in the queue, the image list and after a build; they are not blocked. Optional toggle (off by default): when the phone is in OrangeFox, run `adb reboot bootloader` once first. The queue disarms itself when it is empty. Optional notifications when a boot is sent and when iOS comes up. **Auto-reboot into fastboot** (Settings, default on): see below; the queue header shows a green "auto-reboot to fastboot on" badge and its current state (or an orange "manual fastboot needed" badge).
+  - *Queue*: press **Start** to arm. When the phone is in fastboot (seen on two consecutive polls) the app sends exactly **one** `fastboot boot <img>`, records the result and time, and will not send again until the phone has left fastboot (a failed send leaves ABL hung; re-enter fastboot yourself, there is never an automatic retry). After a send the next item re-arms as soon as the phone is seen outside fastboot for one poll, or when the fastboot device re-enumerates on USB (best-effort `ioreg -p IOUSB` registry id/sessionID/locationID change), because a bad image can leave ABL sitting in fastboot. The first pending item also has a **Send now** button (only while the phone is in fastboot, with a confirmation: sending again after a hung ABL can hang it further, so press it only after re-entering fastboot). Images over 64 MiB get a yellow warning (only when the target is ABL fastboot, see below) ("large boot image: ABL may not start it") in the queue, the image list and after a build; they are not blocked. Optional toggle (off by default): when the phone is in OrangeFox, run `adb reboot bootloader` once first. The queue disarms itself when it is empty. Optional notifications when a boot is sent and when iOS comes up. **Auto-reboot into fastboot** (Settings, default on): see below; the queue header shows a green "auto-reboot to fastboot on" badge and its current state (or an orange "manual fastboot needed" badge).
 - **Settings** (also Cmd+,): repo path (default `/Users/zesmoi/git/iAndroid/ios-beryllium`), phone IP, GitHub repo, and tool paths (`fastboot`, `adb`, `gh`, `python3`, `ssh`; empty means resolve via `PATH` plus `/opt/homebrew/bin` and `/usr/local/bin`).
 
 ## Activity banner and Control Plane
@@ -49,7 +49,8 @@ Bergamota watches `~/Library/Application Support/Bergamota/inbox/` for `*.json` 
 {"kind":"build","name":"N","kernel":"...","adt":"...","cmdline":"debug=0xc ..."}
 {"kind":"orangefox_reboot","enabled":true}
 {"kind":"send_now"}
-{"kind":"reboot","to":"fastboot"}          // or "recovery"; only while iOS is up
+{"kind":"reboot","to":"fastboot"}          // or "bergamota" / "recovery"; only while iOS is up
+{"kind":"enter_bergamota"}                // ABL fastboot -> Bergamota fastboot
 {"kind":"stop"}
 ```
 
@@ -63,7 +64,8 @@ CLI (`scripts/bergamota`, bash + python3):
 scripts/bergamota enqueue shim/out/shim-boot-0130.img [--label L] [--no-arm] [--wait]
 scripts/bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--no-enqueue] [--no-arm] [--wait]
 scripts/bergamota orangefox on|off
-scripts/bergamota reboot fastboot|recovery [--wait]
+scripts/bergamota reboot fastboot|bergamota|recovery [--wait]
+scripts/bergamota enter-bergamota [--wait]
 scripts/bergamota stop
 scripts/bergamota status
 ```
@@ -86,10 +88,35 @@ Needs the Poco F1 kernel with patch 0137 and `/usr/local/bin/sweetreboot` on the
 
 **Auto-reboot** (Settings > Boot queue > "Auto-reboot iOS into fastboot when a queued image is waiting", default **on**): applies only when the queue is armed, the next item is pending, the phone has been in iOS for at least 30 s, and at most once per queue item. 90 s after the command, if the phone is not in fastboot, the item is marked **needs manual fastboot** (shown in the queue header and on the item, `needsManualFastboot` in status.json) and auto-rebooting pauses until fastboot is seen, the queue is re-armed (Start) or the toggle is cycled. A missing `sweetreboot` on the phone gives the same state at once. Once in fastboot, the usual one-`fastboot boot`-per-appearance rule takes over.
 
+## ABL fastboot vs Bergamota fastboot
+
+The phone can be in two different fastboots, and the app tells them apart (state **ABL FASTBOOT**, orange, bolt icon vs. **BERGAMOTA FASTBOOT**, lime green, leaf icon; banner, Dashboard, Control Plane tile and `status.json` `phone.state` = `fastboot` / `bergamota-fastboot`, plus `phone.fastbootKind` = `abl` / `bergamota`).
+
+| | ABL fastboot | Bergamota fastboot |
+|---|---|---|
+| What it is | Qualcomm ABL (bootloader) | our boot shim speaks fastboot itself |
+| Serial (`fastboot devices`) | the phone's real serial (e.g. `9ce49433`) | `bergamota0001` |
+| `getvar version-bootloader` | ABL's own version | `bergamota-1` (`getvar bergamota` = 1) |
+| Max download | ~64 MiB images are unreliable (large-image warning) | 1 GiB (no warning) |
+| `fastboot boot` | yes | yes |
+| flash commands (`flash userdata`) | yes | **none**: userdata flashing stays an ABL-fastboot action |
+
+How the app tells them apart: serial starting with `bergamota`, or (once per appearance, read-only) `getvar version-bootloader` starting with `bergamota`.
+
+Getting into each:
+
+- **ABL fastboot**: hold Power + Volume Down, or from iOS **Reboot to ABL fastboot** (`sweetreboot fastboot`).
+- **Bergamota fastboot from ABL**: **Enter Bergamota fastboot** (Dashboard card, Control Plane; only shown in ABL fastboot) runs `fastboot -s <serial> boot <bergamota-fastboot.img>`. The image path is in Settings > Boot queue (default `/Users/zesmoi/git/iAndroid/ios-beryllium-ios18/shim/out/bergamota-fastboot.img`); a missing file gives a message and nothing runs.
+- **Bergamota fastboot from iOS**: **Reboot to Bergamota fastboot** (`sweetreboot bergamota` over SSH; kernel patch 0140 writes IMEM `restart_reason` = `BERG` and PON reason 0 so ABL boots the shim, which enters its fastboot; see `docs/REBOOT_MODE.md`).
+
+The queue sends one `fastboot boot` per fastboot appearance to either kind. Settings > Boot queue > **Prefer Bergamota fastboot for the auto-reboot** (default on) makes the auto-reboot of queued boots use `sweetreboot bergamota`; if the phone's `sweetreboot` does not list `bergamota` (checked over SSH while iOS is up) it is not tried, and if it fails (old kernel/tool) the app falls back to `sweetreboot fastboot` (ABL). The 64 MiB large-image warning is shown only when the target is ABL fastboot (the phone is in ABL fastboot, or the target is not known to be Bergamota). Flash userdata (Boot Queue > Flash, Control Plane) is only offered in ABL fastboot.
+
+Inbox kinds: `{"kind":"reboot","to":"bergamota"}` (iOS up) and `{"kind":"enter_bergamota"}` (ABL fastboot). CLI: `scripts/bergamota reboot bergamota [--wait]`, `scripts/bergamota enter-bergamota [--wait]`.
+
 ## Notes
 
 - **Local Network permission.** Without it macOS hides every MAC address from the app (`ifconfig` shows `02:00:00:00:00:00`) and blocks connections to the phone ("No route to host"). Bergamota declares `NSLocalNetworkUsageDescription` so macOS asks on first run; allow it under System Settings > Privacy & Security > Local Network. Until then the USB Ethernet interface is found by subnet (the Mac side `192.168.7.1`) and the Dashboard shows a warning. A debug trace of each detection change is written to `~/Library/Logs/Bergamota.log`.
 - The live log is saved automatically to `logs/usb-<timestamp>.txt` (Settings > Live log; turning Record off in the Live Log pauses it until the next launch).
 - The phone has no `sysctl`, so uptime is shown only if `ps -o etime= -p 1` is sane; the Dashboard also shows when Bergamota first saw iOS up.
 
-The app only ever runs `fastboot devices`, `fastboot boot` and (the single exception above, confirmed) `fastboot flash userdata`, plus `adb devices`, (opt-in) `adb reboot bootloader` and, over SSH, `sweetreboot fastboot|recovery` (button, inbox request, auto-reboot). It never flashes any other partition, and never erases, formats or sends `oem` commands.
+The app only ever runs `fastboot devices`, `fastboot boot` and (the single exception above, confirmed) `fastboot flash userdata`, plus `adb devices`, (opt-in) `adb reboot bootloader` `fastboot boot` of the Bergamota fastboot image (Enter Bergamota fastboot) and, over SSH, `sweetreboot fastboot|bergamota|recovery` (button, inbox request, auto-reboot). It never flashes any other partition, and never erases, formats or sends `oem` commands.

@@ -40,6 +40,16 @@ final class BootQueue {
     /// ABL silently failed to start a 206 MB boot image; warn above this size.
     nonisolated static let largeImageBytes: Int64 = 64 << 20
     static let largeWarning = "large boot image: ABL may not start it"
+    /// Bergamota fastboot takes 1 GiB downloads, so the 64 MiB warning only applies when the target is ABL fastboot.
+    var targetsBergamota: Bool {
+        switch monitor.state {
+        case .bergamotaFastboot: true
+        case .fastboot: false
+        default: settings.preferBergamotaFastboot && tools.bergamotaSupported == true
+        }
+    }
+    func largeWarns(_ size: Int64) -> Bool { size > Self.largeImageBytes && !targetsBergamota }
+    func largeWarns(_ item: QueueItem) -> Bool { item.hasBoot && largeWarns(item.size) }
     static func fileSize(_ path: String) -> Int64 {
         ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
     }
@@ -143,7 +153,7 @@ final class BootQueue {
                 : "Boot sent. Waiting for the phone to leave fastboot (or re-enumerate) before arming the next item."
         }
         switch monitor.state {
-        case .fastboot: return "Phone is in fastboot. Confirming, then sending exactly one boot."
+        case .fastboot, .bergamotaFastboot: return "Phone is in \(monitor.state.title). Confirming, then sending exactly one boot."
         case .recovery:
             return settings.rebootFromRecovery ? "In OrangeFox. Rebooting to bootloader (once)."
                 : "Phone is in OrangeFox. Reboot to bootloader, or hold Power + Volume Down."
@@ -178,11 +188,11 @@ final class BootQueue {
     /// >= 30 s; at most once per item. 90 s after the command without fastboot: the item is marked "needs manual fastboot".
     private func autoRebootStep(new: PhoneState) {
         if !settings.autoRebootToFastboot { autoSuspended = false }
-        if new == .fastboot { autoSuspended = false; rebootWatch = nil }
+        if new.isFastboot { autoSuspended = false; rebootWatch = nil }
         guard armed, sending == nil, let idx = items.firstIndex(where: { $0.status == .pending }) else { rebootWatch = nil; return }
         if let w = rebootWatch {
             guard let wi = items.firstIndex(where: { $0.id == w.id && $0.status == .pending }) else { rebootWatch = nil; return }
-            if new != .fastboot, Date().timeIntervalSince(w.at) >= Self.autoFastbootWaitSeconds {
+            if !new.isFastboot, Date().timeIntervalSince(w.at) >= Self.autoFastbootWaitSeconds {
                 rebootWatch = nil
                 markNeedsManual(wi, "iOS reboot did not reach fastboot within \(Int(Self.autoFastbootWaitSeconds)) s")
             }
@@ -198,10 +208,10 @@ final class BootQueue {
         DebugLog.write("auto-reboot to fastboot for \(items[idx].name)")
         if settings.notifyOnBoot { Notifier.post("Bergamota", "Rebooting iOS into fastboot for \(items[idx].name).") }
         Task {
-            let (ok, msg) = await tools.rebootIOS(to: "fastboot")
+            let (ok, msg, target) = await tools.rebootIOSToFastboot()
             autoRebootBusy = false
             guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-            if ok { rebootWatch = (id, Date()); note = "Auto-reboot sent. Waiting for fastboot." }
+            if ok { rebootWatch = (id, Date()); note = "Auto-reboot sent (\(target == "bergamota" ? "Bergamota" : "ABL") fastboot). Waiting for fastboot." }
             else { markNeedsManual(i, msg) }
         }
     }
@@ -215,28 +225,28 @@ final class BootQueue {
     }
 
     private func handle(old: PhoneState, new: PhoneState) {
-        if new == .fastboot { fastbootStreak += 1; nonFastbootStreak = 0 }
+        if new.isFastboot { fastbootStreak = (old.isFastboot && old != new) ? 1 : fastbootStreak + 1; nonFastbootStreak = 0 }
         else {
             fastbootStreak = 0; nonFastbootStreak += 1
             // One poll away from fastboot is enough: a bad image leaves ABL in fastboot, so the absence can be short.
             if waitingForLeave && nonFastbootStreak >= 1 { waitingForLeave = false; lastSendFailed = false }
         }
         // Still in fastboot but re-enumerated on USB (force restart into fastboot between two polls): a new appearance.
-        if new == .fastboot, waitingForLeave, let s = monitor.fastbootSession, let old = sentSession, s != old {
+        if new.isFastboot, waitingForLeave, let s = monitor.fastbootSession, let old = sentSession, s != old {
             waitingForLeave = false; lastSendFailed = false; fastbootStreak = 1
         }
         if new != .recovery { recoveryRebootSent = false }
         if settings.notifyOnIOS && new == .ios && old != .ios && old != .unknown { Notifier.post("Bergamota", "iOS is up on the Poco F1.") }
 
         autoRebootStep(new: new)
-        guard armed, sending == nil, !flasher.active, !pending.isEmpty else { return }
+        guard armed, sending == nil, !flasher.active, !tools.enteringBergamota, !pending.isEmpty else { return }
 
         if new == .recovery, settings.rebootFromRecovery, !recoveryRebootSent {
             recoveryRebootSent = true
             Task { await rebootToBootloader() }
             return
         }
-        if new == .fastboot, !waitingForLeave, fastbootStreak >= 2 { Task { await sendNext() } }
+        if new.isFastboot, !waitingForLeave, fastbootStreak >= 2 { Task { await sendNext() } }
     }
 
     private func rebootToBootloader() async {
@@ -251,7 +261,8 @@ final class BootQueue {
     /// Manual send of the next pending item, ignoring the leave-fastboot latch. Only while the phone is in fastboot.
     /// Returns a short result for the caller (UI or remote request).
     func sendNow() async -> String {
-        guard monitor.state == .fastboot else { return "phone is not in fastboot" }
+        guard monitor.state.isFastboot else { return "phone is not in fastboot" }
+        guard !tools.enteringBergamota else { return "entering Bergamota fastboot" }
         guard !flasher.active else { return "a userdata flash is running" }
         guard sending == nil else { return "a send is already in progress" }
         guard !pending.isEmpty else { return "queue has nothing pending" }
@@ -262,7 +273,7 @@ final class BootQueue {
     }
 
     private func sendNext(force: Bool = false) async {
-        guard sending == nil, !flasher.active, force || !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
+        guard sending == nil, !flasher.active, !tools.enteringBergamota, force || !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
         guard let fb = settings.fastboot else { note = "fastboot not found"; return }
         // Latch first: whatever happens, no second send until the phone leaves fastboot.
         waitingForLeave = true
@@ -301,7 +312,7 @@ final class BootQueue {
     /// Manual "Flash userdata" action (Boot page / Control Plane): only in fastboot, never while the queue sends,
     /// and the queue stays latched until the phone leaves fastboot so no boot follows by itself.
     func flashUserdataNow(_ info: UserdataFlash.Info) async -> String {
-        guard monitor.state == .fastboot else { return "phone is not in fastboot" }
+        guard monitor.state == .fastboot else { return monitor.state == .bergamotaFastboot ? "Bergamota fastboot has no flash commands: flash userdata from ABL fastboot" : "phone is not in fastboot" }
         guard !flasher.active else { return "a userdata flash is already running" }
         guard sending == nil else { return "a queue send is in progress" }
         guard monitor.fastbootSerial != nil else { return "no fastboot serial" }

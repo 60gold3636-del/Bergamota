@@ -41,7 +41,9 @@ final class PhoneTools {
     var iosUp: Bool { monitor.state == .ios }
     var disabledReason: String? { iosUp ? nil : "iOS is not up (state: \(monitor.state.title)). SSH actions are disabled." }
     var busy: Bool { installing != nil || uploadingCount != nil }
-    var rebooting: String?                  // "fastboot" / "recovery" while the reboot command runs
+    var rebooting: String?                  // "fastboot" / "bergamota" / "recovery" while the reboot command runs
+    var enteringBergamota = false           // `fastboot boot bergamota-fastboot.img` from ABL fastboot is running
+    var bergamotaSupported: Bool? { monitor.sweetrebootBergamota }
     static let rebootTool = "/usr/local/bin/sweetreboot"
 
     // MARK: plumbing
@@ -74,7 +76,7 @@ final class PhoneTools {
     /// by the tool's "next reboot mode" line, not by the exit status.
     func rebootIOS(to target: String) async -> (Bool, String) {
         guard iosUp else { return (false, disabledReason ?? "iOS is not up") }
-        guard target == "fastboot" || target == "recovery" else { return (false, "unknown reboot target \"\(target)\" (fastboot or recovery)") }
+        guard target == "fastboot" || target == "recovery" || target == "bergamota" else { return (false, "unknown reboot target \"\(target)\" (fastboot, bergamota or recovery)") }
         guard !busy, rebooting == nil else { return (false, "another install/upload/reboot is running") }
         guard let ssh = settings.ssh else { return (false, "ssh not found") }
         rebooting = target
@@ -90,6 +92,43 @@ final class PhoneTools {
         }
         if let e = r.launchError { return (false, e) }
         return (false, r.timedOut ? "ssh timed out" : (out.isEmpty ? "exit \(r.status)" : out))
+    }
+
+    /// Automatic reboot for queued boots: Bergamota fastboot when preferred (and the phone's sweetreboot is not known to lack it),
+    /// ABL fastboot when not or when `sweetreboot bergamota` fails. Returns the target that was sent.
+    func rebootIOSToFastboot() async -> (ok: Bool, msg: String, target: String) {
+        if settings.preferBergamotaFastboot, bergamotaSupported != false {
+            let r = await rebootIOS(to: "bergamota")
+            if r.0 { return (true, r.1, "bergamota") }
+            DebugLog.write("sweetreboot bergamota failed (\(r.1)), falling back to ABL fastboot")
+            guard iosUp else { return (false, r.1, "bergamota") }
+            let f = await rebootIOS(to: "fastboot")
+            return (f.0, f.0 ? "bergamota failed (\(r.1)); " + f.1 : f.1, "fastboot")
+        }
+        let f = await rebootIOS(to: "fastboot")
+        return (f.0, f.1, "fastboot")
+    }
+
+    /// ABL fastboot -> Bergamota fastboot: `fastboot -s <serial> boot <bergamota-fastboot.img>`. Only from ABL fastboot.
+    func enterBergamota() async -> (Bool, String) {
+        guard monitor.state == .fastboot else { return (false, "phone is not in ABL fastboot (state: \(monitor.state.title))") }
+        guard !enteringBergamota else { return (false, "already entering Bergamota fastboot") }
+        let path = (settings.bergamotaImagePath as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: path) else {
+            return (false, "Bergamota fastboot image not found: \(path). Build it in the shim (shim/out/bergamota-fastboot.img) or set the path in Settings.")
+        }
+        guard let fb = settings.fastboot else { return (false, "fastboot not found") }
+        guard let serial = monitor.fastbootSerial, !serial.isEmpty else { return (false, "no fastboot serial") }
+        enteringBergamota = true
+        defer { enteringBergamota = false }
+        let args = ["-s", serial, "boot", path]
+        log("\n$ fastboot " + args.map(shellQuote).joined(separator: " ") + "\n")
+        let r = await Shell.run(fb, args, timeout: 120)
+        log(r.combined + "\n")
+        DebugLog.write("enter bergamota: status=\(r.status) timedOut=\(r.timedOut) \(r.combined)")
+        if let e = r.launchError { return (false, e) }
+        if r.timedOut { return (false, "fastboot boot timed out") }
+        return r.ok ? (true, "booted \((path as NSString).lastPathComponent); waiting for Bergamota fastboot") : (false, r.combined.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // MARK: apps

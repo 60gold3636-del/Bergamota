@@ -2,13 +2,18 @@ import Foundation
 import Observation
 
 enum PhoneState: String, Sendable {
-    case unknown, offline, fastboot, recovery, android, iosBooting, ios
+    /// `fastboot` = Qualcomm ABL fastboot; `bergamotaFastboot` = the fastboot our boot shim speaks (serial `bergamota*`, version-bootloader `bergamota-N`).
+    case unknown, offline, fastboot, bergamotaFastboot, recovery, android, iosBooting, ios
+
+    /// Either kind of fastboot (`fastboot boot` works on both).
+    var isFastboot: Bool { self == .fastboot || self == .bergamotaFastboot }
 
     var title: String {
         switch self {
         case .unknown: "Checking..."
         case .offline: "Offline"
-        case .fastboot: "Fastboot"
+        case .fastboot: "ABL Fastboot"
+        case .bergamotaFastboot: "Bergamota Fastboot"
         case .recovery: "OrangeFox / Recovery"
         case .android: "Android (adb)"
         case .iosBooting: "iOS booting"
@@ -20,6 +25,7 @@ enum PhoneState: String, Sendable {
         case .unknown: "ellipsis.circle"
         case .offline: "bolt.slash"
         case .fastboot: "bolt.horizontal.circle.fill"
+        case .bergamotaFastboot: "leaf.circle.fill"
         case .recovery: "wrench.and.screwdriver.fill"
         case .android: "android.fill"
         case .iosBooting: "hourglass"
@@ -35,12 +41,14 @@ struct IOSInfo: Equatable, Sendable {
     var batteryPercent: Int?
     var isCharging: Bool?
     var powerSource: String?
+    var sweetrebootBergamota: Bool?
     var fetched = Date()
 }
 
 private struct Probe: Sendable {
     var fastbootSerial: String?
     var fastbootSession: String?
+    var fastbootKind: (key: String, bergamota: Bool, version: String)?
     var adbSerial: String?
     var adbState: String?
     var iface: String?
@@ -68,6 +76,9 @@ final class PhoneMonitor {
     var fastbootSerial: String?
     /// USB enumeration identity of the fastboot device; changes when the phone re-enumerates (e.g. force restart back into fastboot).
     var fastbootSession: String?
+    /// The fastboot device is Bergamota fastboot (our shim), not Qualcomm ABL.
+    var fastbootIsBergamota = false
+    var fastbootVersion: String?
     var adbSerial: String?
     var adbState: String?
     var ifaceName: String?
@@ -80,6 +91,8 @@ final class PhoneMonitor {
     var noRoute = false   // iface has an IP but connects fail with EHOSTUNREACH (maybe Local Network privacy)
     var natForwarding: String?
     var info: IOSInfo?
+    /// Whether the phone's `sweetreboot` lists `bergamota` (kept after iOS goes away; nil = never checked).
+    var sweetrebootBergamota: Bool?
     var infoError: String?
     var toolWarnings: [String] = []
     var lastPoll: Date?
@@ -91,6 +104,8 @@ final class PhoneMonitor {
     @ObservationIgnored private var lastSig = ""
     @ObservationIgnored private var primed = false
     @ObservationIgnored private let settings: AppSettings
+    /// `getvar version-bootloader` result per fastboot device identity (serial + USB session): asked once, not every poll.
+    @ObservationIgnored private var fbKind: (key: String, bergamota: Bool, version: String)?
 
     init(settings: AppSettings) { self.settings = settings }
 
@@ -113,7 +128,9 @@ final class PhoneMonitor {
             Task.detached { _ = Shell.tcpProbe(host: ip, port: 22, timeout: 1.0) }   // touches the local network -> permission prompt
         }
         let fb = settings.fastboot, adb = settings.adb, ip = settings.phoneIP
-        let probe = await Self.probe(fastboot: fb, adb: adb, ip: ip)
+        let known = fbKind
+        let probe = await Self.probe(fastboot: fb, adb: adb, ip: ip, known: known)
+        if let k = probe.fastbootKind { fbKind = k } else if probe.fastbootSerial == nil { fbKind = nil }
         apply(probe)
         if state == .ios { await refreshInfoIfNeeded() }
     }
@@ -125,6 +142,8 @@ final class PhoneMonitor {
         toolWarnings = warnings
         fastbootSerial = p.fastbootSerial
         fastbootSession = p.fastbootSession
+        fastbootIsBergamota = p.fastbootKind?.bergamota ?? false
+        fastbootVersion = p.fastbootKind?.version
         adbSerial = p.adbSerial
         adbState = p.adbState
         ifaceName = p.iface
@@ -139,7 +158,7 @@ final class PhoneMonitor {
         lastPoll = Date()
 
         let new: PhoneState
-        if p.fastbootSerial != nil { new = .fastboot }
+        if p.fastbootSerial != nil { new = (p.fastbootKind?.bergamota ?? false) ? .bergamotaFastboot : .fastboot }
         else if let s = p.adbState, s == "recovery" || s == "sideload" { new = .recovery }
         else if p.iface != nil && p.ping && p.ssh { new = .ios }
         else if p.adbState == "device" { new = .android }
@@ -162,7 +181,7 @@ final class PhoneMonitor {
 
     // MARK: probing
 
-    private nonisolated static func probe(fastboot: String?, adb: String?, ip: String) async -> Probe {
+    private nonisolated static func probe(fastboot: String?, adb: String?, ip: String, known: (key: String, bergamota: Bool, version: String)?) async -> Probe {
         async let fbR: ShellResult? = fastboot != nil ? Shell.run(fastboot!, ["devices"], timeout: 3) : nil
         async let adbR: ShellResult? = adb != nil ? Shell.run(adb!, ["devices"], timeout: 4) : nil
         async let ifR = Shell.run("/sbin/ifconfig", ["-a"], timeout: 3)
@@ -177,6 +196,18 @@ final class PhoneMonitor {
         if let serial = p.fastbootSerial {
             let io = await Shell.run("/usr/sbin/ioreg", ["-p", "IOUSB", "-l", "-w0"], timeout: 3)
             if io.ok { p.fastbootSession = usbSession(io.stdout, serial: serial) }
+            // ABL or Bergamota fastboot: serial `bergamota*`, else `getvar version-bootloader` starting with `bergamota` (read-only, once per appearance).
+            let key = serial + "/" + (p.fastbootSession ?? "")
+            if let k = known, k.key == key {
+                p.fastbootKind = k
+            } else if serial.lowercased().hasPrefix("bergamota") {
+                p.fastbootKind = (key, true, "")
+            } else if let fb = fastboot {
+                let g = await Shell.run(fb, ["-s", serial, "getvar", "version-bootloader"], timeout: 3)
+                if let v = parseVersionBootloader(g.combined) {
+                    p.fastbootKind = (key, v.lowercased().hasPrefix("bergamota"), v)
+                }
+            }
         }
         if let r = await adbR, r.ok {
             for line in r.stdout.split(whereSeparator: \.isNewline) {
@@ -205,6 +236,15 @@ final class PhoneMonitor {
             p.tcpErr = t.err
         }
         return p
+    }
+
+    /// `version-bootloader: bergamota-1` (fastboot prints getvar results on stderr).
+    nonisolated static func parseVersionBootloader(_ out: String) -> String? {
+        for line in out.split(whereSeparator: \.isNewline) where line.hasPrefix("version-bootloader:") {
+            let v = line.dropFirst("version-bootloader:".count).trimmingCharacters(in: .whitespaces)
+            if !v.isEmpty { return v }
+        }
+        return nil
     }
 
     /// Best effort: find the IOUSB entry of the fastboot device (by serial, else Google/Qualcomm VID 0x18d1)
@@ -268,7 +308,7 @@ final class PhoneMonitor {
         infoInFlight = true
         defer { infoInFlight = false }
         let ip = settings.phoneIP
-        let remote = "uname -a; echo '@@BOOT'; sysctl -n kern.boottime 2>/dev/null; echo '@@ETIME'; ps -o etime= -p 1 2>/dev/null; echo '@@NOW'; date +%s; echo '@@PS'; /usr/local/bin/sweetps"
+        let remote = "uname -a; echo '@@BOOT'; sysctl -n kern.boottime 2>/dev/null; echo '@@ETIME'; ps -o etime= -p 1 2>/dev/null; echo '@@NOW'; date +%s; echo '@@PS'; /usr/local/bin/sweetps; echo '@@SRB'; /usr/local/bin/sweetreboot 2>&1 </dev/null"
         let r = await Shell.run(ssh, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "root@\(ip)", remote], timeout: 10)
         if r.launchError != nil || r.timedOut || (r.status != 0 && r.stdout.isEmpty) {
             infoError = r.timedOut ? "ssh timed out" : (r.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -277,6 +317,7 @@ final class PhoneMonitor {
         }
         infoError = nil
         info = Self.parseInfo(r.stdout)
+        if let b = info?.sweetrebootBergamota { sweetrebootBergamota = b }
     }
 
     nonisolated static func parseInfo(_ out: String) -> IOSInfo {
@@ -305,6 +346,8 @@ final class PhoneMonitor {
         if let v = psValue("Current Capacity", in: ps), let n = Int(v.replacingOccurrences(of: "+", with: "")) { i.batteryPercent = n }
         if let v = psValue("Is Charging", in: ps) { i.isCharging = ["1", "true", "yes"].contains(v.lowercased()) }
         if let v = psValue("Power Source State", in: ps) { i.powerSource = v }
+        // `sweetreboot` without arguments prints its usage (no side effects); newer builds list `bergamota`.
+        if let u = parts["SRB"], !u.isEmpty { i.sweetrebootBergamota = u.contains("bergamota") }
         return i
     }
 

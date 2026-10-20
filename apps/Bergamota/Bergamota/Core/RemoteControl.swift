@@ -131,7 +131,7 @@ final class RemoteControl {
             return "orangefox reboot to bootloader \(en ? "enabled" : "disabled")"
         case "send_now":
             guard settings.allowRemoteStart else { throw RemoteError("remote start is disabled in Settings") }
-            guard monitor.state == .fastboot else { throw RemoteError("phone is not in fastboot (state: \(monitor.state.rawValue))") }
+            guard monitor.state.isFastboot else { throw RemoteError("phone is not in fastboot (state: \(monitor.state.rawValue))") }
             let r = await queue.sendNow()
             if r.hasPrefix("FAILED") || r == "not sent" || r.hasPrefix("a send") || r.hasPrefix("queue") { throw RemoteError(r) }
             return r
@@ -148,11 +148,17 @@ final class RemoteControl {
             if !r.0 { throw RemoteError(r.1) }
             return r.1
         case "reboot":
-            // {"kind":"reboot","to":"fastboot|recovery"}: iOS -> fastboot/recovery via SSH sweetreboot
-            guard let to = req["to"] as? String, to == "fastboot" || to == "recovery" else { throw RemoteError("\"to\" must be \"fastboot\" or \"recovery\"") }
+            // {"kind":"reboot","to":"fastboot|bergamota|recovery"}: iOS -> ABL fastboot / Bergamota fastboot / recovery via SSH sweetreboot
+            guard let to = req["to"] as? String, to == "fastboot" || to == "recovery" || to == "bergamota" else { throw RemoteError("\"to\" must be \"fastboot\", \"bergamota\" or \"recovery\"") }
             guard monitor.state == .ios else { throw RemoteError("iOS is not up (state: \(monitor.state.rawValue))") }
             guard let tools else { throw RemoteError("tools unavailable") }
             let (ok, msg) = await tools.rebootIOS(to: to)
+            if !ok { throw RemoteError(msg) }
+            return msg
+        case "enter_bergamota":
+            // {"kind":"enter_bergamota"}: ABL fastboot -> Bergamota fastboot (`fastboot boot bergamota-fastboot.img`)
+            guard let tools else { throw RemoteError("tools unavailable") }
+            let (ok, msg) = await tools.enterBergamota()
             if !ok { throw RemoteError(msg) }
             return msg
         case "stop":
@@ -164,7 +170,7 @@ final class RemoteControl {
     }
 
     private func largeNote(_ path: String) -> String {
-        BootQueue.fileSize(path) > BootQueue.largeImageBytes ? " (WARNING: \(BootQueue.largeWarning))" : ""
+        queue.largeWarns(BootQueue.fileSize(path)) ? " (WARNING: \(BootQueue.largeWarning))" : ""
     }
 
     private func armNote(_ req: [String: Any]) -> String {
@@ -219,9 +225,12 @@ final class RemoteControl {
 
     private func snapshot() -> [String: Any] {
         let m = monitor
-        var phone: [String: Any] = ["state": m.state.rawValue == "iosBooting" ? "ios-booting" : m.state.rawValue,
+        var phone: [String: Any] = ["state": m.state.rawValue == "iosBooting" ? "ios-booting" : (m.state == .bergamotaFastboot ? "bergamota-fastboot" : m.state.rawValue),
                                     "since": iso(m.stateSince)]
         if let s = m.fastbootSerial { phone["fastbootSerial"] = s }
+        if m.state.isFastboot { phone["fastbootKind"] = m.state == .bergamotaFastboot ? "bergamota" : "abl" }
+        if let v = m.fastbootVersion, !v.isEmpty, m.state.isFastboot { phone["fastbootVersion"] = v }
+        if let b = m.sweetrebootBergamota { phone["sweetrebootBergamota"] = b }
         if let s = m.adbSerial { phone["adbSerial"] = s }
         if m.state == .ios, let i = m.info {
             var ios: [String: Any] = ["kernel": i.uname]
@@ -241,7 +250,7 @@ final class RemoteControl {
             }
             var d: [String: Any] = ["id": it.id.uuidString, "label": it.label.isEmpty ? it.fileName : it.label, "image": it.imagePath,
                     "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400)),
-                    "sizeBytes": it.size, "warning": it.isLarge ? BootQueue.largeWarning : "",
+                    "sizeBytes": it.size, "warning": queue.largeWarns(it) ? BootQueue.largeWarning : "",
                     "needsManualFastboot": it.needsManualFastboot, "autoRebootTried": it.autoRebootTried]
             if let u = it.userdataImage { d["flashUserdata"] = u; d["flashUserdataBytes"] = it.userdataSize }
             return d
@@ -255,7 +264,7 @@ final class RemoteControl {
             "phone": phone,
             "queue": ["armed": queue.armed, "status": queue.statusText, "items": items,
                       "orangefoxReboot": settings.rebootFromRecovery, "remoteStartAllowed": settings.allowRemoteStart,
-                      "autoRebootToFastboot": settings.autoRebootToFastboot, "autoRebootStatus": (queue.autoStatusText as Any?) ?? NSNull()],
+                      "autoRebootToFastboot": settings.autoRebootToFastboot, "preferBergamotaFastboot": settings.preferBergamotaFastboot, "autoRebootStatus": (queue.autoStatusText as Any?) ?? NSNull()],
             "flash": flash,
             "liveLog": ["listening": logs.listening, "savingTo": logs.recording ? ((logs.recordPath as Any?) ?? NSNull()) : NSNull(),
                         "linesPerSecond": logs.linesPerSecond, "totalReceived": logs.totalReceived],

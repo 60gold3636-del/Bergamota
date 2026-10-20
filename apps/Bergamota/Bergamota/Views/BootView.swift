@@ -84,7 +84,7 @@ private struct QueuePane: View {
                             if item.flashesUserdata { Image(systemName: "externaldrive.fill.badge.exclamationmark").foregroundStyle(.red).help("flashes userdata first") }
                             Spacer()
                             if let t = item.sentAt { Text(t.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary) }
-                            if item.status == .pending, item.id == q.pending.first?.id, model.monitor.state == .fastboot, q.sending == nil, !q.flashing {
+                            if item.status == .pending, item.id == q.pending.first?.id, model.monitor.state.isFastboot, q.sending == nil, !q.flashing {
                                 Button("Send now") { confirmSend = true }.controlSize(.small).tint(.orange)
                             }
                             if item.status == .pending {
@@ -101,7 +101,7 @@ private struct QueuePane: View {
                         } else if item.autoRebootTried, item.status == .pending {
                             Label("auto-reboot to fastboot sent", systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
                         }
-                        if item.isLarge {
+                        if q.largeWarns(item) {
                             Label("\(BootQueue.largeWarning) (\(sizeFmt.string(fromByteCount: item.size)))", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption).foregroundStyle(.yellow)
                         }
@@ -150,7 +150,7 @@ private struct ImagesPane: View {
                 TableColumn("Size") { img in
                     HStack(spacing: 4) {
                         Text(sizeFmt.string(fromByteCount: img.size))
-                        if img.size > BootQueue.largeImageBytes { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(BootQueue.largeWarning) }
+                        if model.queue.largeWarns(img.size) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(BootQueue.largeWarning) }
                     }
                 }.width(110)
                 TableColumn("Date") { Text($0.date.formatted(date: .abbreviated, time: .shortened)) }.width(150)
@@ -210,7 +210,7 @@ private struct BuildPane: View {
                         } label: { Label("Build image", systemImage: "hammer.fill") }
                             .buttonStyle(.borderedProminent).disabled(!b.canBuild)
                         if b.building { ProgressView().controlSize(.small) }
-                        if let img = b.lastBuiltImage, BootQueue.fileSize(img) > BootQueue.largeImageBytes {
+                        if let img = b.lastBuiltImage, model.queue.largeWarns(BootQueue.fileSize(img)) {
                             Label(BootQueue.largeWarning, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.yellow)
                         }
                         if let r = b.lastResult { Text(r).foregroundStyle(b.lastBuiltImage != nil ? .green : .red) }

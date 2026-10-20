@@ -45,6 +45,15 @@ struct SettingsView: View {
                 Toggle("Notify when a boot is sent", isOn: $s.notifyOnBoot)
                 Toggle("Notify when iOS comes up", isOn: $s.notifyOnIOS)
                 Toggle("Auto-reboot iOS into fastboot when a queued image is waiting", isOn: $s.autoRebootToFastboot)
+                Toggle("Prefer Bergamota fastboot for the auto-reboot", isOn: $s.preferBergamotaFastboot)
+                Text("Uses `sweetreboot bergamota` (kernel patch 0140); falls back to ABL fastboot if it fails. The 64 MiB large-image warning only applies to ABL fastboot. Phone's sweetreboot supports bergamota: \(model.monitor.sweetrebootBergamota.map { $0 ? "yes" : "no" } ?? "not checked yet (needs iOS up)").")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("Bergamota fastboot image", text: $s.bergamotaImagePath, prompt: Text(AppSettings.defaultBergamotaImage))
+                HStack(spacing: 4) {
+                    let ok = FileManager.default.fileExists(atPath: (s.bergamotaImagePath as NSString).expandingTildeInPath)
+                    Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(ok ? .green : .red)
+                    Text(ok ? "found (used by \"Enter Bergamota fastboot\")" : "missing: Enter Bergamota fastboot will refuse until it exists").font(.caption).foregroundStyle(.secondary)
+                }
                 Text("Only while the queue is armed and the next item is pending, after iOS has been up for 30 s, once per queue item (SSH: /usr/local/bin/sweetreboot fastboot). If the phone is not in fastboot 90 s later the item is marked \"needs manual fastboot\" and auto-rebooting pauses.")
                     .font(.caption).foregroundStyle(.secondary)
             }

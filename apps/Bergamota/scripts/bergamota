@@ -6,7 +6,8 @@
 #   bergamota orangefox on|off
 #   bergamota install IPA [--wait]
 #   bergamota upload [--dest photos|/phone/folder] FILE... [--wait]
-#   bergamota reboot fastboot|recovery [--wait]     (iOS up; SSH sweetreboot)
+#   bergamota reboot fastboot|bergamota|recovery [--wait]     (iOS up; SSH sweetreboot; fastboot = ABL, bergamota = Bergamota fastboot)
+#   bergamota enter-bergamota [--wait]     (ABL fastboot -> Bergamota fastboot: fastboot boot bergamota-fastboot.img)
 #   bergamota status
 #   bergamota stop
 # Requests are written to ~/Library/Application Support/Bergamota/inbox/ ; results land in inbox/done or inbox/failed.
@@ -15,7 +16,7 @@ BASE="$HOME/Library/Application Support/Bergamota"
 INBOX="$BASE/inbox"
 
 die() { echo "bergamota: $*" >&2; exit 1; }
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # submit KIND JSON [wait]: write atomically (tmp name is not *.json), optionally wait for the result.
 submit() {
@@ -128,8 +129,10 @@ orangefox)
 	case ${1:-} in on) v=true ;; off) v=false ;; *) die "orangefox on|off" ;; esac
 	submit "{\"kind\":\"orangefox_reboot\",\"enabled\":$v}" ${2:+1} ;;
 reboot)
-	case ${1:-} in fastboot|recovery) to=$1 ;; *) die "reboot fastboot|recovery [--wait]" ;; esac
+	case ${1:-} in fastboot|bergamota|recovery) to=$1 ;; *) die "reboot fastboot|bergamota|recovery [--wait]" ;; esac
 	submit "{\"kind\":\"reboot\",\"to\":\"$to\"}" $([ "${2:-}" = --wait ] && echo 1 || echo 0) ;;
+enter-bergamota)
+	submit '{"kind":"enter_bergamota"}' $([ "${1:-}" = --wait ] && echo 1 || echo 0) ;;
 stop)
 	submit '{"kind":"stop"}' $([ "${1:-}" = --wait ] && echo 1 || echo 0) ;;
 status)
@@ -144,7 +147,7 @@ def age(s):
     except Exception: return s
 p = d["phone"]; q = d["queue"]; l = d["liveLog"]
 print(f"updated   {d['updated']} ({age(d['updated'])})")
-print(f"phone     {p['state']} (since {p.get('since','?')})")
+print(f"phone     {p['state']} (since {p.get('since','?')})" + (f"  [{p['fastbootKind'].upper()} fastboot {p.get('fastbootVersion','')}]" if p.get('fastbootKind') else ""))
 ios = p.get("ios")
 if ios:
     print(f"  ios     battery={ios.get('battery','?')}% charging={ios.get('charging','?')} uptime={ios.get('uptime','?')}s")
