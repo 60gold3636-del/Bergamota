@@ -19,7 +19,9 @@ enum UserdataFlash {
     /// The complete argument list of the flash command. Only this function builds it.
     static func flashArguments(serial: String, image: String, partition: String = "userdata") -> [String] {
         precondition(partitions.contains(partition), "refusing to flash \(partition)")
-        return ["-s", serial, "flash", partition, image]
+        // Always chunk explicitly: when fastboot could not read ABL's max-download-size it sent a 3 GB
+        // userdata image in one transfer and USB failed (usb_write e00002c0). 512 MiB sparse chunks worked.
+        return ["-s", serial, "-S", "512M", "flash", partition, image]
     }
 
     struct Info { var path: String; var name: String; var size: Int64; var partition: String = "userdata" }
