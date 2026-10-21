@@ -18,6 +18,7 @@ Disk is tight: every stage checks `df` and stops below 5 GiB free.
 """
 import argparse
 import os
+import struct
 import shutil
 import subprocess
 import sys
@@ -458,6 +459,8 @@ def stage_tweaks(a, root):
         rt.save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     finally:
         pass
+    if a.patch_mount_phase2:                       # OFF by default: the real cause is kernel-side (exclaves status, hw.osenvironment)
+        patch_mount_phase2(root)
     # logd stores and the system keybag of the built-in AppleKeyStore (same as tools/mkiosroot-macos.sh)
     for d in ('private/var/db/diagnostics', 'private/var/db/uuidtext', 'private/var/db/diagnostics/timesync'):
         os.makedirs(os.path.join(root, d), exist_ok=True)
@@ -492,6 +495,32 @@ def stage_tweaks(a, root):
                 continue
             f.write(f'{unicodedata.normalize("NFD", rel)}\t{u}\t{g}\t{os.lstat(p).st_mode & 0o7777:o}\n')
     log(f'{len(chowned)} owner overrides in {OWNER_EXTRA}')
+
+
+def patch_mount_phase2(root):
+    """`mount -P 2` (boot task mount-phase-2) ends, after the fstab entries of pass 2, in
+    execv("/System/Library/Filesystems/apfs.fs/apfs_boot_util", "2") (mount+0x3a08: `cmp w22,#2; b.ne exit; bl apfs_boot_util`).
+    apfs_boot_util mounts the Log/iDiags/Data volumes by role, deletes Data snapshots, grafts ExclaveOS: it aborts (SIGABRT)
+    on a root that is one HFS+ volume. Phase 1 takes the `b.ne` to exit(0); make phase 2 take the same exit
+    (b.ne -> b at mount+0x3a0c). Same program, same identity com.apple.mount (re-signed with the old identifier)."""
+    p = os.path.join(root, 'sbin/mount')
+    b = bytearray(open(p, 'rb').read())
+    assert struct.unpack_from('<I', b, 0)[0] == 0xFEEDFACF, 'sbin/mount is not a thin Mach-O'
+    off = 0x3a0c
+    new = 0x140000AF                                 # b +0x2bc
+    cur = struct.unpack_from('<I', b, off)[0]
+    exp = 0x54000001 | (0xAF << 5)                   # b.ne +0x2bc (-> mount+0x3cc8: exit(w21))
+    if cur == new:
+        log('mount-phase-2 patch already applied')
+        return
+    assert cur == exp, f'unexpected word {cur:#x} at mount+{off:#x} (expected b.ne {exp:#x}): another mount build?'
+    assert struct.unpack_from('<I', b, 0x3a08)[0] == 0x71000ADF, 'cmp w22,#2 not at mount+0x3a08'
+    struct.pack_into('<I', b, off, new)
+    os.chmod(p, os.stat(p).st_mode | 0o200)
+    with open(p, 'wb') as f:
+        f.write(b)
+    pacstrip.sign(p)
+    log('patched /sbin/mount: mount -P 2 no longer execs apfs_boot_util (b.ne -> b at +0x3a0c), re-signed as', pacstrip.cs_identity(p)[0])
 
 
 # --- stages: seal / verify / simg -----------------------------------------------------------------------------------
@@ -669,6 +698,7 @@ def main():
     ap.add_argument('--simg', default=None)
     ap.add_argument('--delete-sources', action='store_true', help='delete each IPSW dmg after it was copied (tight disk)')
     ap.add_argument('--skip-sources', default='', help='copy stage resume: sources already in the image (appos,sysos)')
+    ap.add_argument('--patch-mount-phase2', action='store_true', help='tweaks: make mount -P 2 skip apfs_boot_util (not needed, see docs)')
     ap.add_argument('--keep-raw', action='store_true', help='simg stage: do not punch holes into the raw image')
     ap.add_argument('--jobs', type=int, default=os.cpu_count())
     a = ap.parse_args()
