@@ -432,6 +432,36 @@ def audio(root):
         print('StartRecorderServer off', os.path.relpath(conf, root))
 
 
+# Daemons that only crash-loop or quit at once on this bring-up while containermanagerd refuses every container lookup
+# (NOTES.md 2026-10-21): 18 respawns each in the 224536 boot log, every crash = ReportCrash
+# + corpse (448 `SWEET AKS: ReportCrash` lines, "Too many corpses being created"), 1022 xpcproxy spawns in total. Off by
+# default (SWEET_QUIET=1 or --quiet turns it on): the point is less CPU competing with dropbear/backboardd while debugging.
+QUIET_THROTTLE = {      # label -> ThrottleInterval seconds (default 10, replicatord 3, lsd 1)
+    'com.apple.replicatord': 60, 'com.apple.appprotectiond': 60, 'com.apple.passd': 60,
+    'com.apple.icloud.findmydeviced': 60, 'com.apple.mobileactivationd': 60,
+    'com.apple.spaceattributiond': 60, 'com.apple.fairplayd.H2': 60, 'com.apple.PerfPowerServices': 60,
+    'com.apple.webinspectord': 60,
+}
+QUIET_REMOVE = ('com.apple.security.cryptexd',)     # libimage4 trap in img4_firmware_new_from_fd (no Image4 environment), nothing to verify here
+
+
+def quiet(root):
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = load(path)
+    jobs = plist['LaunchDaemons']
+    gone = [k for k, j in jobs.items() if j.get('Label') in QUIET_REMOVE]
+    for k in gone:
+        del jobs[k]
+    n = 0
+    for j in jobs.values():
+        if j.get('Label') in QUIET_THROTTLE:
+            j['ThrottleInterval'] = QUIET_THROTTLE[j['Label']]
+            n += 1
+    save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print(f'quiet: removed {len(gone)} job(s) {QUIET_REMOVE}, ThrottleInterval set on {n}')
+
+
 def main():
     if len(sys.argv) == 4 and sys.argv[1] == '--bt-plist':
         plist = load(sys.argv[2])
@@ -445,6 +475,8 @@ def main():
         sys.exit(__doc__)
     root = sys.argv[1]
     launchd(root)
+    if os.environ.get('SWEET_QUIET') == '1':
+        quiet(root)
     containers(root)
     launchservices(root)
     usbnet(root)

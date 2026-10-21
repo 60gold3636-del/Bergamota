@@ -422,6 +422,8 @@ def stage_tweaks(a, root):
     try:
         log('--- launchd.plist (PanicOnCrash, CommCenter), containers, usbnet, netcfg, sweetreboot, ssh')
         rt.launchd(root)
+        if os.environ.get('SWEET_QUIET') == '1':       # root_tweaks18.quiet(): crash-looping daemons off/throttled
+            rt.quiet(root)
         rt.containers(root)
         chowned[os.path.join(root, 'private/var/containers/Bundle')] = (33, 33)
         rt.usbnet(root)
