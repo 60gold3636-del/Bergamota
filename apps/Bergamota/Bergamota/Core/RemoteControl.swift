@@ -112,8 +112,11 @@ final class RemoteControl {
             return try await handleBuild(req)
         case "flash_userdata":
             // The app's one flash exception. Requires "confirm":"userdata"; only enqueues (the flash runs in fastboot, armed queue).
-            guard (req["confirm"] as? String) == UserdataFlash.confirmWord else {
-                throw RemoteError("flash_userdata rejected: needs \"confirm\":\"userdata\"")
+            // "partition" defaults to userdata; boot and logo are the only others (UserdataFlash.partitions).
+            let part = (req["partition"] as? String) ?? "userdata"
+            guard UserdataFlash.partitions.contains(part) else { throw RemoteError("flash rejected: partition \(part) is not allowed") }
+            guard (req["confirm"] as? String) == part else {
+                throw RemoteError("flash rejected: needs \"confirm\":\"\(part)\"")
             }
             guard let p = req["path"] as? String, !p.isEmpty else { throw RemoteError("missing \"path\"") }
             let info: UserdataFlash.Info
@@ -121,7 +124,7 @@ final class RemoteControl {
             let resolved: String
             if let r = try? resolve(p, under: "", suffix: nil) { resolved = r }
             else { resolved = try resolve(p, under: "../ios-beryllium-ios18/research/ios18", suffix: nil) }
-            switch UserdataFlash.validate(resolved) {
+            switch UserdataFlash.validate(resolved, partition: part) {
             case .success(let i): info = i
             case .failure(let e): throw RemoteError(e.message)
             }
@@ -256,7 +259,7 @@ final class RemoteControl {
                     "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400)),
                     "sizeBytes": it.size, "warning": queue.largeWarns(it) ? BootQueue.largeWarning : "",
                     "needsManualFastboot": it.needsManualFastboot, "autoRebootTried": it.autoRebootTried]
-            if let u = it.userdataImage { d["flashUserdata"] = u; d["flashUserdataBytes"] = it.userdataSize }
+            if let u = it.userdataImage { d["flashUserdata"] = u; d["flashUserdataBytes"] = it.userdataSize; d["flashPartition"] = it.flashTarget }
             return d
         }
         let f = queue.flasher

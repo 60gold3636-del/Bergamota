@@ -47,12 +47,12 @@ extension AppModel {
             let frac = f.fraction(now: now)
             let pct = frac.map { " \(Int($0 * 100))%" } ?? (f.total > 0 ? " \(f.progressText)" : "")
             let detail = f.progressDetail(now: now) ?? (f.total > 0 ? "chunk \(f.progressText), measuring speed" : "starting")
-            return ActivityBanner(title: "FLASHING USERDATA" + pct,
+            return ActivityBanner(title: "FLASHING \(f.partition.uppercased())" + pct,
                                   subtitle: "\(detail)  |  \(f.fileName)  |  do not unplug", color: .red,
                                   symbol: "externaldrive.fill.badge.exclamationmark", progress: frac ?? (f.total > 0 ? 0 : nil))
         }
         if let l = queue.flasher.last, now.timeIntervalSince(l.at) < 300, queue.sending == nil, (lastSent?.sentAt ?? .distantPast) < l.at, st.isFastboot || !l.ok {
-            return l.ok ? ActivityBanner(title: "FLASHED", subtitle: "userdata \(queue.flasher.fileName). Boot the image or reboot.", color: .orange, symbol: "checkmark.seal.fill")
+            return l.ok ? ActivityBanner(title: "FLASHED", subtitle: "\(queue.flasher.partition) \(queue.flasher.fileName). Boot the image or reboot.", color: .orange, symbol: "checkmark.seal.fill")
                         : ActivityBanner(title: "FAILED", subtitle: "userdata flash failed. See the Flash page output.", color: .red, symbol: "xmark.octagon.fill")
         }
         if let s = queue.sending { return ActivityBanner(title: "SENDING \(s.name.uppercased())", subtitle: "fastboot boot, do not unplug", color: .orange, symbol: "paperplane.fill") }

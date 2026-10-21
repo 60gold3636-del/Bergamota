@@ -2,7 +2,8 @@
 # CLI for the Bergamota app's file-based API (no network). Needs python3 for JSON only.
 #   bergamota enqueue IMG [--label L] [--no-arm] [--wait]
 #   bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--label L] [--no-enqueue] [--no-arm] [--wait]
-#   bergamota flash-userdata IMG [--then-boot BOOTIMG] [--label L] [--no-arm] [--wait]   (flashes ONLY userdata, replaces iOS)
+#   bergamota flash-userdata IMG [--partition userdata|boot|logo] [--then-boot BOOTIMG] [--label L] [--no-arm] [--wait]
+#                            (default userdata = replaces iOS; boot = our shim boot.img; logo = splash; nothing else)
 #   bergamota orangefox on|off
 #   bergamota install IPA [--wait]
 #   bergamota upload [--dest photos|/phone/folder] FILE... [--wait]
@@ -105,10 +106,11 @@ upload)
 	submit "$(python3 -c 'import json,sys; print(json.dumps({"kind":"upload","dest":sys.argv[1],"paths":sys.argv[2:]}))' "$dest" "${files[@]}")" $wait ;;
 flash-userdata)
 	# The CLI invocation is the explicit act: it adds "confirm":"userdata" itself. Enqueues; the app flashes on the next fastboot appearance.
-	img=""; boot=""; label=""; arm=true; wait=0
+	img=""; boot=""; label=""; arm=true; wait=0; part=userdata
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--then-boot) boot=$2; shift 2 ;;
+		--partition) part=$2; shift 2; case $part in userdata|boot|logo) ;; *) die "--partition must be userdata, boot or logo" ;; esac ;;
 		--label) label=$2; shift 2 ;;
 		--no-arm) arm=false; shift ;;
 		--wait) wait=1; shift ;;
@@ -119,11 +121,11 @@ flash-userdata)
 	[ -n "$img" ] || die "flash-userdata needs an image (.simg or .img)"
 	[ -z "$boot" ] || boot=$(abspath "$boot")
 	json=$(python3 -c 'import json,sys
-i,b,l,a=sys.argv[1:5]
-d={"kind":"flash_userdata","path":i,"confirm":"userdata","arm":a=="true"}
+i,b,l,a,p=sys.argv[1:6]
+d={"kind":"flash_userdata","path":i,"partition":p,"confirm":p,"arm":a=="true"}
 if b: d["then_boot"]=b
 if l: d["label"]=l
-print(json.dumps(d))' "$(abspath "$img")" "$boot" "$label" "$arm")
+print(json.dumps(d))' "$(abspath "$img")" "$boot" "$label" "$arm" "$part")
 	submit "$json" $wait ;;
 orangefox)
 	case ${1:-} in on) v=true ;; off) v=false ;; *) die "orangefox on|off" ;; esac

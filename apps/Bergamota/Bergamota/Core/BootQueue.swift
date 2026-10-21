@@ -18,12 +18,15 @@ struct QueueItem: Identifiable, Hashable, Codable {
     /// `imagePath` may then be empty: flash only, no boot.
     var userdataImage: String?
     var userdataSize: Int64 = 0
+    /// Partition `userdataImage` is flashed to (nil = userdata; boot or logo allowed, see UserdataFlash.partitions).
+    var flashPartition: String?
+    var flashTarget: String { flashPartition ?? "userdata" }
     var hasBoot: Bool { !imagePath.isEmpty }
     var flashesUserdata: Bool { userdataImage != nil }
     /// "flash userdata X, then boot Y" (or only the first half).
     var autoLabel: String {
         var parts: [String] = []
-        if let u = userdataImage { parts.append("flash userdata \((u as NSString).lastPathComponent)") }
+        if let u = userdataImage { parts.append("flash \(flashTarget) \((u as NSString).lastPathComponent)") }
         if hasBoot { parts.append((userdataImage != nil ? "then boot " : "") + (imagePath as NSString).lastPathComponent) }
         return parts.joined(separator: ", ")
     }
@@ -120,7 +123,8 @@ final class BootQueue {
     /// Item that flashes `userdata` (already validated) and then, if `bootPath` is non-empty, boots `bootPath`.
     func addFlash(userdata: UserdataFlash.Info, bootPath: String = "", label: String = "") {
         items.append(QueueItem(imagePath: bootPath, label: label, size: bootPath.isEmpty ? 0 : Self.fileSize(bootPath),
-                               userdataImage: userdata.path, userdataSize: userdata.size))
+                               userdataImage: userdata.path, userdataSize: userdata.size,
+                               flashPartition: userdata.partition == "userdata" ? nil : userdata.partition))
     }
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .sending } }
     func clearFinished() { items.removeAll { $0.status == .sent || $0.status == .failed } }
@@ -288,8 +292,8 @@ final class BootQueue {
         var out = ""
         // Optional userdata flash first (the single flash exception), then exactly one `fastboot boot`.
         if let ud = items[idx].userdataImage {
-            switch UserdataFlash.validate(ud) {
-            case .failure(let e): finish(id, ok: false, output: "userdata flash refused: \(e.message)"); return
+            switch UserdataFlash.validate(ud, partition: items[idx].flashTarget) {
+            case .failure(let e): finish(id, ok: false, output: "\(items[idx].flashTarget) flash refused: \(e.message)"); return
             case .success(let info):
                 let (ok, msg) = await flasher.flash(info)
                 out = flasher.output

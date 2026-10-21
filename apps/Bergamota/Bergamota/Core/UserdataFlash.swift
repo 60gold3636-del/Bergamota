@@ -12,24 +12,42 @@ enum UserdataFlash {
     static let minBytes: Int64 = 64 << 20
     static let confirmWord = "userdata"
 
+    /// The only partitions the app may flash: the iOS root (userdata), our shim boot image (boot) and the
+    /// splash (logo). Never bootloaders, recovery, modem, persist, dsp, bluetooth or anything else.
+    static let partitions = ["userdata", "boot", "logo"]
+
     /// The complete argument list of the flash command. Only this function builds it.
-    static func flashArguments(serial: String, image: String) -> [String] {
-        ["-s", serial, "flash", "userdata", image]
+    static func flashArguments(serial: String, image: String, partition: String = "userdata") -> [String] {
+        precondition(partitions.contains(partition), "refusing to flash \(partition)")
+        return ["-s", serial, "flash", partition, image]
     }
 
-    struct Info { var path: String; var name: String; var size: Int64 }
+    struct Info { var path: String; var name: String; var size: Int64; var partition: String = "userdata" }
 
     /// Absolute path of an existing regular `.img`/`.simg` file of at least 64 MiB.
-    static func validate(_ rawPath: String) -> Result<Info, UserdataFlashError> {
+    static func validate(_ rawPath: String, partition: String = "userdata") -> Result<Info, UserdataFlashError> {
+        guard partitions.contains(partition) else { return .failure(.init("partition \(partition) can not be flashed by Bergamota")) }
         let path = URL(fileURLWithPath: (rawPath as NSString).expandingTildeInPath).standardizedFileURL.resolvingSymlinksInPath().path
         guard rawPath.hasPrefix("/") || rawPath.hasPrefix("~") else { return .failure(.init("image path must be absolute")) }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue else { return .failure(.init("\(rawPath) does not exist")) }
         let ext = (path as NSString).pathExtension.lowercased()
-        guard ext == "img" || ext == "simg" else { return .failure(.init("\(rawPath) must be a .img or .simg file")) }
+        guard ext == "img" || ext == (partition == "userdata" ? "simg" : "img") else { return .failure(.init("\(rawPath) must be a .img\(partition == "userdata" ? " or .simg" : "") file")) }
         let size = ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
-        guard size >= minBytes else { return .failure(.init("\((path as NSString).lastPathComponent) is only \(size) bytes (< 64 MiB): not a root image")) }
-        return .success(Info(path: path, name: (path as NSString).lastPathComponent, size: size))
+        let name = (path as NSString).lastPathComponent
+        switch partition {
+        case "boot":
+            // our shim boot.img: Android header, fits the 64 MiB boot partition
+            guard size >= 1 << 20, size <= 64 << 20 else { return .failure(.init("\(name): a boot image must be 1-64 MiB")) }
+            guard let h = FileHandle(forReadingAtPath: path), let magic = try? h.read(upToCount: 8), String(decoding: magic, as: UTF8.self) == "ANDROID!" else {
+                return .failure(.init("\(name) is not an Android boot image (no ANDROID! header)"))
+            }
+        case "logo":
+            guard size >= 1 << 20, size <= 32 << 20 else { return .failure(.init("\(name): a logo image must be 1-32 MiB")) }
+        default:
+            guard size >= minBytes else { return .failure(.init("\(name) is only \(size) bytes (< 64 MiB): not a root image")) }
+        }
+        return .success(Info(path: path, name: name, size: size, partition: partition))
     }
 
     /// Streaming SHA-256 (hex), off the main thread.
@@ -64,6 +82,8 @@ struct UserdataFlashError: Error { let message: String; init(_ m: String) { mess
 final class UserdataFlasher {
     var active = false
     var fileName = ""
+    /// Partition of the current / last flash (userdata, boot or logo).
+    var partition = "userdata"
     var current = 0
     var total = 0
     var output = ""
@@ -109,7 +129,8 @@ final class UserdataFlasher {
         active = true
         fileName = info.name; current = 0; total = 0
         startedAt = Date(); bytes = info.size; lastChunkDoneAt = nil
-        let args = UserdataFlash.flashArguments(serial: serial, image: info.path)
+        let args = UserdataFlash.flashArguments(serial: serial, image: info.path, partition: info.partition)
+        partition = info.partition
         output = "$ fastboot " + args.map(shellQuote).joined(separator: " ") + "\n"
         DebugLog.write("FLASH userdata start \(info.path) (\(info.size) bytes)")
         let box = FlashTail()
