@@ -148,10 +148,10 @@ final class UserdataFlasher {
             }
         })
         var ok = r.ok
-        var msg = "FLASHED userdata (\(info.name))"
+        var msg = "FLASHED \(info.partition) (\(info.name))"
         if r.combined.contains("FAILED") { ok = false }
         if !ok {
-            msg = "FAILED flashing userdata: " + (r.launchError ?? (r.timedOut ? "timed out" : "fastboot exit \(r.status)"))
+            msg = "FAILED flashing \(info.partition): " + (r.launchError ?? (r.timedOut ? "timed out" : "fastboot exit \(r.status)"))
         }
         if let e = r.launchError { output += "\n\(e)" }
         output += "\n" + msg + "\n"

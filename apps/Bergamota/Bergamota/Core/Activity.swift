@@ -29,7 +29,7 @@ extension AppModel {
     static let bootTimeout: TimeInterval = 300
 
     /// The most recent successfully sent queue item (a boot in flight until iOS comes up or the timeout).
-    var lastSent: QueueItem? { queue.items.filter { $0.status == .sent && $0.sentAt != nil }.max { $0.sentAt! < $1.sentAt! } }
+    var lastSent: QueueItem? { queue.items.filter { $0.status == .sent && $0.sentAt != nil && $0.hasBoot }.max { $0.sentAt! < $1.sentAt! } }
     var lastFailed: QueueItem? { queue.items.filter { $0.status == .failed && $0.sentAt != nil }.max { $0.sentAt! < $1.sentAt! } }
 
     /// What the app is doing or seeing right now, as one high-contrast banner.

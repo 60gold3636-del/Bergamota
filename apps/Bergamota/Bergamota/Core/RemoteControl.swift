@@ -131,7 +131,7 @@ final class RemoteControl {
             var boot = ""
             if let b = req["then_boot"] as? String, !b.isEmpty { boot = try resolve(b, under: "shim/out", suffix: ".img") }
             queue.addFlash(userdata: info, bootPath: boot, label: (req["label"] as? String) ?? "")
-            return "queued flash userdata \(info.name)" + (boot.isEmpty ? "" : ", then boot \((boot as NSString).lastPathComponent)") + largeNote(boot) + armNote(req)
+            return "queued flash \(info.partition) \(info.name)" + (boot.isEmpty ? "" : ", then boot \((boot as NSString).lastPathComponent)") + largeNote(boot) + armNote(req)
         case "orangefox_reboot":
             guard let en = req["enabled"] as? Bool else { throw RemoteError("missing boolean \"enabled\"") }
             settings.rebootFromRecovery = en

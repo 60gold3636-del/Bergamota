@@ -22,29 +22,41 @@ struct ControlPlaneView: View {
     @AppStorage("cpFullScreen") private var wantFullScreen = false
 
     private let bg = Color(red: 0.04, green: 0.05, blue: 0.07)
+    /// Layout scale from the window size: 1.0 at 1280x880 pt; an iPad as a Sidecar display (1180x820 or
+    /// 1366x1024) or a small window shrinks everything proportionally instead of clipping, big displays grow it.
+    @State private var s: CGFloat = 1
+    private static func scale(for size: CGSize) -> CGFloat {
+        guard size.width > 0, size.height > 0 else { return 1 }
+        return max(0.55, min(1.6, min(size.width / 1280, size.height / 880)))
+    }
 
     var body: some View {
         let m = model.monitor, q = model.queue
         // Rows take their natural height with equal-height cards; the log takes whatever is left.
-        VStack(spacing: 18) {
-            ActivityBannerView(big: true)
-            HStack(spacing: 18) {
+        VStack(spacing: 18 * s) {
+            ActivityBannerView(big: true, scale: s)
+            HStack(spacing: 18 * s) {
                 tile("PHONE", m.state.title.uppercased(), sub: "since \(m.stateSince.formatted(date: .omitted, time: .standard))", color: stateColor(m.state))
                 batteryTile
                 lastBootTile
             }
             .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 18) {
+            HStack(spacing: 18 * s) {
                 queueCard.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                ciCard.frame(width: 440).frame(maxHeight: .infinity, alignment: .topLeading)
+                ciCard.frame(width: 440 * s).frame(maxHeight: .infinity, alignment: .topLeading)
             }
             .fixedSize(horizontal: false, vertical: true)
             logCard.frame(maxHeight: .infinity)
         }
-        .padding(24)
+        .padding(24 * s)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .safeAreaInset(edge: .bottom) { controls.padding(.horizontal, 24).padding(.vertical, 12).frame(maxWidth: .infinity).background(bg) }
+        .safeAreaInset(edge: .bottom) { controls.padding(.horizontal, 24 * s).padding(.vertical, 12 * s).frame(maxWidth: .infinity).background(bg) }
         .background(bg)
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { s = Self.scale(for: g.size) }
+                .onChange(of: g.size) { _, n in s = Self.scale(for: n) }
+        })
         .preferredColorScheme(.dark)
         .background(WindowAccessor { w in
             guard window == nil else { return }
@@ -66,12 +78,12 @@ struct ControlPlaneView: View {
 
     private func tile(_ title: String, _ value: String, sub: String = "", color: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 16, weight: .bold)).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 40, weight: .heavy, design: .rounded)).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.5)
-            if !sub.isEmpty { Text(sub).font(.system(size: 16)).foregroundStyle(.secondary).lineLimit(1) }
+            Text(title).font(.system(size: 16 * s, weight: .bold)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 40 * s, weight: .heavy, design: .rounded)).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.5)
+            if !sub.isEmpty { Text(sub).font(.system(size: 16 * s)).foregroundStyle(.secondary).lineLimit(1) }
         }
-        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+        .padding(18 * s).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16 * s))
     }
 
     private var batteryTile: some View {
@@ -95,28 +107,28 @@ struct ControlPlaneView: View {
         let q = model.queue
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("QUEUE").font(.system(size: 16, weight: .bold)).foregroundStyle(.secondary)
-                Text(q.armed ? "ARMED" : "STOPPED").font(.system(size: 14, weight: .heavy)).padding(.horizontal, 8).padding(.vertical, 2)
+                Text("QUEUE").font(.system(size: 16 * s, weight: .bold)).foregroundStyle(.secondary)
+                Text(q.armed ? "ARMED" : "STOPPED").font(.system(size: 14 * s, weight: .heavy)).padding(.horizontal, 8).padding(.vertical, 2)
                     .background(q.armed ? Color.orange : Color.gray.opacity(0.5), in: Capsule()).foregroundStyle(q.armed ? .black : .white)
                 Spacer()
                 if let first = q.pending.first, model.monitor.state.isFastboot, q.sending == nil, !q.flashing {
                     Button("Send now: \(first.name)") { confirmSend = true }.tint(.orange).controlSize(.large)
                 }
             }
-            if q.items.isEmpty { Text("empty").font(.system(size: 22)).foregroundStyle(.secondary) }
+            if q.items.isEmpty { Text("empty").font(.system(size: 22 * s)).foregroundStyle(.secondary) }
             ForEach(q.items.suffix(6)) { it in
                 HStack(spacing: 10) {
                     Image(systemName: icon(it.status)).foregroundStyle(color(it.status))
-                    Text(it.name).font(.system(size: 22, weight: .semibold)).lineLimit(1)
+                    Text(it.name).font(.system(size: 22 * s, weight: .semibold)).lineLimit(1)
                     if q.largeWarns(it) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(BootQueue.largeWarning) }
                     Spacer()
                     if let t = it.sentAt { Text(t.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary) }
                 }
             }
-            Text(q.statusText).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(2)
+            Text(q.statusText).font(.system(size: 14 * s)).foregroundStyle(.secondary).lineLimit(2)
         }
-        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+        .padding(18 * s).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16 * s))
     }
 
     private func icon(_ s: QueueItem.Status) -> String {
@@ -130,23 +142,23 @@ struct ControlPlaneView: View {
 
     private var ciCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("CI  xnu.yml").font(.system(size: 16, weight: .bold)).foregroundStyle(.secondary)
+            Text("CI  xnu.yml").font(.system(size: 16 * s, weight: .bold)).foregroundStyle(.secondary)
             ForEach(CIModel.branches, id: \.self) { b in
                 let run = model.ci.runs.first { $0.headBranch == b }
                 HStack(spacing: 10) {
-                    Image(systemName: ciIcon(run)).foregroundStyle(ciColor(run)).font(.system(size: 24))
-                    Text(b).font(.system(size: 22, weight: .semibold))
+                    Image(systemName: ciIcon(run)).foregroundStyle(ciColor(run)).font(.system(size: 24 * s))
+                    Text(b).font(.system(size: 22 * s, weight: .semibold))
                     Spacer()
                     if let r = run {
-                        Text(r.shortSha).font(.system(size: 16, design: .monospaced)).foregroundStyle(.secondary)
-                        Text(r.createdAt.formatted(.relative(presentation: .numeric))).font(.system(size: 16)).foregroundStyle(.secondary)
+                        Text(r.shortSha).font(.system(size: 16 * s, design: .monospaced)).foregroundStyle(.secondary)
+                        Text(r.createdAt.formatted(.relative(presentation: .numeric))).font(.system(size: 16 * s)).foregroundStyle(.secondary)
                     } else { Text("--").foregroundStyle(.secondary) }
                 }
             }
             if let e = model.ci.error { Text(e).font(.caption).foregroundStyle(.orange).lineLimit(2) }
         }
-        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+        .padding(18 * s).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16 * s))
     }
     private func ciIcon(_ r: CIRun?) -> String {
         guard let r else { return "questionmark.circle" }
@@ -164,32 +176,32 @@ struct ControlPlaneView: View {
     private var logCard: some View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("LIVE LOG").font(.system(size: 16, weight: .bold)).foregroundStyle(.secondary)
+                Text("LIVE LOG").font(.system(size: 16 * s, weight: .bold)).foregroundStyle(.secondary)
                 ForEach(LogTag.allCases) { tag in
                     let on = tagFilter.contains(tag)
                     Button { if on { tagFilter.remove(tag) } else { tagFilter.insert(tag) } } label: {
-                        Text(tag.rawValue).font(.system(size: 12, weight: .bold)).padding(.horizontal, 8).padding(.vertical, 3)
+                        Text(tag.rawValue).font(.system(size: 12 * s, weight: .bold)).padding(.horizontal, 8).padding(.vertical, 3)
                             .background(on ? tagColor(tag) : Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
                     }.buttonStyle(.plain)
                 }
                 Spacer()
-                Text("\(model.logs.linesPerSecond) lines/s").font(.system(size: 14)).foregroundStyle(.secondary).monospacedDigit()
+                Text("\(model.logs.linesPerSecond) lines/s").font(.system(size: 14 * s)).foregroundStyle(.secondary).monospacedDigit()
             }
             GeometryReader { geo in
-            let fit = max(1, Int(geo.size.height / 19))
+            let fit = max(1, Int(geo.size.height / (19 * s)))
             let lines = model.logs.totalReceived >= 0 ? model.logs.tail(fit, tags: tagFilter) : []
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(lines) { l in
-                    Text(l.text.isEmpty ? " " : l.text).font(.system(size: 15, design: .monospaced)).lineLimit(1)
+                    Text(l.text.isEmpty ? " " : l.text).font(.system(size: 15 * s, design: .monospaced)).lineLimit(1)
                         .foregroundStyle(l.tags & LogTag.crash.bit != 0 ? .red : (l.tags != 0 ? lineColor(l.tags) : Color.white.opacity(0.85)))
                 }
                 if lines.isEmpty { Text(model.logs.listening ? "waiting for kernel log on udp/5140..." : "log listener stopped").foregroundStyle(.secondary) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(minHeight: 4 * 19)
+            .frame(minHeight: 4 * 19 * s)
         }
-        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+        .padding(18 * s).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16 * s))
     }
 
     // MARK: controls
