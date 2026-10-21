@@ -87,7 +87,7 @@ extension AppModel {
         case .bergamotaFastboot: return ActivityBanner(title: "BERGAMOTA FASTBOOT", subtitle: "our shim (\(monitor.fastbootVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "serial \(monitor.fastbootSerial ?? "?")")): fastboot boot only, no flash", color: .lime, symbol: st.symbol)
         case .recovery: return ActivityBanner(title: "IN ORANGEFOX", subtitle: "recovery over adb", color: .purple, symbol: "wrench.and.screwdriver.fill")
         case .android: return ActivityBanner(title: "ANDROID", subtitle: "adb device", color: .teal, symbol: "android.fill")
-        case .iosBooting: return ActivityBanner(title: "iOS BOOTING", subtitle: "USB network is up, waiting for SSH", color: .yellow, symbol: "hourglass")
+        case .iosBooting: return ActivityBanner(title: "iOS BOOTING", subtitle: monitor.sshPortOpen ? "USB network up, SSH port open but the server does not answer yet" : "USB network is up, waiting for SSH", color: .yellow, symbol: "hourglass")
         case .unknown: return ActivityBanner(title: "CHECKING...", color: .gray, symbol: "ellipsis.circle")
         case .offline: return ActivityBanner(title: "OFFLINE", subtitle: "no device on USB (charging or powered off)", color: .gray, symbol: "bolt.slash")
         }
