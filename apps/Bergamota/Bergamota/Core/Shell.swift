@@ -132,6 +132,38 @@ enum Shell {
         getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
         return (err == 0, err)
     }
+
+    /// True only when an SSH server really answers: connect, then read its "SSH-" banner within `timeout`.
+    /// (iOS 18: the kernel accepted TCP 22 while dropbear was stalled, and Bergamota wrongly said iOS UP.)
+    static func sshBanner(host: String, port: UInt16 = 22, timeout: TimeInterval = 3.0) -> Bool {
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else { return false }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        let flags = fcntl(fd, F_GETFL)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        let r = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        if r != 0 {
+            guard errno == EINPROGRESS else { return false }
+            var w = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            guard poll(&w, 1, Int32(timeout * 1000)) > 0 else { return false }
+            var err: Int32 = 0
+            var len = socklen_t(MemoryLayout<Int32>.size)
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
+            guard err == 0 else { return false }
+        }
+        var rd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        guard poll(&rd, 1, Int32(timeout * 1000)) > 0 else { return false }
+        var buf = [UInt8](repeating: 0, count: 64)
+        let n = read(fd, &buf, buf.count)
+        return n >= 4 && buf[0] == 0x53 && buf[1] == 0x53 && buf[2] == 0x48 && buf[3] == 0x2d   // "SSH-"
+    }
 }
 
 func shellQuote(_ s: String) -> String {

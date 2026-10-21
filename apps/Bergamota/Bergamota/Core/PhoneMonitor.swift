@@ -55,6 +55,8 @@ private struct Probe: Sendable {
     var ifaceUp = false
     var ping = false
     var ssh = false
+    /// TCP 22 accepts connections (may be true while ssh is false: server stalled).
+    var sshPort = false
     var ifaceHasIP = false
     var inferred = false
     var macHidden = false
@@ -85,6 +87,7 @@ final class PhoneMonitor {
     var ifaceUp = false
     var pingOK = false
     var sshOpen = false
+    var sshPortOpen = false
     var ifaceHasIP = false
     var ifaceInferred = false   // found by subnet because the MAC was not visible
     var macHidden = false       // macOS zeroes MAC addresses without Local Network permission
@@ -154,6 +157,7 @@ final class PhoneMonitor {
         noRoute = p.iface != nil && p.ifaceHasIP && !p.ping && !p.ssh && (p.tcpErr == EHOSTUNREACH || p.pingErr.contains("No route"))
         pingOK = p.ping
         sshOpen = p.ssh
+        sshPortOpen = p.sshPort
         natForwarding = p.nat
         lastPoll = Date()
 
@@ -228,11 +232,14 @@ final class PhoneMonitor {
         if p.iface != nil {
             async let pingR = Shell.run("/sbin/ping", ["-c", "1", "-t", "1", ip], timeout: 4)
             async let sshR = Task.detached { Shell.tcpProbe(host: ip, port: 22, timeout: 1.5) }.value
+            async let bannerR = Task.detached { Shell.sshBanner(host: ip, timeout: 3) }.value
             let pr = await pingR
             p.ping = pr.ok
             p.pingErr = (pr.launchError ?? pr.stderr + pr.stdout.split(separator: "\n").filter { $0.contains("No route") }.joined()).trimmingCharacters(in: .whitespacesAndNewlines)
             let t = await sshR
-            p.ssh = t.open
+            p.sshPort = t.open
+            let banner = await bannerR
+            p.ssh = t.open && banner	// iOS UP only when the SSH server answers, not just the TCP port
             p.tcpErr = t.err
         }
         return p
