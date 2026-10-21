@@ -314,3 +314,14 @@ NOTES), then `fastboot boot research/ios18/shim-boot-ios18full.img`. iOS 16 come
 
 ### mount-phase-2 (analysis; root NOT changed)
 `mount -P 2` (22H352 `/sbin/mount`) processes fstab entries of pass 2 and then always `execv("/System/Library/Filesystems/apfs.fs/apfs_boot_util", "2")` (mount+0x3a08..0x3a10: `cmp w22,#2; b.ne exit; bl`). `apfs_boot_util 2` mounts Log/iDiags/Data volumes by role, deletes Data snapshots and grafts ExclaveOS; on the phone it aborts at "ExclaveOS graft" because of missing kernel sysctls (`hw.osenvironment`, exclaves status), not because of the root. A root-side workaround exists (`mkroot-full.py --patch-mount-phase2`: one word, `b.ne` -> `b` at mount+0x3a0c, re-signed as com.apple.mount) but is OFF by default and not in the current image. Other boot tasks with APFS/data-volume strings (no change needed yet, all non-fatal or AllowCrash): keybagd (AllowCrash), usermanagerd --init (AllowCrash, "missing disknode for the booted user"), MSUEarlyBootTask (AllowCrash), finish_demo_restore (RequireSuccess; looks up the APFS demo volume, expected to skip without a demo staging folder: unverified), fsck (skips the OS container as on iOS 16).
+
+### cc_fips_test: corecrypto FIPS POST integrity HMAC (fix in `tools/ios18/fips_rehmac.py`)
+Boot symptom: `cc_fips_test` (RequireSuccess) runs the POST KATs (all PASSED) but `FIPS_POST failed!` -> panic. Cause: `fipspost_post_integrity`
+(libcorecrypto, 22H352) calls `fipspost_get_hmac(mh, out, 0)` = HMAC-SHA256(key = one 0x00 byte, first `__TEXT,__text` section of the image, read
+at `mh + section.offset`) and `cc_cmp_safe`s it with the 32 bytes of `__TEXT,__fips_hmacs` (on mismatch it logs `MAC generated:` / `In variable:` and
+returns -0x4a). pacstrip_cache rewrites `__text`, so the stored value was stale. Verified: on the pristine macOS 27 cache libcorecrypto the
+same computation MATCHES the stored value; on our cache all 3 variants (libcorecrypto, _trace, _noasm) mismatched. `fips_rehmac.py CACHE_DIR [--patch]`
+recomputes and stores the HMAC and refreshes the CodeDirectory page hashes of the sub-cache file; mkroot-full.py runs it right after pacstrip_cache.
+No other Mach-O in the root has a `__fips_hmacs` section. Applied to the existing image (simg -> raw -> patch -> fsck -> simg), 0 wrong page hashes.
+Not verifiable offline: whether further POST steps fail (photo lacks `fipspost_post_ffdh` in the PASSED list; scrolled-off lines unknown).
+Fallback (not needed): `fips_mode` boot-arg only selects/forces-fail POST variants (bit 0x10 flips the computed MAC), there is no skip switch.

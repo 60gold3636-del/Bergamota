@@ -385,6 +385,8 @@ def stage_cache(a, root):
     need_free('cache stage')
     d = os.path.join(root, 'System/Library/Caches/com.apple.dyld')
     run([sys.executable, '-I', os.path.join(HERE, 'pacstrip_cache.py'), d, '--jobs', str(a.jobs)])
+    run([sys.executable, '-I', os.path.join(HERE, 'fips_rehmac.py'), d, '--patch'])   # corecrypto FIPS POST integrity HMAC
+
 
 
 # --- stage: tweaks --------------------------------------------------------------------------------------------------
