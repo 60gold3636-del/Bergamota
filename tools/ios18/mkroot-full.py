@@ -223,12 +223,17 @@ def stage_copy(a, img, rootmnt, dmgs):
         lines = [l for l in err.splitlines() if l.strip()]
         # OS-volume symlinks like Frameworks/WebKit.framework -> /System/Cryptexes/OS/... meet the real directory
         # of the merged cryptex: ditto says "Is a directory" and leaves the directory, which is what we want
-        real = [l for l in lines if not l.endswith('Is a directory')]
+        real = [l for l in lines if not l.endswith('Is a directory') and not l.endswith('/.file: Permission denied')]
         log(f'ditto {name}: rc={rc} {time.time() - t0:.0f}s, {len(lines)} messages ({len(lines) - len(real)} '
             f'symlink-vs-directory, kept as directories)', '; '.join(real)[:2000])
         if rc and real:
             sys.exit(f'ditto {name} failed')
         prune_after(rootmnt, name)
+        if name == 'sysos':                          # give the pruned .symbols blocks back to the host
+            subprocess.run(['sync'])
+            run(['hdiutil', 'detach', rootmnt], capture_output=True)
+            run([sys.executable, '-I', os.path.join(HERE, 'hfs_trim.py'), img])
+            attach(img, rootmnt, readonly=False)
         if a.delete_sources:
             os.unlink(dmgs[name])
             log('deleted', dmgs[name])
@@ -303,8 +308,10 @@ def macho_worker(path):
         os.chmod(path, os.stat(path).st_mode | 0o200)
         with open(path, 'wb') as f:
             f.write(buf)
-        pacstrip.sign(path)
-        return path, 'rewritten', dict(counts)
+        old = pacstrip.sign(path)              # keeps identifier/entitlements/options, verifies identity after
+        counts = dict(counts)
+        counts['__ident'] = old
+        return path, 'rewritten', counts
     except BaseException as e:             # report, keep going
         return path, 'FAILED: ' + str(e)[:300], None
 
@@ -336,6 +343,7 @@ def stage_macho(a, root):
     stats, failed = Counter(), []
     totals = Counter()
     rewritten = set()
+    idents = {}
     with Pool(a.jobs) as pool:
         for i, (p, status, counts) in enumerate(pool.imap_unordered(macho_worker, files, chunksize=16)):
             if status is None:
@@ -345,6 +353,8 @@ def stage_macho(a, root):
                 failed.append((p, status))
             elif status == 'rewritten':
                 rewritten.add(p)
+                ident = counts.pop('__ident', None)
+                idents[p] = ident
                 totals.update(counts)
             if i % 20000 == 0:
                 log(f'  {i}/{len(files)} {dict(stats)}')
@@ -359,9 +369,14 @@ def stage_macho(a, root):
     log('rewritten classes:', ', '.join(f'{k}={v}' for k, v in sorted(totals.items())))
     for p, s in failed[:40]:
         log('  ', p, s)
+    with open(os.path.join(W, 'identities.tsv'), 'w') as f:        # identifier/team/flags BEFORE the re-sign
+        for p, i in sorted(idents.items()):
+            if i:
+                f.write(f'{os.path.relpath(p, root)}\t{i[0]}\t{i[1]}\t{i[2]:x}\n')
+    log(f'{len(idents)} re-signed Mach-Os, identities recorded ({sum(1 for i in idents.values() if not i)} were unsigned)')
     if failed:
         open(os.path.join(W, 'macho-failed.txt'), 'w').write('\n'.join(f'{p}\t{s}' for p, s in failed))
-        log(f'{len(failed)} failures listed in research/ios18/full/macho-failed.txt')
+        sys.exit(f'{len(failed)} Mach-O files failed (research/ios18/full/macho-failed.txt): the build must not continue')
 
 
 # --- stage: cache ---------------------------------------------------------------------------------------------------
@@ -568,6 +583,24 @@ def stage_verify(a, img, rootmnt):
                 (resonly if 'resource' in r.stderr else badsig).append(p)
         chk(not badsig, f'codesign -v on {len(sample)} of {len(machos)} Mach-Os: {len(badsig)} bad {badsig[:3]}, '
                         f'{len(resonly)} only with an invalid bundle resource seal')
+        # every re-signed Mach-O: identifier, team id and CS options as before the re-sign
+        idf = os.path.join(W, 'identities.tsv')
+        if os.path.exists(idf):
+            n = bad = 0
+            badl = []
+            for line in open(idf):
+                rel, ident, team, fl = line.rstrip('\n').split('\t')
+                p = os.path.join(R, rel)
+                if not os.path.exists(p):               # moved by a tweak (VirtualAudio.plugin -> HAL.disabled)
+                    continue
+                new = pacstrip.cs_identity(p)
+                n += 1
+                lost = (int(fl, 16) & ~new[2]) & ~pacstrip.CS_FLAG_IGNORED if new else 1
+                if not new or new[0] != ident or new[1] != team or lost:
+                    bad += 1
+                    badl.append((rel, ident, new))
+            chk(bad == 0, f'identity (identifier/team/CS flags) unchanged on all {n} re-signed Mach-Os, {bad} mismatches {badl[:3]}')
+        boot_task_audit(R, chk)
         # no PAC left in a sample (+ every launchd/dyld/SpringBoard)
         left = Counter()
         for p in sample + [os.path.join(R, 'sbin/launchd'), os.path.join(R, 'usr/lib/dyld')]:
@@ -588,6 +621,33 @@ def stage_verify(a, img, rootmnt):
         detach(dev)
     if not ok:
         sys.exit('verification FAILED')
+
+
+def boot_task_audit(R, chk):
+    """launchd 18 boot tasks: program present, signing identifier = com.apple.<leaf> or CSIdentityOverride."""
+    import plistlib
+    b = open(os.path.join(R, 'sbin/launchd'), 'rb').read()
+    i = b.find(b'<key>mount-phase-1</key>')
+    bt = plistlib.loads(b[b.rfind(b'<?xml', 0, i):b.find(b'</plist>', i) + 8])['Boot']
+    missing, mism, optional = [], [], []
+    for name, t in sorted(bt.items()):
+        prog = t.get('Program') or (t.get('ProgramArguments') or [None])[0]
+        if not prog or not prog.startswith('/'):
+            continue
+        p = os.path.join(R, prog.lstrip('/'))
+        if not os.path.exists(p):
+            # device/restore specific tasks (HorizonSetup, darwinos-boot-task, visionOS loaders) are absent from the
+            # iPhone OS volume too; only RequireRun tasks outside restore must exist
+            (missing if t.get('RequireRun') and not t.get('PerformInRestore') else optional).append(f'{name}:{prog}')
+            continue
+        idn = pacstrip.cs_identity(p)
+        exp = t.get('CSIdentityOverride') or 'com.apple.' + os.path.basename(prog)
+        if idn is None or idn[0] != exp:
+            mism.append(f'{name}: {prog} id={idn and idn[0]} expected={exp}')
+    log(f'boot tasks with a program path: {sum(1 for t in bt.values() if t.get("Program"))}, missing in the root: {missing}; absent as on a stock iPhone image: {optional}')
+    for m in mism:
+        log('     identity differs from the launchd rule (informational): ' + m)
+    chk(not missing, 'every boot-task program exists in the root')
 
 
 def stage_simg(a, img, rootmnt):

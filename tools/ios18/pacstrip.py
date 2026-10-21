@@ -221,21 +221,82 @@ def slices(buf):
         yield 0
 
 
-def sign(path):
+CS_FLAG_OPTIONS = ((0x1, 'host'), (0x100, 'hard'), (0x200, 'kill'), (0x400, 'expires'), (0x800, 'restrict'),
+                   (0x2000, 'library'), (0x10000, 'runtime'))
+CS_FLAG_IGNORED = 0x2 | 0x20000 | 0x4000 | 0x1000      # adhoc (codesign adds it), linker-signed, (computed bits)
+
+
+def cs_identity(path):
+    """(identifier, team_id, flags) of the first arm64 slice's CodeDirectory, or None if unsigned/unparsable.
+
+    launchd compares the signing identifier of a boot task with the one it expects ("com.apple.mount"): an ad-hoc
+    re-sign must keep it (codesign would invent name-<hash>)."""
+    buf = open(path, 'rb').read()
+    for base in slices(bytearray(buf[:1 << 16]) if buf[:4] not in (b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca') else bytearray(buf)):
+        magic, cputype, cpusub, ftype, ncmds, sizeofcmds = struct.unpack_from('<IiiIII', buf, base)
+        off = base + 32
+        for _ in range(ncmds):
+            cmd, size = struct.unpack_from('<II', buf, off)
+            if cmd == LC_CODE_SIGNATURE:
+                dataoff, datasize = struct.unpack_from('<II', buf, off + 8)
+                sb = base + dataoff
+                if struct.unpack_from('>I', buf, sb)[0] != 0xFADE0CC0:
+                    return None
+                count = struct.unpack_from('>I', buf, sb + 8)[0]
+                for i in range(count):
+                    typ, boff = struct.unpack_from('>II', buf, sb + 12 + 8 * i)
+                    if typ == 0:
+                        cd = sb + boff
+                        if struct.unpack_from('>I', buf, cd)[0] != 0xFADE0C02:
+                            return None
+                        ver, flags = struct.unpack_from('>II', buf, cd + 8)
+                        identoff = struct.unpack_from('>I', buf, cd + 20)[0]
+                        ident = bytes(buf[cd + identoff:buf.index(b'\0', cd + identoff)]).decode()
+                        team = ''
+                        if ver >= 0x20200:
+                            to = struct.unpack_from('>I', buf, cd + 48)[0]
+                            if to:
+                                team = bytes(buf[cd + to:buf.index(b'\0', cd + to)]).decode()
+                        return ident, team, flags
+                return None
+            off += size
+        return None
+    return None
+
+
+def sign(path, check=True):
+    """Ad-hoc re-sign keeping identifier, entitlements and the CS options of the old signature; verified after."""
+    old = cs_identity(path)
     ents = subprocess.run(['codesign', '-d', '--entitlements', '-', '--xml', path], capture_output=True)
     cmd = ['codesign', '-f', '-s', '-']
+    if old:
+        cmd += ['-i', old[0]]
+        opts = [n for bit, n in CS_FLAG_OPTIONS if old[2] & bit]
+        if opts:
+            cmd += ['-o', ','.join(opts)]
     tmp = None
     if ents.returncode == 0 and ents.stdout.strip().startswith(b'<?xml'):
         tmp = path + '.ents.plist'
         open(tmp, 'wb').write(ents.stdout)
         cmd += ['--entitlements', tmp]
     try:
-        r = subprocess.run(cmd + [path], capture_output=True, text=True)
-        if r.returncode:
+        for attempt in range(3):                # codesign sometimes fails under parallel load; the file is unchanged then
+            r = subprocess.run(cmd + [path], capture_output=True, text=True)
+            if r.returncode == 0:
+                break
+        else:
             raise SystemExit(f'codesign failed for {path}: {r.stderr.strip()}')
     finally:
         if tmp and os.path.exists(tmp):
             os.unlink(tmp)
+    if check and old:
+        new = cs_identity(path)
+        if not new or new[0] != old[0] or new[1] != old[1]:
+            raise SystemExit(f'identity changed by re-sign of {path}: {old[:2]} -> {new and new[:2]}')
+        lost = (old[2] & ~new[2]) & ~CS_FLAG_IGNORED
+        if lost:
+            raise SystemExit(f'CS flags {lost:#x} lost by re-sign of {path} (old {old[2]:#x}, new {new[2]:#x})')
+    return old
 
 
 def main():
