@@ -384,6 +384,15 @@ class Linux(Backend):
         so one mount serves both the owner map and the copy."""
         if not self.dry:
             os.makedirs(mnt, exist_ok=True)
+        if ',' in dmg:
+            # apfs-fuse hands the device path to FUSE inside a comma-separated -o list (fsname=...), so a comma in it
+            # ("22H352__iPhone11,8") splits the option: give it a comma-free symlink next to the mount point
+            link = os.path.join(os.path.dirname(os.path.abspath(mnt)), 'dmg-' + os.path.basename(dmg).replace(',', '_'))
+            if not self.dry:
+                if os.path.islink(link) or os.path.exists(link):
+                    os.remove(link)
+                os.symlink(os.path.abspath(dmg), link)
+            dmg = link
         r = self.run(self.apfs_fuse_cmd(dmg, mnt), fake='', check=False)
         if r.returncode and not self.dry:
             # apfs-fuse says nothing without -d: run it again with debug output so the reason shows
