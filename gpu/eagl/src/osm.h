@@ -15,5 +15,8 @@ void osm_sweet_forget(unsigned surface_id);
 // Zero-copy display buffer: texture `name` becomes the memory of the IOSurface (no blit); direct_sync = finish the GPU work + BO_SYNC.
 int osm_sweet_attach_direct(unsigned name, unsigned surface_id);
 void osm_sweet_direct_sync(unsigned surface_id);
+// Writable CPU alias of a client-memory (GPU read-only) IOSurface from the kernel (abi_minor 2); 0 when not available. alias_sync after the CPU writes.
+int osm_sweet_surface_alias(unsigned surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h);
+void osm_sweet_alias_sync(unsigned surface_id);
 void osm_sweet_stats(double *out, int n);   // cumulative ms per phase of the blit (debug), see OSMesaSweetStats in the Mesa patch
 #endif

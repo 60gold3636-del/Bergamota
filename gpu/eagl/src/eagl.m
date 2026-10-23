@@ -178,10 +178,16 @@ static void rgba_to_surface(const uint8_t *src, uint32_t w, uint32_t h, IOSurfac
     kern_return_t lk = IOSurfaceLock(s, 0, NULL);
     uint8_t *dst = lk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(s) : NULL;
     size_t bpr = IOSurfaceGetBytesPerRow(s);
+    BOOL via_alias = NO;
     if (!dst || !mapping_writable(dst, bpr * IOSurfaceGetHeight(s))) {
-        if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL);
-        EAGL_DEBUG("CPU sync skipped: surface %u is not mapped writable here\n", IOSurfaceGetID(s));
-        return;
+        // read-only client memory (Control Center platters, live icons): the kernel gives a writable CPU alias of it (abi_minor 2)
+        void *ab = NULL; unsigned abpr = 0, aw = 0, ah = 0;
+        if (osm_sweet_surface_alias(IOSurfaceGetID(s), &ab, &abpr, &aw, &ah)) { dst = ab; bpr = abpr; via_alias = YES; }
+        else {
+            if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL);
+            EAGL_DEBUG("CPU sync skipped: surface %u is not mapped writable here (no kernel alias)\n", IOSurfaceGetID(s));
+            return;
+        }
     }
     size_t sw = IOSurfaceGetWidth(s), sh = IOSurfaceGetHeight(s);
     uint32_t cw = w < sw ? w : (uint32_t)sw, ch = h < sh ? h : (uint32_t)sh;
@@ -194,7 +200,8 @@ static void rgba_to_surface(const uint8_t *src, uint32_t w, uint32_t h, IOSurfac
             dp[x] = (p & 0xff00ff00u) | (r << 16) | b | (opaque ? 0xff000000u : 0);
         }
     }
-    IOSurfaceUnlock(s, 0, NULL);
+    if (via_alias) osm_sweet_alias_sync(IOSurfaceGetID(s));
+    if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL);
 }
 
 // Read back the renderbuffer (or texture level 0) `name` of the current context into a malloc'ed RGBA buffer.

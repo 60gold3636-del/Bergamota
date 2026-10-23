@@ -394,9 +394,19 @@ sweet_drm_surface_bo(int fd, struct sweet_gpu_surface_bo *io)
 		memset(&inf, 0, sizeof(inf));
 		minor = sweet_call(SWEET_GPU_SEL_INFO, &inf, sizeof(inf)) == 0 ? (int)inf.abi_minor : 0;
 		if (minor >= 1)
-			g_sbo_size = sizeof(struct sweet_gpu_surface_bo);
+			g_sbo_size = minor >= 2 ? SWEET_GPU_SURFACE_BO_MINOR2_SIZE : SWEET_GPU_SURFACE_BO_MINOR1_SIZE;
 	}
 	return sweet_call(SWEET_GPU_SEL_SURFACE_BO, io, g_sbo_size);
+}
+
+/* Close a BO handle (SURFACE_BO makes one per surface; a writable alias is unmapped by the kernel at this point). */
+EXPORT int
+sweet_drm_gem_close(int fd, uint32_t handle)
+{
+	struct sweet_gem_close a = { .handle = handle };
+
+	(void)fd;
+	return sweet_call(SWEET_GPU_SEL_GEM_CLOSE, &a, sizeof(a));
 }
 
 EXPORT int

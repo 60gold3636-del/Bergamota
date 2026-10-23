@@ -58,3 +58,7 @@ extern int OSMesaSweetAttachDirect(unsigned name, unsigned surface_id);
 extern void OSMesaSweetDirectSync(unsigned surface_id);
 int osm_sweet_attach_direct(unsigned name, unsigned surface_id) { return OSMesaSweetAttachDirect(name, surface_id); }
 void osm_sweet_direct_sync(unsigned surface_id) { OSMesaSweetDirectSync(surface_id); }
+extern int OSMesaSweetSurfaceAlias(unsigned surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h);
+extern void OSMesaSweetAliasSync(unsigned surface_id);
+int osm_sweet_surface_alias(unsigned surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h) { return OSMesaSweetSurfaceAlias(surface_id, base, bpr, w, h); }
+void osm_sweet_alias_sync(unsigned surface_id) { OSMesaSweetAliasSync(surface_id); }
