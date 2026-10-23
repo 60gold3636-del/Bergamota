@@ -17,6 +17,7 @@ Patches in `xnu/patches-11215/`, applied after 0103/0170 (the stage-1..7 bring-u
 | `0183-beryllium-gpu-a630-sqe-max` | `bsd/dev/sweet_a630.c` | Found on hardware: `SQE_MAX` 0x8000 rejected linux-firmware's 34188-byte `a630_sqe.fw`. SQE window now 0x10000 bytes (phys 0xc000-0x1c000, VA 0x40010000, 0x40020000 left unmapped), scratch moved to phys 0x1c000 / VA 0x40030000; CP block stays 0x20000 bytes. |
 | `0184-beryllium-gpu-a630-debug-selector` | `sweet_a630.c`, `SweetAdreno.cpp`, ABI header | After the first hardware run (stage 8 passed, user submissions never ran): selector `0x73` `SWEET_GPU_SEL_DEBUG` (40-word read-only snapshot: GMU power/fence/counter, gpucc GX/CX, SMMU CB1 faults, CP RPTR/WPTR/status/IB1; GPU-core words only when GX is on, so never a hang); the same dump in the kernel log on every wait timeout and first 8 submits (with WPTR readback); submits refuse (no hang, no silent drop) when GX is off and re-assert the AHB fence ALLOW; `PARAM_TIMESTAMP` now reads the GMU always-on counter (Linux does; the CP copy read over AHB did not advance). |
 | `0185-beryllium-gpu-a630-4k-gpu-pages-fault-check` | `sweet_a630.c`, `SweetAdreno.cpp` | Found on hardware (8c, SMMU CB1 FSR 0x402 at BO+0x1000): xnu's PAGE_SIZE is 16 KiB, the GPU's page 4 KiB, and BOs were entered with one PTE per 16 KiB. Now one PTE per 4 KiB (each from its own physical address); the table pool uses 4 KiB tables; TLB flush after every map batch; a CB1 translation fault (FSR & 0xc00001fe, bit 10 is a stale status bit and is cleared before submits) is logged, cleared and declares the GPU lost, and `WAIT_FENCE` then fails at once with `kIOReturnIOError` instead of timing out. The context terminates faulting accesses (no CFCFG), so there is no CB_RESUME; the CP itself does not recover from a fault. |
+| `0186-beryllium-gpu-a630-power-dcvs-recovery-metrics` | `sweet_a630.c`, `SweetAdreno.cpp` | Power, DCVS, recovery, metrics, UBWC params, BW-table fix: section 11. |
 | `0182-beryllium-gpu-adreno-iokit-user-client` | `iokit/Kernel/arm/SweetAdreno.cpp`, `SweetAdrenoABI.h`, `iokit/conf/files.arm64` | IOService `SweetAdreno630` (published by `sweet_a630.c` after keep-up) and its user client with the msm ioctls as selectors. |
 
 `xnu/gpu-abi/sweet_adreno_abi.h` is the userland-facing copy of the ABI header (byte-identical to `SweetAdrenoABI.h` of 0182).
@@ -176,6 +177,58 @@ CI run 39981343180 (branch `gpu-kernel`, artifact `xnu-kernel`, sha256 e9c73847.
   2. `shim-boot-gpu11215-3.img` (`sweetgpu=3`) -> `GMU BOOTED`.   3. `shim-boot-gpu11215-5.img` -> `HFI start complete`, `OOB gpu: acknowledged`, `slumber acknowledged`.
   4. `shim-boot-gpu11215-8.img` -> `SCM PAS ... signed zap authenticated`, `CP NOP test PASSED`, `CP fill test PASSED`, `KEPT UP`, `SweetAdreno630 published`.
   5. Same boot as 4, over SSH: copy `gpu/kernel-test/out/adreno_uc_test` to the phone and run it (`-v` for numbers); all lines `PASS`, `ALL PASSED`.
+
+## 11. Power, DCVS, recovery, metrics (patch 0186, **built, never run on hardware**)
+
+Boot-args (all optional; with none of the new ones the GPU behaves as before except for the always-on changes listed at the end):
+
+| Arg | Meaning |
+|---|---|
+| `sweetgpuidle=MS` | PM thread (20 ms poll): when the ring is empty and no submission for MS ms, GX goes to slumber and the GMU is reset (the stage-5 sequence, hardware verified); the next submit wakes it by re-running the bring-up (GMU boot from the kept firmware, HFI, GX rail, SPTPRAC, OOB, CP init + `CP_SET_SECURE_MODE 0`; the zap stays authenticated, as in Linux) in about 100-150 ms. CX and the GMU clocks stay on while slumbering. 0 = never. |
+| `sweetgpufreq=gov\|N\|off` | `gov`: governor; `N` (1-7): fixed level; `off` (default): fixed level 1 (257 MHz). Levels: 1 257, 2 342, 3 414, 4 520, 5 596, 6 675, 7 710 MHz (the perf table sent in `H2F_MSG_PERF_TBL`). |
+| `sweetgpumax=N` | cap for the governor and for `MAX_FREQ`. |
+| `sweetgpuhwcg=1` | hardware clock gating: the 105-register a630 table (`research/metal-a630/lists/a630_hwcg.txt`, Linux `a6xx_catalog.c` data), `RBBM_CLOCK_CNTL` 0x8aa8aa02, GMU CGC regs. Power only. |
+| `sweetgpuubwc=1` | program the UBWC/bank registers (UBWC 2.0, highest bank bit 15: RB/TPL1/SP_NC_MODE_CNTL 0x4, UCHE_MODE_CNTL 0x400000, RBBM_NC_MODE_CNTL 0; values from the research notes, not re-derived on hardware). Default off; Mesa assumes hbb 15 either way. |
+| `sweetgpurecover=N` | resets allowed after a fault/hang (default 3; 0 = "lost until reboot" as before). |
+| `sweetgpuhb=S` | every S seconds one log line with GPU state and the shared clocks (below). |
+| `sweetgpubw=linux` | use the fixed Linux BCM addresses of the bandwidth table (see USB). |
+
+**Governor.** Each submission is bracketed by two `CP_REG_TO_MEM` stamps of `CP_ALWAYS_ON` (19.2 MHz) around a `CP_WAIT_FOR_IDLE` (the method hackios used and measured on an A642); busy time = sum of (end - start) of completed submissions, utilisation = busy / window. Window 60 ms; at >= 80% busy: one level up (>= 95%: straight to the cap); < 30% for two windows in a row: one level down; vote = `H2F_MSG_GX_BW_PERF_VOTE` (id 30: ack_type 1, freq index = our perf-table index, bw index 0) acknowledged by the GMU; a failed vote switches the governor off. Caveat: whether the GMU applies index N as the N-th row of the table we send (as Linux's `a6xx_hfi_set_freq` assumes) is **unverified**; there is no register that reports the actual GX clock here, so check the effect by timing a fixed workload per level. Idle slumber and governor combine: slumber only happens at idle; a wake starts at the last level.
+
+**Recovery.** A SMMU fault of the CP's context, a wait that reaches the 5 s cap, or a full ring: `sweet_gpu_recover` halts the SQE, powers GX down through the GMU, resets the GMU and wakes the GPU again; all earlier fences are declared complete (their output is garbage) and clients see an epoch change (`WAIT_FENCE` returns `kIOReturnIOError`). After `sweetgpurecover` resets, or if the wake fails, the GPU is "lost" as before.
+
+**UBWC / bank params.** `GET_PARAM` answers `HIGHEST_BANK_BIT` 15, `UBWC_SWIZZLE` 6, `MACROTILE_MODE` 0 (Linux `qcom_ubwc_config` sdm845), `SUSPENDS` = number of slumbers, `FAULTS` = hangs/faults, `TIMESTAMP` = the GMU always-on counter.
+
+### Metrics: `sysctl kern.sweet_gpu`
+
+Read-only string, one line of space-separated `key=value`, always present (`state=off` when the GPU interface is not up):
+
+```
+state=on level=3 mhz=414 max_level=7 freq=gov busy_pct=42 clients=2 pids=123,456 submitted=1030 completed=1030
+suspends=2 resumes=2 recoveries=0 hangs=0 idle_ms=2000 hwcg=1 total_ms=91000 res_ms=slumber:61000,L1:0,L2:12000,L3:9000,L4:0,L5:0,L6:0,L7:0
+```
+
+* `state`: `on` (GX powered), `slumber` (idle, GX off), `off` (interface never came up), `lost` (reset failed or `sweetgpurecover` used up).
+* `level`/`mhz`: current GX level and MHz (0/0 in slumber); `max_level`; `freq` = `gov` or `fixed`.
+* `busy_pct`: utilisation of the governor's last 60 ms window (0 unless `freq=gov`; stale while slumbering).
+* `clients`/`pids`: open user clients (connections) and the comma-separated pids that own them (`-` if none, cut after 96 bytes).
+* `submitted`/`completed`: last submitted / last completed fence number (equal = idle).
+* `suspends`/`resumes`/`recoveries`/`hangs`: counters since boot.
+* `total_ms` and `res_ms`: milliseconds since the PM thread started, and per state: `slumber`, `L1` .. `L7`. `res_ms` fields are present only after a PM thread exists (any of `sweetgpuidle`, `sweetgpufreq=gov`, `sweetgpuhb`), otherwise all zero. A 30 s rate-limited kernel log line `SWEET GPU: pm: ...` prints the same as percentages.
+
+### Heartbeat line (`sweetgpuhb=S`)
+
+`SWEET GPU: hb: on|slumber level N | GCC usb30 gdscr ... master ... sleep ... utmi ... cfg-noc ... aggre ... ahb2phy ... clkref ... gpll0-vote ... memnoc_gfx ... ddrss_gpu_axi ...` -- the clocks the USB device shares with the GPU, next to the GPU state, so that a USB loss can be timed against GPU activity in the log (the log reaches UFS as well as UDP).
+
+### USB loss (analysis, no hardware access)
+
+The live log `usb-20261022-201239.txt` ends with healthy `SWEET USB: ue0` statistics (cfg 1, link up) and no GPU line near the end (only the first 8 submits are logged, no fault or timeout dump), so the log shows no GPU error before the link disappeared; the log itself travels over USB and stops with it, so the cause is not visible there. What the GPU code touches that USB could share:
+1. `GCC 0x52004` (shared APCS clock-branch vote word, also USB/UFS/WLAN): our bits 15/16 were set by read-modify-write on every power-up; 0186 writes only when the bits are missing (no write during wakes).
+2. **The bandwidth table sent to the GMU used the Linux a630 BCM addresses, which do not match this phone's cmd-db** (`MC0 0x50000`, `ACV 0x5000c` match; the table's `0x5005c` is not SH0 (`0x5003c` here); its CNOC command `0x50034` is `SH2` here, not CN0 (`0x500a8`); `0x5007c` and `0x5004c` are not in cmd-db at all). The GMU sends those commands to RPMh from the GPU's own TCS with vote 0 ("off", commit only) and the level-1 values `0x60000001`. A write to a different BCM or resource than intended is a candidate to disturb shared buses. 0186 builds the table from cmd-db (`SH0`, `MC0`, `ACV` for DDR, `CN0` for CNOC) and logs the addresses (`SWEET GPU: BW table BCMs: ...`); `sweetgpubw=linux` restores the old one.
+3. GPU-side clocks `gcc_gpu_memnoc_gfx`, `gcc_ddrss_gpu_axi`, `gcc_gpu_cfg_ahb`, `snoc_dvm_gfx` are enabled by us and never touched by USB; the GX/CX/MX ARC votes of the GMU (levels from cmd-db) only add to the aggregation.
+This is a suspicion list, not a diagnosis: boot with `sweetgpuhb=5` and compare the USB clock words before and after the link goes away.
+
+Always-on changes of 0186 (also without the new boot-args): the CP stamps + `CP_WAIT_FOR_IDLE` per submission, the cmd-db BW table, the conditional GPLL0 vote write, recovery enabled (3 resets), the params above.
 
 ## 10. Provenance and licences
 

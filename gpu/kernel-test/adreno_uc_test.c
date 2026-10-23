@@ -22,6 +22,7 @@
 #include "../../xnu/gpu-abi/sweet_adreno_abi.h"
 
 static int g_fail, g_verbose;
+static uint32_t g_last_fence;   /* highest fence this run submitted */
 #define CHECK(cond, ...) do { if (cond) { printf("PASS  "); } else { printf("FAIL  "); g_fail++; } printf(__VA_ARGS__); printf("\n"); } while (0)
 
 static io_connect_t g_conn;
@@ -196,6 +197,9 @@ main(int argc, char **argv)
 		.nr_relocs = 1, .relocs = (uint64_t)(uintptr_t)&rl };
 	struct sweet_msm_gem_submit sub = { .nr_bos = 1, .nr_cmds = 1, .bos = (uint64_t)(uintptr_t)&sb, .cmds = (uint64_t)(uintptr_t)&sc };
 	kr = call(SWEET_GPU_SEL_GEM_SUBMIT, &sub, sizeof(sub), sizeof(sub));
+	if (kr == 0) {
+		g_last_fence = sub.fence;
+	}
 	CHECK(kr == 0 && sub.fence != 0, "GEM_SUBMIT (NOP + 2x MEM_WRITE, one reloc) -> fence %u kr %#x", sub.fence, kr);
 	if (kr != 0) {
 		return g_fail ? g_fail : 1;
@@ -226,6 +230,9 @@ main(int argc, char **argv)
 	struct sweet_msm_gem_submit sub2 = sub;
 	sub2.fence = 0;
 	kr = call(SWEET_GPU_SEL_GEM_SUBMIT, &sub2, sizeof(sub2), sizeof(sub2));
+	if (kr == 0) {
+		g_last_fence = sub2.fence;
+	}
 	CHECK(kr == 0 && (int32_t)(sub2.fence - sub.fence) > 0, "second GEM_SUBMIT fence %u > %u kr %#x", sub2.fence, sub.fence, kr);
 	wf.fence = sub2.fence;
 	wf.timeout = rel(0, 0);
@@ -275,6 +282,9 @@ main(int argc, char **argv)
 				struct sweet_msm_gem_submit_cmd sc2 = { .type = SWEET_MSM_SUBMIT_CMD_BUF, .submit_idx = 0, .submit_offset = 0, .size = k * 4 };
 				struct sweet_msm_gem_submit su = { .nr_bos = 1, .nr_cmds = 1, .bos = (uint64_t)(uintptr_t)&sb2, .cmds = (uint64_t)(uintptr_t)&sc2 };
 				kr = call(SWEET_GPU_SEL_GEM_SUBMIT, &su, sizeof(su), sizeof(su));
+				if (kr == 0) {
+					g_last_fence = su.fence;
+				}
 				CHECK(kr == 0 && su.fence != 0, "GEM_SUBMIT %u MEM_WRITEs into the 1 MiB BO -> fence %u kr %#x", noffs, su.fence, kr);
 				struct sweet_msm_wait_fence w2 = { .fence = su.fence, .timeout = rel(2, 0) };
 				kr = call(SWEET_GPU_SEL_WAIT_FENCE, &w2, sizeof(w2), 0);
@@ -305,7 +315,7 @@ main(int argc, char **argv)
 	CHECK(kr != 0, "GEM_CLOSE again -> %#x (expected error)", kr);
 	memset(&info, 0, sizeof(info));
 	kr = call(SWEET_GPU_SEL_INFO, &info, 0, sizeof(info));
-	CHECK(kr == 0 && info.flags == 1 && info.last_fence == sub2.fence, "INFO after the run: flags %#x last_fence %u", info.flags, info.last_fence);
+	CHECK(kr == 0 && info.flags == 1 && info.last_fence == g_last_fence, "INFO after the run: flags %#x last_fence %u (want %u)", info.flags, info.last_fence, g_last_fence);
 	IOServiceClose(g_conn);
 	printf("%s: %d failure(s)\n", g_fail ? "FAILED" : "ALL PASSED", g_fail);
 	return g_fail;
