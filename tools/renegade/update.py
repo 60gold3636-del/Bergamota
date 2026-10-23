@@ -11,7 +11,8 @@ Steps (every one checks `df` first and stops below 5 GiB free on the volume of t
   1 simg2img    simg2img.py --consume: IMAGE.simg -> IMAGE.img (a sparse raw image; the simg is eaten while it is
                 written, so the disk use stays flat; the simg no longer exists afterwards)
   2 attach      hdiutil attach, read-write, no sudo, mounted at --mnt like mkroot-full.py does
-  3 tweaks      staged apps -> /Applications (+ the register list), bluetooth (bluetoothd env, BlueTool stub, hcitest),
+  3 tweaks      the idempotent original tweaks (root_tweaks18.base(): launchd.plist, containers, event timing profiles,
+                usbnet, netcfg, sweetreboot, ssh/dropbear job, audio, activation, prefs, logd dirs), then staged apps -> /Applications (+ the register list), bluetooth (bluetoothd env, BlueTool stub, hcitest),
                 PosterBoard + sweetfp.dylib, the first-boot job (sweetuicache registration, default wallpaper/icon style via
                 SweetRun, jailbreak post-install),
                 /private/var/jb (Procursus, Sileo, TrollStore). All idempotent: a second run changes nothing.
@@ -295,6 +296,7 @@ def main():
         rec = rt.OwnerRecorder()
         rec.install()
         jb_owners = os.path.join(tempfile.gettempdir(), f'renegade-update-jb-{os.getpid()}.tsv')
+        rt.base(mnt)                # the idempotent part of the original tweaks stage (event timing profiles, ...)
         rt.staged_apps(mnt)
         if feats['bluetooth']:
             rt.bluetooth(mnt)

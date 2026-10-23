@@ -435,6 +435,7 @@ def stage_tweaks(a, root):
             rt.quiet(root)
         rt.containers(root)
         chowned[os.path.join(root, 'private/var/containers/Bundle')] = (33, 33)
+        rt.event_timing(root)       # D22.{Default,Touch}.plist from N841: UIKit's 'Misconfigured Device' alert otherwise
         rt.usbnet(root)
         rt.netcfg(root)
         rt.sweetreboot(root)

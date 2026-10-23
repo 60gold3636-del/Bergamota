@@ -65,6 +65,7 @@ def save(path, data, uid, gid, mode, fmt=plistlib.FMT_BINARY):
 def merge_pref(root, name, values):
     """Merge keys into /var/mobile/Library/Preferences/NAME.plist (mobile, 0600)."""
     path = os.path.join(root, 'private/var/mobile/Library/Preferences', name + '.plist')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     data = load(path) if os.path.exists(path) else {}
     data.update(values)
     save(path, data, MOBILE, MOBILE, 0o600)
@@ -933,6 +934,78 @@ def bglrender(root):
     save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     print('bglrender: payload from %s installed in /%s; backboardd job -> %s (%d entr%s; inert without boot-arg bglrender=1|soft)' % (
         src, BGL_DIR, BGL_LAUNCH, n, 'y' if n == 1 else 'ies'))
+
+
+def configure_paths():
+    """Tool locations for the build and for `renegade update`: this checkout first, then the main checkout."""
+    global SSH_OUT, NETCFG, REBOOT_TOOL
+    main = os.path.join(REPO, '..', 'ios-beryllium')
+    for d in (os.path.join(REPO, 'research/ssh-build/out'), os.path.join(main, 'research/ssh-build/out')):
+        if os.path.isdir(d):
+            SSH_OUT = d
+            break
+    NETCFG = find_sweetnet('sweetnetcfg') or NETCFG
+    REBOOT_TOOL = find_sweetnet('sweetreboot') or REBOOT_TOOL
+
+
+def iosroot_dirs(root):
+    """logd stores and the system keybag of the built-in AppleKeyStore (same as tools/mkiosroot-macos.sh)."""
+    for d in ('private/var/db/diagnostics', 'private/var/db/uuidtext', 'private/var/db/diagnostics/timesync'):
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+        os.chown(os.path.join(root, d), 272, 272)
+        m = os.path.join(root, d, '.migrated')
+        open(m, 'a').close()
+        os.chmod(m, 0o644)
+        os.chown(m, 272, 272)
+    os.chmod(os.path.join(root, 'private/var/db/diagnostics'), 0o751)
+    kb = os.path.join(root, 'private/var/keybags')
+    os.makedirs(kb, exist_ok=True)
+    os.chmod(kb, 0o700)
+    kf = os.path.join(kb, 'systembag.kb')
+    if not os.path.exists(kf):
+        with open(kf, 'w') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                    '<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>\n')
+    os.chmod(kf, 0o600)
+
+
+def prefs(root):
+    merge_pref(root, 'com.apple.migration', {
+        'LastSystemVersion': BUILD, 'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}})
+    merge_pref(root, 'com.apple.springboard', {
+        'BKNoWatchdogs': True, 'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
+        'MCForceShowCloudConfigurationUI': False})
+    merge_pref(root, 'com.apple.purplebuddy', {
+        'SetupDone': True, 'SetupFinishedAllSteps': True, 'SetupVersion': 11, 'daemonizeNeedsToRun': False})
+    merge_pref(root, 'com.apple.purplebuddy.notbackedup', {
+        k: False for k in ('ShouldRunDiagnosticsMiniBuddy', 'ShouldRunHSA2MiniBuddy', 'ShouldRunKeychainSyncMiniBuddy',
+                           'ShouldRunMesaMiniBuddy', 'ShouldRunPaymentMiniBuddy', 'ShouldRunStandardMiniBuddy',
+                           'SilentICDPUpgrade')})
+    merge_pref(root, 'com.apple.managedconfiguration.notbackedup',
+               {'LockdownActivationIndicatesCloudConfigurationAvailable': False})
+
+
+def base(root):
+    """Everything of the original tweaks stage that is idempotent and not an auto-fix, in build order: what `renegade
+    update` runs before auto(), so an image built before a tweak existed (event_timing was only in main()) gets it.
+    Skipped on purpose: patch_mount_phase2 (opt-in), the console bring-up job (informational), the quiet() set
+    (opt-in: SWEET_QUIET=1 is honoured here too)."""
+    configure_paths()
+    launchd(root)
+    if os.environ.get('SWEET_QUIET') == '1':
+        quiet(root)
+    containers(root)
+    launchservices(root)
+    event_timing(root)
+    usbnet(root)
+    netcfg(root)
+    sweetreboot(root)
+    ssh(root)
+    audio(root)
+    activation(root)
+    prefs(root)
+    iosroot_dirs(root)
 
 
 def auto(root):
