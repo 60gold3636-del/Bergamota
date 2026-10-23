@@ -169,6 +169,10 @@ sweet_call(uint32_t sel, void *data, size_t size)
 	}
 	memset(in, 0, sizeof(in));
 	memcpy(in, data, size < want ? size : want);
+	if (sel == SWEET_GPU_SEL_GEM_SUBMIT) {
+		/* msm keeps the pipe id (MSM_PIPE_3D0 = 0x10) in the low bits of submit.flags; this kernel wants only NO_IMPLICIT there */
+		((struct sweet_msm_gem_submit *)in)->flags &= ~0xffffu;
+	}
 	if (sel == SWEET_GPU_SEL_WAIT_FENCE) {
 		rel_timeout(&((struct sweet_msm_wait_fence *)in)->timeout);
 	} else if (sel == SWEET_GPU_SEL_GEM_CPU_PREP) {
@@ -239,7 +243,10 @@ drmGetVersion(int fd)
 		return NULL;
 	}
 	v->version_major = 1;
-	v->version_minor = 3;   /* FD_VERSION_SUBMIT_QUEUES/GMEM_BASE/BO_IOVA; < SOFTPIN on purpose (see above) */
+	/* 1.4 = FD_VERSION_SOFTPIN. Mesa 25.0.7's legacy (< 1.4) ringbuffer lacks attach_bo (NULL call in fd_batch_create, found on the phone), so the
+	 * "sp" submit/ringbuffer path is the only one that works; gallium freedreno still takes the iova of every BO from GEM_INFO(GET_IOVA)
+	 * (kernel-assigned) and passes it as `presumed`, which the kernel ignores. No relocations are emitted in this mode. */
+	v->version_minor = 4;
 	v->name = strdup("msm");
 	v->name_len = 3;
 	v->date = strdup("20261023");
