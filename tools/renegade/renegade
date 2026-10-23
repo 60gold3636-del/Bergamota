@@ -8,7 +8,9 @@
 #   renegade fetch                            download + decrypt the iOS 18.7.8 iPhone11,8 root dmgs
 #   renegade root [--stages ...] ...          build the full root image (copy, macho, cache, tweaks, seal)
 #   renegade boot [KERNEL] [ADT] [OUT.img]    Enxerto boot image for the full root on userdata
-#   renegade hfs SIMG ls|cat|get|stat|find|dsc ...   read the root image in place
+#   renegade update SIMG [--no-appreg|--no-posterboard|--no-bluetooth|--no-jb]   apply the root tweaks to a finished
+#                                             image in place (simg2img --consume, attach, tweaks, owners, fsck, img2simg --consume)
+#   renegade hfs SIMG ls|cat|get|getdir|stat|find|dsc ...   read the root image in place
 #   renegade jb fetch|stage|live|remove|status   optional jailbreak userland: Procursus rootless, Sileo, TrollStore (README)
 #   renegade sparse IN OUT [--consume]        raw <-> Android sparse image (direction from the IN suffix)
 set -euo pipefail
@@ -23,12 +25,13 @@ fips)	py fips_rehmac.py "$@" ;;
 fetch)	exec "$HERE/fetch-root.sh" "$@" ;;
 root)	exec "$HERE/mkroot-full.sh" "$@" ;;
 boot)	exec "$HERE/mkboot-full.sh" "$@" ;;
+update)	py update.py "$@" ;;
 jb)	py jailbreak.py "$@" ;;
 hfs)	py hfsx.py "$@" ;;
 sparse)	case ${1:-} in
 	*.simg) py simg2img.py "$@" ;;
 	*) py img2simg.py "$@" ;;
 	esac ;;
-help|-h|--help) sed -n '2,14s/^# \{0,1\}//p' "$0" ;;
+help|-h|--help) sed -n '2,/^set -/{/^set -/!s/^# \{0,1\}//p;}' "$0" ;;
 *)	echo "renegade: unknown command '$cmd' (renegade help)" >&2; exit 2 ;;
 esac

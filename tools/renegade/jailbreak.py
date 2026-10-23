@@ -7,8 +7,8 @@
                                           install tar into DIR and print the remote commands; touches no device)
   jailbreak.py remove [--dry-run]         undo `live`: unregister the apps, delete /var/jb and the TrollStore app
   jailbreak.py status                     what is installed on the phone (read only)
-  jailbreak.py image-stage ROOT           (mkroot-full.py stage `jb`) copy the stage into a mounted root and write the
-                                          owner map for hfsroot_owners.py
+  (image mode, called by mkroot-full.py stage `jb` and `renegade update`: image_stage(ROOT, OWNERS) copies the stage
+   to ROOT/private/var/jb, keeps /var a symlink and writes the owner map for hfsroot_owners.py)
 
 Nothing downloaded is ever executed on the Mac: it is only unpacked (zstd -d | tar, ar + xz/zstd in Python). The
 phone runs the Procursus tools; plain arm64 binaries run as they are, any arm64e slice goes through pacstrip.py
@@ -453,12 +453,9 @@ touch $JB/.renegade-jb-done
 echo "== postinstall done"
 '''
 
-FIRSTBOOT_PLIST = {
-    'Label': 'org.bergamota.renegade-jb',
-    'ProgramArguments': ['/bin/sh', '-c',
-                         '[ -e /var/jb/.renegade-jb-done ] || { sleep 60; /bin/sh /var/jb/usr/share/renegade-jb/postinstall.sh; }'],
-    'RunAtLoad': True,
-}
+
+def versions_text():
+    return ''.join(f'{n}\t{p["sha256"]}\t{p["url"]}\n' for n, p in PINS.items())
 
 
 # --- stage ----------------------------------------------------------------------------------------------------------
@@ -507,8 +504,7 @@ def stage_build():
     shutil.copy(cached('ldid'), os.path.join(share, 'ldid'))
     open(os.path.join(share, 'postinstall.sh'), 'w').write(
         POSTINSTALL.replace('@SUITE@', APT_SUITE).replace('@LDID_VERSION@', LDID_VERSION))
-    open(os.path.join(share, 'VERSIONS'), 'w').write(''.join(
-        f'{n}\t{p["sha256"]}\t{p["url"]}\n' for n, p in PINS.items()))
+    open(os.path.join(share, 'VERSIONS'), 'w').write(versions_text())
     for n, mode in (('TrollStore.tar', 0o644), ('ldid', 0o644), ('postinstall.sh', 0o755), ('VERSIONS', 0o644)):
         st.meta[f'{SHARE}/{n}'] = [0, 0, mode]
         os.chmod(os.path.join(share, n), mode)
@@ -531,8 +527,15 @@ def load_manifest():
     return t
 
 
-def write_tar(st, out_path_or_fileobj, only=None):
-    """Deterministic tar of a Stage (owners/modes from st.meta; hard links kept)."""
+def arcname(rel, image):
+    """Name of a stage path inside the tar. Image mode (a mounted root volume, not the running phone): /var is a
+    symlink to private/var on the root, so /var/jb is written as private/var/jb and the `var` symlink is never
+    touched (extracting a `var` directory entry or a path through a replaced symlink is what once broke it)."""
+    return 'private/' + rel if image else rel
+
+
+def write_tar(st, out_path_or_fileobj, only=None, image=False):
+    """Deterministic tar of a Stage (owners/modes from st.meta; hard links kept). image=True: see arcname()."""
     close = isinstance(out_path_or_fileobj, str)
     tf = tarfile.open(out_path_or_fileobj, 'w' if close else 'w|', format=tarfile.GNU_FORMAT) if close else \
         tarfile.open(fileobj=out_path_or_fileobj, mode='w|', format=tarfile.GNU_FORMAT)
@@ -544,7 +547,7 @@ def write_tar(st, out_path_or_fileobj, only=None):
             continue
         p = os.path.join(st.root, rel)
         s = os.lstat(p)
-        ti = tarfile.TarInfo(rel)
+        ti = tarfile.TarInfo(arcname(rel, image))
         ti.uid, ti.gid, ti.mode = st.meta[rel]
         ti.uname = ti.gname = ''
         ti.mtime = 1700000000
@@ -555,7 +558,7 @@ def write_tar(st, out_path_or_fileobj, only=None):
             ti.type = tarfile.DIRTYPE
             tf.addfile(ti)
         elif s.st_nlink > 1 and s.st_ino in seen:
-            ti.type, ti.linkname = tarfile.LNKTYPE, seen[s.st_ino]
+            ti.type, ti.linkname = tarfile.LNKTYPE, arcname(seen[s.st_ino], image)
             tf.addfile(ti)
         else:
             seen[s.st_ino] = rel
@@ -687,27 +690,35 @@ def status(a):
 
 
 def image_stage(root, owners_out):
-    """mkroot-full.py stage `jb`: copy the stage into the mounted root, write the owner map for hfsroot_owners.py."""
+    """mkroot-full.py stage `jb` / `renegade update`: copy the stage into the mounted root volume at /private/var/jb
+    (/var is a symlink to private/var there and stays one) and write the owner map for hfsroot_owners.py.
+    The first-boot work (Sileo/TrollStore registration, TrollStore install) is done by the first-boot job of
+    root_tweaks18.firstboot(), which runs postinstall.sh."""
     st = Stage(STAGE_ROOT)
     st.meta = load_manifest()
+    var = os.path.join(root, 'var')
+    if not os.path.islink(var):
+        die(f'{var} is not a symlink: this is not an iOS root volume')
+    target = os.readlink(var)
     buf = io.BytesIO()
-    write_tar(st, buf)
+    write_tar(st, buf, image=True)
     buf.seek(0)
     with tarfile.open(fileobj=buf, mode='r:') as tf:
         tf.extractall(root, filter='fully_trusted')    # owners are not applied (no root): the map below does it
-    # first-boot job: finishes the install on the phone (TrollStore needs the running system)
-    jp = os.path.join(root, 'Library/LaunchDaemons/org.bergamota.renegade-jb.plist')
-    os.makedirs(os.path.dirname(jp), exist_ok=True)
-    with open(jp, 'wb') as f:
-        plistlib.dump(FIRSTBOOT_PLIST, f)
-    st.meta['Library/LaunchDaemons/org.bergamota.renegade-jb.plist'] = [0, 0, 0o644]
-    # parents of var/jb on the root volume keep their owners; every staged path gets its own
+    if not os.path.islink(var) or os.readlink(var) != target:
+        die('/var is no longer the symlink it was: aborting')
+    if not os.path.isdir(os.path.join(root, 'private/var/jb')):
+        die('private/var/jb missing after the copy')
     import unicodedata
+    n = 0
     with open(owners_out, 'w', encoding='utf-8') as f:
         for rel in sorted(st.meta):
+            if rel != 'var/jb' and not rel.startswith('var/jb/'):
+                continue                               # never an owner entry for /var or other parents
             u, g, m = st.meta[rel]
-            f.write(f'{unicodedata.normalize("NFD", rel)}\t{u}\t{g}\t{m:o}\n')
-    return len(st.meta)
+            f.write(f'{unicodedata.normalize("NFD", arcname(rel, True))}\t{u}\t{g}\t{m:o}\n')
+            n += 1
+    return n
 
 
 def main():

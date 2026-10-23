@@ -11,10 +11,14 @@ No sudo. Stages (each one can be re-run on the same image; the image stays in --
           -> merged view), owner/mode map of everything (lstat of the mounted IPSW volumes, owners on)
   macho   pacstrip + ad-hoc codesign (entitlements kept) of every Mach-O, in parallel, hard links kept
   cache   tools/renegade/pacstrip_cache.py over the dyld shared cache (code sections, signature page hashes)
-  tweaks  the iOS 16 first-boot tweaks (root_tweaks18.py = sweet-root-tweaks.py) + iOS 18 launchd bring-up jobs
-  jb      OFF by default (--stages ...,tweaks,jb,seal or RENEGADE_JB=1): the optional jailbreak userland, see
-          tools/renegade/jailbreak.py: /var/jb (Procursus rootless bootstrap), Sileo, the TrollStore payload and a
-          first-boot LaunchDaemon that registers the apps and runs trollstorehelper install-trollstore
+  tweaks  the iOS 16 first-boot tweaks (root_tweaks18.py = sweet-root-tweaks.py) + iOS 18 launchd bring-up jobs +
+          the Renegade auto-fixes (all ON, opt-outs --no-appreg --no-posterboard --no-bluetooth --no-jb): staged apps
+          moved to /Applications, first-boot job that registers them (sweetuicache), PosterBoard + sweetfp.dylib,
+          bluetooth (bluetoothd env, BlueTool stub, hcitest). Build the tools first: tools/sweetnet/build.sh
+          An existing image gets the same changes in place with `renegade update` (tools/renegade/update.py)
+  jb      ON by default (--no-jb / RENEGADE_NO_JB=1 / RENEGADE_JB=0 to skip; inserted before seal when the stages
+          list has none): the jailbreak userland, see tools/renegade/jailbreak.py: /private/var/jb (Procursus rootless
+          bootstrap, /var stays a symlink), Sileo, the TrollStore payload; the first-boot job runs its post-install
   seal    unmount, hfsroot_owners.py (real owners/modes, the rest root:wheel), fsck_hfs, offline checks,
           img2simg --consume (the raw image is turned into the .simg, see tools/renegade/img2simg.py)
 Disk is tight: every stage checks `df` and stops below 5 GiB free.
@@ -417,15 +421,13 @@ def stage_tweaks(a, root):
     rt = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rt)
     rt.SSH_OUT = os.path.join(MAIN_CHECKOUT, 'research/ssh-build/out')
-    rt.NETCFG = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetnetcfg')
-    rt.REBOOT_TOOL = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetreboot')
-    rt.BLUETOOL_STUB = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/bluetool-stub')
-    rt.HCITEST = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/hcitest')
-    chowned = {}
-
-    def fake_chown(path, uid, gid, **kw):          # no sudo: owners are written into the HFS catalog at seal time
-        chowned[os.path.abspath(path)] = (uid, gid)
-    rt.os.chown = fake_chown                       # rt.os is the os module: only this process is affected
+    rt.NETCFG = rt.find_sweetnet('sweetnetcfg') or os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetnetcfg')
+    rt.REBOOT_TOOL = rt.find_sweetnet('sweetreboot') or os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetreboot')
+    # BlueTool stub, hcitest, ios18/sweetuicache and ios18/sweetfp.dylib: rt.find_sweetnet() (this checkout's
+    # research/sweetnet first, then the main checkout's; tools/sweetnet/build.sh)
+    rec = rt.OwnerRecorder()                       # no sudo: owners are written into the HFS catalog at seal time
+    chowned = rec.owners
+    rec.install()                                  # rt.os is the os module: only this process is affected
     try:
         log('--- launchd.plist (PanicOnCrash, CommCenter), containers, usbnet, netcfg, sweetreboot, ssh, bluetooth')
         rt.launchd(root)
@@ -437,7 +439,10 @@ def stage_tweaks(a, root):
         rt.netcfg(root)
         rt.sweetreboot(root)
         rt.ssh(root)
-        rt.bluetooth(root)          # BT_HCI_TRANSPORT for bluetoothd, BlueTool stub, hcitest (NOTES.md, Bluetooth iOS 18)
+        # Renegade auto-fixes, each with an opt-out (RENEGADE_NO_APPREG/POSTERBOARD/BLUETOOTH/JB, --no-* flags):
+        # staged apps -> /Applications, bluetooth (BT_HCI_TRANSPORT, BlueTool stub, hcitest), PosterBoard + sweetfp.dylib,
+        # first-boot job (sweetuicache registration, jailbreak post-install)
+        rt.auto(root)
         rt.audio(root)
         rt.merge_pref(root, 'com.apple.migration', {
             'LastSystemVersion': rt.BUILD, 'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': rt.BUILD}})
@@ -515,11 +520,12 @@ JB_OWNERS = os.path.join(W, 'owners-jb.tsv')
 
 def stage_jb(a, root):
     need_free('jb stage')
-    import jailbreak
-    jailbreak.fetch()
-    jailbreak.stage_build()
-    n = jailbreak.image_stage(root, JB_OWNERS)
-    log(f'jailbreak userland: {n} paths staged into the image, owners in {JB_OWNERS}')
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('root_tweaks18', os.path.join(HERE, 'root_tweaks18.py'))
+    rt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rt)
+    n = rt.jailbreak_userland(root, JB_OWNERS, force=True)
+    log(f'jailbreak userland: {n} paths staged into the image (/private/var/jb), owners in {JB_OWNERS}')
 
 
 def patch_mount_phase2(root):
@@ -728,10 +734,20 @@ def main():
     ap.add_argument('--patch-mount-phase2', action='store_true', help='tweaks: make mount -P 2 skip apfs_boot_util (not needed, see docs)')
     ap.add_argument('--keep-raw', action='store_true', help='simg stage: do not punch holes into the raw image')
     ap.add_argument('--jobs', type=int, default=os.cpu_count())
+    for f_, what in (('appreg', 'first-boot LaunchServices registration of the staged apps (sweetuicache)'),
+                     ('posterboard', 'sweetfp.dylib + the LC_LOAD_DYLIB in PosterBoard'),
+                     ('bluetooth', 'bluetoothd env, BlueTool stub, hcitest'),
+                     ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)')):
+        ap.add_argument('--no-' + f_, action='store_true', help='opt out: ' + what + ' (same as RENEGADE_NO_' + f_.upper() + '=1)')
     a = ap.parse_args()
+    for f_ in ('appreg', 'posterboard', 'bluetooth', 'jb'):
+        if getattr(a, 'no_' + f_):
+            os.environ['RENEGADE_NO_' + f_.upper()] = '1'
     os.makedirs(W, exist_ok=True)
     rootmnt = os.path.join(W, 'root')
-    if os.environ.get('RENEGADE_JB') == '1' and 'jb' not in a.stages.split(','):
+    # the jailbreak userland is part of the default build now (opt out: --no-jb / RENEGADE_NO_JB=1 / RENEGADE_JB=0)
+    if (os.environ.get('RENEGADE_NO_JB') != '1' and os.environ.get('RENEGADE_JB') != '0' and 'jb' not in a.stages.split(',')
+            and ('tweaks' in a.stages.split(',') or os.environ.get('RENEGADE_JB') == '1')):
         st = a.stages.split(',')
         a.stages = ','.join(st[:st.index('seal')] + ['jb'] + st[st.index('seal'):]) if 'seal' in st else a.stages + ',jb'
     stages = a.stages.split(',')
