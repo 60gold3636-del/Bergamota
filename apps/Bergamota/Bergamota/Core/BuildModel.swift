@@ -76,8 +76,9 @@ final class BuildModel {
                 return BootImage(path: p, size: (a[.size] as? NSNumber)?.int64Value ?? 0, date: (a[.modificationDate] as? Date) ?? .distantPast)
             }
         }
-        images = scan(settings.repoFile("shim/out")) { $0.hasSuffix(".img") }.sorted { $0.date > $1.date }
-        adts = scan(settings.repoFile("shim/out")) { $0.hasSuffix(".adt") }.sorted { $0.name < $1.name }
+        let outs = settings.bootOutDirs.map(settings.repoFile)
+        images = outs.flatMap { scan($0) { $0.hasSuffix(".img") } }.sorted { $0.date > $1.date }
+        adts = outs.flatMap { scan($0) { $0.hasSuffix(".adt") } }.sorted { $0.name < $1.name }
         var ks: [BootImage] = []
         for d in (try? fm.contentsOfDirectory(atPath: settings.repoFile("xnu"))) ?? [] where d.hasPrefix("out-") {
             let p = settings.repoFile("xnu/\(d)/kernel.development.sweet")
@@ -88,8 +89,8 @@ final class BuildModel {
         kernels = ks.sorted { $0.date > $1.date }
         if kernelPath.isEmpty || !fm.fileExists(atPath: kernelPath) { kernelPath = kernels.first?.path ?? "" }
         if adtPath.isEmpty || !fm.fileExists(atPath: adtPath) {
-            let def = settings.repoFile("shim/out/beryllium-hi-3x.adt")
-            adtPath = fm.fileExists(atPath: def) ? def : (adts.first?.path ?? "")
+            let def = outs.map { $0 + "/beryllium-hi-3x.adt" }.first { fm.fileExists(atPath: $0) }
+            adtPath = def ?? (adts.first?.path ?? "")
         }
     }
 
@@ -120,7 +121,7 @@ final class BuildModel {
     static func validName(_ n: String) -> Bool {
         !n.isEmpty && n.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) } && !n.hasPrefix(".") && !n.hasPrefix("-")
     }
-    var targetImagePath: String { settings.repoFile("shim/out/shim-boot-\(imageName).img") }
+    var targetImagePath: String { settings.repoFile("\(settings.bootDir)/out/\(settings.bootImageBase)-\(imageName).img") }
     var targetExists: Bool { FileManager.default.fileExists(atPath: targetImagePath) }
     var canBuild: Bool { !building && Self.validName(imageName) && !kernelPath.isEmpty && !adtPath.isEmpty && !cmdline.trimmingCharacters(in: .whitespaces).isEmpty && settings.repoValid }
 
@@ -137,7 +138,8 @@ final class BuildModel {
         let name = imageName, kernel = kernelPath, adt = adtPath
         let cmd = cmdline.trimmingCharacters(in: .whitespacesAndNewlines)
         let repo = settings.repoURL.path
-        let payload = "shim/out/payload-\(name).bin"
+        let dir = settings.bootDir, base = settings.bootImageBase
+        let payload = "\(dir)/out/payload-\(name).bin"
         let emit: @Sendable (String) -> Void = { [weak self] s in Task { @MainActor in self?.output += s } }
         func step(_ title: String, _ exe: String, _ args: [String], cwd: String, env: [String: String] = [:]) async -> Bool {
             emit("\n$ " + ([exe] + args).map(shellQuote).joined(separator: " ") + "   (cwd \(cwd))\n")
@@ -149,17 +151,17 @@ final class BuildModel {
         }
         var ok = await step("mkpayload", python, ["tools/mkpayload.py", kernel, adt, payload, "--cmdline", cmd], cwd: repo)
         if ok {
-            ok = await step("build.sh", "/bin/bash", ["./build.sh", "out/payload-\(name).bin"], cwd: repo + "/shim", env: ["BOARD": "beryllium"])
+            ok = await step("build.sh", "/bin/bash", ["./build.sh", "out/payload-\(name).bin"], cwd: repo + "/" + dir, env: ["BOARD": "beryllium"])
         }
         var result = "Build failed"
         var built: String?
         if ok {
-            let src = repo + "/shim/out/shim-boot.img", dst = repo + "/shim/out/shim-boot-\(name).img"
+            let src = repo + "/\(dir)/out/\(base).img", dst = repo + "/\(dir)/out/\(base)-\(name).img"
             do {
                 if FileManager.default.fileExists(atPath: dst) { try FileManager.default.removeItem(atPath: dst) }
                 try FileManager.default.copyItem(atPath: src, toPath: dst)
-                output += "\ncp shim/out/shim-boot.img -> shim/out/shim-boot-\(name).img\n"
-                result = "Built shim-boot-\(name).img"
+                output += "\ncp \(dir)/out/\(base).img -> \(dir)/out/\(base)-\(name).img\n"
+                result = "Built \(base)-\(name).img"
                 built = dst
             } catch { result = "Copy failed: \(error.localizedDescription)"; output += result + "\n" }
         }

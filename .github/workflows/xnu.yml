@@ -1,4 +1,4 @@
-name: xnu
+name: Heartwood kernel (xnu)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ on:
         description: make -k (collect all compile errors in one run)
         default: "true"
   push:
-    branches: [main, xnu11215]
+    branches: [main, develop, xnu11215]
     paths:
       - "xnu/patches/**"
       - "xnu/patches-11215/**"

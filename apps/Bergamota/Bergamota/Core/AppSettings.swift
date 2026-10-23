@@ -20,6 +20,16 @@ final class AppSettings {
     var allowRemoteStart: Bool { didSet { d.set(allowRemoteStart, forKey: "allowRemoteStart") } }
     var autoSaveLog: Bool { didSet { d.set(autoSaveLog, forKey: "autoSaveLog") } }
     var notifyOnIOS: Bool { didSet { d.set(notifyOnIOS, forKey: "notifyOnIOS") } }
+    /// Reboot the phone from iOS into fastboot (SSH `sweetreboot fastboot`) when a queued image is waiting.
+    var autoRebootToFastboot: Bool { didSet { d.set(autoRebootToFastboot, forKey: "autoRebootToFastboot") } }
+
+    /// Prefer Bergamota fastboot (Enxerto's) over ABL fastboot for the automatic reboot of queued boots; falls back to ABL when `sweetreboot bergamota` fails.
+    var preferBergamotaFastboot: Bool { didSet { d.set(preferBergamotaFastboot, forKey: "preferBergamotaFastboot") } }
+    /// Image `fastboot boot`ed from ABL fastboot by "Enter Bergamota fastboot".
+    var bergamotaImagePath: String { didSet { d.set(bergamotaImagePath, forKey: "bergamotaImagePath") } }
+    static let defaultBergamotaImage = "/Users/zesmoi/git/iAndroid/ios-beryllium-ios18/enxerto/out/bergamota-fastboot.img"
+    /// Pre-rebrand location, used while the configured image does not exist.
+    static let legacyBergamotaImage = "/Users/zesmoi/git/iAndroid/ios-beryllium-ios18/shim/out/bergamota-fastboot.img"
 
     init() {
         let d = UserDefaults.standard
@@ -30,16 +40,25 @@ final class AppSettings {
         ghPath = d.string(forKey: "ghPath") ?? ""
         pythonPath = d.string(forKey: "pythonPath") ?? ""
         sshPath = d.string(forKey: "sshPath") ?? ""
-        ghRepo = d.string(forKey: "ghRepo") ?? "ry-diffusion/ios-beryllium"
+        ghRepo = d.string(forKey: "ghRepo") ?? "ry-diffusion/Bergamota"
         rebootFromRecovery = d.bool(forKey: "rebootFromRecovery")
         notifyOnBoot = d.object(forKey: "notifyOnBoot") as? Bool ?? true
         allowRemoteStart = d.object(forKey: "allowRemoteStart") as? Bool ?? true
         autoSaveLog = d.object(forKey: "autoSaveLog") as? Bool ?? true
         notifyOnIOS = d.object(forKey: "notifyOnIOS") as? Bool ?? true
+        preferBergamotaFastboot = d.object(forKey: "preferBergamotaFastboot") as? Bool ?? true
+        bergamotaImagePath = d.string(forKey: "bergamotaImagePath") ?? Self.defaultBergamotaImage
+        autoRebootToFastboot = d.object(forKey: "autoRebootToFastboot") as? Bool ?? true
     }
 
     var repoURL: URL { URL(fileURLWithPath: (repoPath as NSString).expandingTildeInPath) }
     func repoFile(_ rel: String) -> String { repoURL.appendingPathComponent(rel).path }
+    /// Enxerto (the bootloader) source dir in the repo: `enxerto/` since the rebrand, `shim/` in older checkouts.
+    var bootDir: String { FileManager.default.fileExists(atPath: repoFile("enxerto/build.sh")) ? "enxerto" : "shim" }
+    /// Name build.sh gives the boot image in `<bootDir>/out/`.
+    var bootImageBase: String { bootDir == "enxerto" ? "enxerto-boot" : "shim-boot" }
+    /// Every folder that may hold boot images and ADTs (new and pre-rebrand ones), the current one first.
+    var bootOutDirs: [String] { [bootDir + "/out"] + (bootDir == "enxerto" ? ["shim/out"] : []) }
     var repoValid: Bool { FileManager.default.fileExists(atPath: repoFile("tools/mkpayload.py")) }
 
     var fastboot: String? { Shell.resolve("fastboot", override: fastbootPath) }

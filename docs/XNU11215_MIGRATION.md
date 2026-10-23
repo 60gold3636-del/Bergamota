@@ -32,7 +32,7 @@ Status (phase 1): `xnu-11215.81.4` (macOS 15.3, `apple-oss-distributions/xnu`) b
 * New in 11215 that needed SWEET handling: `apple_arm64_cpu.h` needs `MPIDR_CORETYPE_*` (in SWEET.h), `ARM64_PROLOG` (BTI landing pad) in
   our asm stubs, two more amcc stubs (`ppl_amcc`, `ppl_ctrr3`), UBSan source verifier skipped (0005), mockfs `kfree_type` typing, Tightbeam
   exports emptied (no exclaves), `CONFIG_CPU_COUNTERS` off instead of the kpc stub, headers split into `*_xnu.h` (vm_kern, vm_shared_region).
-* **arm64e userland** (iOS 18): unchanged strategy: binaries are rewritten offline to contain no PAC instruction (`tools/ios18/pacstrip.py`),
+* **arm64e userland** (iOS 18): unchanged strategy: binaries are rewritten offline to contain no PAC instruction (`tools/renegade/pacstrip.py`),
   the kernel accepts arm64e only with boot-arg `sweetarm64e=1` (0131: `grade_binary`, `ptrauth_disabled=1`, AMFI dyld policy op 0x5a),
   the dyld pager leaves auth pointers unsigned (0135, now also covers 11215's new `DYLD_CHAINED_PTR_ARM64E_SHARED_CACHE` fixup), shared-region
   slide v5 is native and leaves auth pointers unsigned without PAC, FJCVTZS is emulated (0141, Kryo 385 has no JSCVT).
@@ -96,9 +96,9 @@ diagnostics kept in the same pass, **B** device drivers (display, touch, keys, b
 
 ## 4. Boot image
 
-`shim/out/shim-boot-xnu11215-p1.img` (git-ignored): shim `BOARD=beryllium`, ADT `shim/out/beryllium-hi-3x.adt` (`tools/mkadt.py --board beryllium
---highmem --display-scale 3`, needs `research/ipsw-x/d22ap.adt`), kernel from CI, boot-args of `tools/ios18/mkboot-full.sh`. Phase-1 image
-was made from the first green run (series without the drivers); rebuild with `tools/ios18/mkboot-full.sh KERNEL ADT OUT`.
+`enxerto/out/shim-boot-xnu11215-p1.img` (git-ignored): Enxerto `BOARD=beryllium`, ADT `enxerto/out/beryllium-hi-3x.adt` (`tools/mkadt.py --board beryllium
+--highmem --display-scale 3`, needs `research/ipsw-x/d22ap.adt`), kernel from CI, boot-args of `tools/renegade/mkboot-full.sh`. Phase-1 image
+was made from the first green run (series without the drivers); rebuild with `tools/renegade/mkboot-full.sh KERNEL ADT OUT`.
 
 ## 5. Risks / open items
 

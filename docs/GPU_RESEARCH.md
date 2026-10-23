@@ -94,7 +94,7 @@ Alternatives / fallbacks:
 - https://github.com/steelbrain/metal2vulkan (README, docs/METAL-COVERAGE.md, docs/RUNTIME-PORTING.md)
 - https://github.com/MakrSas/ios-topaz xnu/patches/0113, 0115, 0116, 0117 (TopazModem.cpp)
 - https://github.com/zsariboga/ios-sweet commit de468eda (patch 0092 SweetAccel)
-- https://github.com/ry-diffusion/ios-beryllium README (GPU not working; CLCD/IOSurface 0046)
+- https://github.com/ry-diffusion/Bergamota README (GPU not working; CLCD/IOSurface 0046)
 - https://gitlab.freedesktop.org/mesa/mesa src/freedreno/vulkan/{tu_knl.h,tu_knl.cc,tu_knl_kgsl.cc}
 - Linux drivers/gpu/drm/msm/adreno/*, arch/arm64/boot/dts/qcom/sdm845.dtsi (from memory; local copies under /Users/zesmoi/git/iAndroid/ios-beryllium/research/linux-src and linux-dts should be used to confirm every register base/IRQ/stream ID above)
 

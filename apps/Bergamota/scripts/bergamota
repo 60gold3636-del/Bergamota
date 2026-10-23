@@ -2,7 +2,13 @@
 # CLI for the Bergamota app's file-based API (no network). Needs python3 for JSON only.
 #   bergamota enqueue IMG [--label L] [--no-arm] [--wait]
 #   bergamota build --name N --kernel K --adt A (--preset P | --cmdline C) [--label L] [--no-enqueue] [--no-arm] [--wait]
+#   bergamota flash-userdata IMG [--partition userdata|boot|logo] [--then-boot BOOTIMG] [--label L] [--no-arm] [--wait]
+#                            (default userdata = replaces iOS; boot = Enxerto's boot.img; logo = splash; nothing else)
 #   bergamota orangefox on|off
+#   bergamota install IPA [--wait]
+#   bergamota upload [--dest photos|/phone/folder] FILE... [--wait]
+#   bergamota reboot fastboot|bergamota|recovery [--wait]     (iOS up; SSH sweetreboot; fastboot = ABL, bergamota = Bergamota fastboot)
+#   bergamota enter-bergamota [--wait]     (ABL fastboot -> Bergamota fastboot: fastboot boot bergamota-fastboot.img)
 #   bergamota status
 #   bergamota stop
 # Requests are written to ~/Library/Application Support/Bergamota/inbox/ ; results land in inbox/done or inbox/failed.
@@ -11,7 +17,7 @@ BASE="$HOME/Library/Application Support/Bergamota"
 INBOX="$BASE/inbox"
 
 die() { echo "bergamota: $*" >&2; exit 1; }
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # submit KIND JSON [wait]: write atomically (tmp name is not *.json), optionally wait for the result.
 submit() {
@@ -84,9 +90,51 @@ else: d["preset"]=p
 if l: d["label"]=l
 print(json.dumps(d))' "$name" "$(abspath "$kernel")" "$(abspath "$adt")" "$preset" "$cmdline" "$label" "$enq" "$arm")
 	submit "$json" $wait ;;
+install)
+	ipa=""; wait=0
+	while [ $# -gt 0 ]; do
+		case $1 in --wait) wait=1; shift ;; -h|--help) usage ;; *) ipa=$1; shift ;; esac
+	done
+	[ -n "$ipa" ] || die "install needs an .ipa"
+	submit "$(python3 -c 'import json,sys; print(json.dumps({"kind":"install_ipa","path":sys.argv[1]}))' "$(abspath "$ipa")")" $wait ;;
+upload)
+	dest=photos; wait=0; files=()
+	while [ $# -gt 0 ]; do
+		case $1 in --dest) dest=$2; shift 2 ;; --wait) wait=1; shift ;; -h|--help) usage ;; *) files+=("$(abspath "$1")"); shift ;; esac
+	done
+	[ ${#files[@]} -gt 0 ] || die "upload needs at least one file"
+	submit "$(python3 -c 'import json,sys; print(json.dumps({"kind":"upload","dest":sys.argv[1],"paths":sys.argv[2:]}))' "$dest" "${files[@]}")" $wait ;;
+flash-userdata)
+	# The CLI invocation is the explicit act: it adds "confirm":"userdata" itself. Enqueues; the app flashes on the next fastboot appearance.
+	img=""; boot=""; label=""; arm=true; wait=0; part=userdata
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--then-boot) boot=$2; shift 2 ;;
+		--partition) part=$2; shift 2; case $part in userdata|boot|logo) ;; *) die "--partition must be userdata, boot or logo" ;; esac ;;
+		--label) label=$2; shift 2 ;;
+		--no-arm) arm=false; shift ;;
+		--wait) wait=1; shift ;;
+		-h|--help) usage ;;
+		*) [ -z "$img" ] || die "unexpected argument $1"; img=$1; shift ;;
+		esac
+	done
+	[ -n "$img" ] || die "flash-userdata needs an image (.simg or .img)"
+	[ -z "$boot" ] || boot=$(abspath "$boot")
+	json=$(python3 -c 'import json,sys
+i,b,l,a,p=sys.argv[1:6]
+d={"kind":"flash_userdata","path":i,"partition":p,"confirm":p,"arm":a=="true"}
+if b: d["then_boot"]=b
+if l: d["label"]=l
+print(json.dumps(d))' "$(abspath "$img")" "$boot" "$label" "$arm" "$part")
+	submit "$json" $wait ;;
 orangefox)
 	case ${1:-} in on) v=true ;; off) v=false ;; *) die "orangefox on|off" ;; esac
 	submit "{\"kind\":\"orangefox_reboot\",\"enabled\":$v}" ${2:+1} ;;
+reboot)
+	case ${1:-} in fastboot|bergamota|recovery) to=$1 ;; *) die "reboot fastboot|bergamota|recovery [--wait]" ;; esac
+	submit "{\"kind\":\"reboot\",\"to\":\"$to\"}" $([ "${2:-}" = --wait ] && echo 1 || echo 0) ;;
+enter-bergamota)
+	submit '{"kind":"enter_bergamota"}' $([ "${1:-}" = --wait ] && echo 1 || echo 0) ;;
 stop)
 	submit '{"kind":"stop"}' $([ "${1:-}" = --wait ] && echo 1 || echo 0) ;;
 status)
@@ -101,17 +149,22 @@ def age(s):
     except Exception: return s
 p = d["phone"]; q = d["queue"]; l = d["liveLog"]
 print(f"updated   {d['updated']} ({age(d['updated'])})")
-print(f"phone     {p['state']} (since {p.get('since','?')})")
+print(f"phone     {p['state']} (since {p.get('since','?')})" + (f"  [{p['fastbootKind'].upper()} fastboot {p.get('fastbootVersion','')}]" if p.get('fastbootKind') else ""))
 ios = p.get("ios")
 if ios:
     print(f"  ios     battery={ios.get('battery','?')}% charging={ios.get('charging','?')} uptime={ios.get('uptime','?')}s")
     print(f"          {ios.get('kernel','')}")
 print(f"queue     {'ARMED' if q['armed'] else 'stopped'}  remote-start={'allowed' if q.get('remoteStartAllowed') else 'denied'}  orangefox-reboot={q.get('orangefoxReboot')}")
 print(f"          {q.get('status','')}")
+print(f"          auto-reboot-to-fastboot={q.get('autoRebootToFastboot')} {q.get('autoRebootStatus') or ''}")
 for it in q["items"]:
-    print(f"  [{it['state']:7}] {it['label']}  {it['image']}" + (f"  sent {it['sentAt']}" if it.get('sentAt') else ""))
+    print(f"  [{it['state']:7}] {it['label']}  {it['image']}" + (f"  sent {it['sentAt']}" if it.get('sentAt') else "") + ("  NEEDS MANUAL FASTBOOT" if it.get('needsManualFastboot') else ""))
+    if it.get("flashUserdata"): print(f"             flashes userdata: {it['flashUserdata']}")
     if it["state"] in ("sent", "failed") and it.get("result"):
         for line in it["result"].strip().splitlines()[-3:]: print("             " + line)
+fl = d.get("flash", {})
+if fl.get("active"): print(f"flash     FLASHING USERDATA {fl.get('progress')}  {fl.get('file')}")
+elif fl.get("last"): print(f"flash     {fl['last']['result']} {fl['last']['at']}  {fl['last']['message']}")
 print(f"liveLog   listening={l['listening']} saving={l.get('savingTo')} {l.get('linesPerSecond')} lines/s")
 b = d.get("build", {})
 print(f"build     {'RUNNING' if b.get('building') else 'idle'}  last={b.get('last')}")

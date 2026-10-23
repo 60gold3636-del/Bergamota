@@ -1,7 +1,7 @@
 import SwiftUI
 
 private enum BootTab: String, CaseIterable, Identifiable {
-    case queue = "Queue", images = "Images", build = "Build"
+    case queue = "Queue", images = "Images", build = "Build", flash = "Flash"
     var id: String { rawValue }
 }
 
@@ -20,6 +20,7 @@ struct BootView: View {
             case .queue: QueuePane()
             case .images: ImagesPane(tab: $tab)
             case .build: BuildPane(tab: $tab)
+            case .flash: FlashPane()
             }
         }
         .navigationTitle("Boot Queue")
@@ -31,6 +32,7 @@ struct BootView: View {
 
 private struct QueuePane: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmSend = false
 
     var body: some View {
         @Bindable var settings = model.settings
@@ -47,7 +49,14 @@ private struct QueuePane: View {
                                 .padding(.horizontal, 7).padding(.vertical, 2).background(.blue.opacity(0.18), in: Capsule()).foregroundStyle(.blue)
                         }
                     }
+                    if let b = q.autoRebootBadge {
+                        Label(b, systemImage: "arrow.triangle.2.circlepath").font(.caption2.bold())
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background((b.contains("manual") ? Color.orange : Color.green).opacity(0.18), in: Capsule())
+                            .foregroundStyle(b.contains("manual") ? Color.orange : Color.green)
+                    }
                     Text(q.statusText).foregroundStyle(.secondary)
+                    if let a = q.autoStatusText, a != q.statusText { Text(a).font(.caption).foregroundStyle(.secondary) }
                     if let n = q.note { Text(n).font(.caption).foregroundStyle(.orange) }
                 }
                 Spacer()
@@ -72,13 +81,29 @@ private struct QueuePane: View {
                         HStack {
                             statusIcon(item.status)
                             Text(item.name).font(.body.bold())
+                            if item.flashesUserdata { Image(systemName: "externaldrive.fill.badge.exclamationmark").foregroundStyle(.red).help("flashes userdata first") }
                             Spacer()
                             if let t = item.sentAt { Text(t.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary) }
+                            if item.status == .pending, item.id == q.pending.first?.id, model.monitor.state.isFastboot, q.sending == nil, !q.flashing {
+                                Button("Send now") { confirmSend = true }.controlSize(.small).tint(.orange)
+                            }
                             if item.status == .pending {
                                 Button { q.move(item.id, by: -1) } label: { Image(systemName: "chevron.up") }.buttonStyle(.borderless)
                                 Button { q.move(item.id, by: 1) } label: { Image(systemName: "chevron.down") }.buttonStyle(.borderless)
                             }
                             if item.status != .sending { Button { q.remove(item.id) } label: { Image(systemName: "xmark") }.buttonStyle(.borderless) }
+                        }
+                        if item.flashesUserdata, item.name != item.autoLabel {
+                            Label(item.autoLabel, systemImage: "externaldrive.fill").font(.caption).foregroundStyle(.red)
+                        }
+                        if item.needsManualFastboot {
+                            Label("needs manual fastboot (hold Power + Volume Down)", systemImage: "hand.tap.fill").font(.caption).foregroundStyle(.orange)
+                        } else if item.autoRebootTried, item.status == .pending {
+                            Label("auto-reboot to fastboot sent", systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
+                        }
+                        if q.largeWarns(item) {
+                            Label("\(BootQueue.largeWarning) (\(sizeFmt.string(fromByteCount: item.size)))", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption).foregroundStyle(.yellow)
                         }
                         if !item.output.isEmpty {
                             Text(item.output).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
@@ -86,6 +111,11 @@ private struct QueuePane: View {
                     }
                     .padding(.vertical, 2)
                 }
+            }
+            .confirmationDialog("Send the next image now?", isPresented: $confirmSend, titleVisibility: .visible) {
+                Button("Send fastboot boot now", role: .destructive) { Task { _ = await q.sendNow() } }
+            } message: {
+                Text("If the last boot left ABL hung, sending again can hang it further. Press only after re-entering fastboot (hold Power + Volume Down).")
             }
             .overlay { if q.items.isEmpty { ContentUnavailableView("Queue is empty", systemImage: "tray", description: Text("Add images from the Images or Build tab.")) } }
         }
@@ -110,14 +140,19 @@ private struct ImagesPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("shim/out/*.img (\(model.build.images.count))").font(.headline)
+                Text("\(model.settings.bootDir)/out/*.img (\(model.build.images.count))").font(.headline)
                 Spacer()
                 Button { model.build.rescan() } label: { Label("Rescan", systemImage: "arrow.clockwise") }
             }.padding(10)
             Divider()
             Table(model.build.images) {
                 TableColumn("Name") { Text($0.name) }
-                TableColumn("Size") { Text(sizeFmt.string(fromByteCount: $0.size)) }.width(90)
+                TableColumn("Size") { img in
+                    HStack(spacing: 4) {
+                        Text(sizeFmt.string(fromByteCount: img.size))
+                        if model.queue.largeWarns(img.size) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help(BootQueue.largeWarning) }
+                    }
+                }.width(110)
                 TableColumn("Date") { Text($0.date.formatted(date: .abbreviated, time: .shortened)) }.width(150)
                 TableColumn("") { img in
                     Button("Add to queue") { model.queue.add(img.path); tab = .queue }.controlSize(.small)
@@ -153,7 +188,7 @@ private struct BuildPane: View {
                         Text("Use letters, digits, . _ - only.").font(.caption).foregroundStyle(.red)
                     }
                     if b.targetExists && !b.imageName.isEmpty {
-                        Text("shim-boot-\(b.imageName).img already exists and will be replaced.").font(.caption).foregroundStyle(.orange)
+                        Text("\(model.settings.bootImageBase)-\(b.imageName).img already exists and will be replaced.").font(.caption).foregroundStyle(.orange)
                     }
                 }
                 Section("Cmdline") {
@@ -175,6 +210,9 @@ private struct BuildPane: View {
                         } label: { Label("Build image", systemImage: "hammer.fill") }
                             .buttonStyle(.borderedProminent).disabled(!b.canBuild)
                         if b.building { ProgressView().controlSize(.small) }
+                        if let img = b.lastBuiltImage, model.queue.largeWarns(BootQueue.fileSize(img)) {
+                            Label(BootQueue.largeWarning, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.yellow)
+                        }
                         if let r = b.lastResult { Text(r).foregroundStyle(b.lastBuiltImage != nil ? .green : .red) }
                         Spacer()
                         if let img = b.lastBuiltImage { Button("Add to queue") { model.queue.add(img); tab = .queue } }
@@ -198,7 +236,7 @@ private struct BuildPane: View {
                 }
             }
         }
-        .confirmationDialog("Replace shim-boot-\(b.imageName).img?", isPresented: $confirmOverwrite) {
+        .confirmationDialog("Replace \(model.settings.bootImageBase)-\(b.imageName).img?", isPresented: $confirmOverwrite) {
             Button("Replace and build", role: .destructive) { b.build() }
         }
     }

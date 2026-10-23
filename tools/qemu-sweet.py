@@ -3,7 +3,7 @@
 
   qemu-sweet.py PAYLOAD OUTDIR [--secs N] [--gdb] [--live-serial]
 
-Does what shim/loader.c does on the phone, but on the host: places the
+Does what enxerto/loader.c does on the phone, but on the host: places the
 kernel segments, ADT and boot_args at their physical addresses and starts
 the CPU at a 6-instruction stub that jumps to the entry with x0 = boot_args.
 virt RAM starts at 0x40000000; with 4G it covers the phone's framebuffer

@@ -10,7 +10,7 @@ Checks:
   2. Python script syntax:
      - All tools/*.py compile cleanly via py_compile.
   3. Shell script syntax:
-     - All tools/*.sh, shim/*.sh, and xnu/patches/*.sh pass bash -n check.
+     - All tools/*.sh, enxerto/*.sh, and xnu/patches/*.sh pass bash -n check.
 """
 import argparse, glob, os, py_compile, re, subprocess, sys
 
@@ -102,7 +102,7 @@ def validate_python_scripts(verbose=False):
 def validate_shell_scripts(verbose=False):
     sh_files = sorted(
         glob.glob(os.path.join(REPO_ROOT, 'tools/*.sh')) +
-        glob.glob(os.path.join(REPO_ROOT, 'shim/*.sh')) +
+        glob.glob(os.path.join(REPO_ROOT, 'enxerto/*.sh')) +
         glob.glob(os.path.join(REPO_ROOT, 'xnu/patches/*.sh'))
     )
     errors = []

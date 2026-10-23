@@ -40,12 +40,17 @@ struct Row: View {
 
 struct DashboardView: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmReboot = false
+    @State private var confirmRebootBergamota = false
+    @State private var confirmEnterBergamota = false
+    @State private var rebootResult: (ok: Bool, text: String)?
 
     private var hint: String {
         switch model.monitor.state {
         case .unknown: "Probing the phone..."
         case .offline: "No device seen. Hold Power + Volume Down for fastboot, or plug the phone in."
-        case .fastboot: "Phone is in fastboot (serial \(model.monitor.fastbootSerial ?? "?")). Ready for `fastboot boot`."
+        case .fastboot: "Phone is in ABL fastboot (serial \(model.monitor.fastbootSerial ?? "?")). Ready for `fastboot boot` and flash userdata."
+        case .bergamotaFastboot: "Phone is in Bergamota fastboot (serial \(model.monitor.fastbootSerial ?? "?")). Ready for `fastboot boot`; no flash commands."
         case .recovery: "OrangeFox / recovery over adb (\(model.monitor.adbSerial ?? "?"))."
         case .android: "Android is up over adb (\(model.monitor.adbSerial ?? "?"))."
         case .iosBooting:
@@ -60,6 +65,7 @@ struct DashboardView: View {
         let m = model.monitor
         ScrollView {
             VStack(spacing: 16) {
+                ActivityBannerView()
                 HStack(spacing: 16) {
                     Image(systemName: m.state.symbol)
                         .font(.system(size: 40))
@@ -94,7 +100,7 @@ struct DashboardView: View {
                 Grid(horizontalSpacing: 16, verticalSpacing: 16) {
                     GridRow {
                         Card(title: "Detection", symbol: "dot.radiowaves.left.and.right") {
-                            Row(k: "fastboot", v: m.fastbootSerial ?? "none", ok: m.fastbootSerial != nil)
+                            Row(k: "fastboot", v: m.fastbootSerial.map { $0 + " (" + (m.state == .bergamotaFastboot ? "Bergamota" : "ABL") + ")" } ?? "none", ok: m.fastbootSerial != nil)
                             Row(k: "adb", v: m.adbState.map { "\($0) (\(m.adbSerial ?? ""))" } ?? "none", ok: m.adbState != nil)
                             Row(k: "USB Ethernet", v: m.ifaceName.map { $0 + (m.ifaceUp ? " up" : " down") + (m.ifaceHasIP ? "" : ", no IP") + (m.ifaceInferred ? " (by subnet)" : "") } ?? "not found", ok: m.ifaceName != nil)
                             Row(k: "ping \(model.settings.phoneIP)", v: m.pingOK ? "reply" : "no reply", ok: m.pingOK)
@@ -106,6 +112,27 @@ struct DashboardView: View {
                             Row(k: "Phone MAC", v: PhoneMonitor.usbMAC)
                             Row(k: "Log listener", v: model.logs.listening ? "udp/5140" : (model.logs.listenError ?? "stopped"), ok: model.logs.listening)
                             Text("Enable NAT with tools/sweet-mac-nat.sh (needs sudo).").font(.caption).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+
+                if m.state == .fastboot || m.state == .bergamotaFastboot {
+                    Card(title: m.state == .fastboot ? "ABL fastboot" : "Bergamota fastboot", symbol: m.state.symbol) {
+                        if m.state == .fastboot {
+                            Text("Qualcomm ABL: `fastboot boot` and flash commands. \"Enter Bergamota fastboot\" boots Enxerto's own fastboot (1 GiB downloads, no flash commands).")
+                                .font(.callout).foregroundStyle(.secondary)
+                            HStack {
+                                Button { confirmEnterBergamota = true } label: { Label("Enter Bergamota fastboot", systemImage: "leaf.circle.fill") }
+                                    .controlSize(.small).tint(.lime).disabled(model.tools.enteringBergamota || model.queue.sending != nil || model.queue.flashing)
+                                if model.tools.enteringBergamota { ProgressView().controlSize(.small) }
+                                if let r = rebootResult {
+                                    Label(r.text, systemImage: r.ok ? "checkmark.circle" : "exclamationmark.triangle").font(.caption)
+                                        .foregroundStyle(r.ok ? .green : .orange).textSelection(.enabled)
+                                }
+                            }
+                        } else {
+                            Text("Enxerto's fastboot (\(m.fastbootVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "version-bootloader bergamota-N")): `fastboot boot` up to 1 GiB, no flash commands. Flashing userdata needs ABL fastboot (Power + Volume Down).")
+                                .font(.callout).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -136,12 +163,50 @@ struct DashboardView: View {
                     }
                     if m.state == .ios, m.info != nil, let e = m.infoError { Text(e).font(.caption).foregroundStyle(.orange) }
                     if m.state == .ios {
-                        Button("Refresh now") { Task { await m.refreshInfoIfNeeded(force: true) } }.controlSize(.small)
+                        HStack {
+                            Button("Refresh now") { Task { await m.refreshInfoIfNeeded(force: true) } }.controlSize(.small)
+                            Button {
+                                confirmReboot = true
+                            } label: { Label("Reboot to ABL fastboot", systemImage: "bolt.horizontal.circle") }
+                                .controlSize(.small).tint(.orange)
+                                .disabled(model.tools.rebooting != nil || model.tools.busy)
+                            Button {
+                                confirmRebootBergamota = true
+                            } label: { Label("Reboot to Bergamota fastboot", systemImage: "leaf.circle.fill") }
+                                .controlSize(.small).tint(.lime)
+                                .disabled(model.tools.rebooting != nil || model.tools.busy)
+                            if let t = model.tools.rebooting { ProgressView().controlSize(.small); Text("rebooting to \(t)...").font(.caption).foregroundStyle(.secondary) }
+                            if let r = rebootResult {
+                                Label(r.text, systemImage: r.ok ? "checkmark.circle" : "exclamationmark.triangle").font(.caption)
+                                    .foregroundStyle(r.ok ? .green : .orange).textSelection(.enabled)
+                            }
+                        }
                     }
                 }
             }
             .padding(20)
         }
         .navigationTitle("Dashboard")
+        .confirmationDialog("Reboot the phone into Bergamota fastboot?", isPresented: $confirmRebootBergamota, titleVisibility: .visible) {
+            Button("Reboot to Bergamota fastboot", role: .destructive) {
+                Task { let r = await model.tools.rebootIOS(to: "bergamota"); rebootResult = (r.0, r.1) }
+            }
+        } message: {
+            Text("Runs /usr/local/bin/sweetreboot bergamota over SSH. iOS is shut down immediately; needs kernel patch 0140, an Enxerto that handles the BERG reboot reason, and the updated tool on the phone (README).")
+        }
+        .confirmationDialog("Boot Bergamota fastboot from ABL?", isPresented: $confirmEnterBergamota, titleVisibility: .visible) {
+            Button("Enter Bergamota fastboot", role: .destructive) {
+                Task { let r = await model.tools.enterBergamota(); rebootResult = (r.0, r.1) }
+            }
+        } message: {
+            Text("Runs fastboot -s <serial> boot \(model.settings.bergamotaImagePath)")
+        }
+        .confirmationDialog("Reboot the phone into fastboot?", isPresented: $confirmReboot, titleVisibility: .visible) {
+            Button("Reboot to ABL fastboot", role: .destructive) {
+                Task { let r = await model.tools.rebootIOS(to: "fastboot"); rebootResult = (r.0, r.1) }
+            }
+        } message: {
+            Text("Runs /usr/local/bin/sweetreboot fastboot over SSH. iOS is shut down immediately; needs kernel patch 0137 and the tool on the phone (README).")
+        }
     }
 }
