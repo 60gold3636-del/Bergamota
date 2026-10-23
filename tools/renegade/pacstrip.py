@@ -21,7 +21,7 @@ the LC_DATA_IN_CODE ranges are skipped. Fat files: every arm64/arm64e slice is p
   pacstrip.py [-v] [--sign] [--dylinker PATH] [--subtype arm64] IN [OUT]      (OUT defaults to in-place)
   pacstrip.py --scan FILE...                                                  (count only, write nothing)
 
---sign       ad-hoc re-sign with `codesign -f -s -`, preserving the entitlements (needs macOS codesign)
+--sign       ad-hoc re-sign with `codesign -f -s -`, preserving the entitlements (macOS codesign or, on Linux, ldid)
 --dylinker   replace the LC_LOAD_DYLINKER path of an executable (load commands are repacked into the header
              slack; fails if there is not enough room)
 --subtype    set the CPU subtype to arm64 (ALL): NOT needed with kernel patch 0131 and NOT recommended, see
@@ -34,6 +34,9 @@ import subprocess
 import sys
 from array import array
 from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import renegade_platform as rplat  # noqa: E402
 
 MH_MAGIC_64 = 0xFEEDFACF
 FAT_MAGIC, FAT_MAGIC_64 = 0xCAFEBABE, 0xCAFEBABF
@@ -221,8 +224,7 @@ def slices(buf):
         yield 0
 
 
-CS_FLAG_OPTIONS = ((0x1, 'host'), (0x100, 'hard'), (0x200, 'kill'), (0x400, 'expires'), (0x800, 'restrict'),
-                   (0x2000, 'library'), (0x10000, 'runtime'))
+CS_FLAG_OPTIONS = rplat.CS_FLAG_OPTIONS
 CS_FLAG_IGNORED = 0x2 | 0x20000 | 0x4000 | 0x1000      # adhoc (codesign adds it), linker-signed, (computed bits)
 
 
@@ -264,31 +266,42 @@ def cs_identity(path):
     return None
 
 
+def code_signature_blobs(buf):
+    """{slot type: blob bytes} of the first arm64 slice's embedded signature."""
+    for base in slices(buf):
+        ncmds = struct.unpack_from('<I', buf, base + 16)[0]
+        off = base + 32
+        for _ in range(ncmds):
+            cmd, size = struct.unpack_from('<II', buf, off)
+            if cmd == LC_CODE_SIGNATURE:
+                sb = base + struct.unpack_from('<I', buf, off + 8)[0]
+                if struct.unpack_from('>I', buf, sb)[0] != 0xFADE0CC0:
+                    return {}
+                out = {}
+                for i in range(struct.unpack_from('>I', buf, sb + 8)[0]):
+                    t, o = struct.unpack_from('>II', buf, sb + 12 + 8 * i)
+                    ln = struct.unpack_from('>I', buf, sb + o + 4)[0]
+                    out[t] = bytes(buf[sb + o:sb + o + ln])
+                return out
+            off += size
+        return {}
+    return {}
+
+
+def entitlements_xml(path):
+    """XML entitlements of a (ldid- or Apple-signed) binary, parsed from the signature blob (slot 5), or None."""
+    blob = code_signature_blobs(open(path, 'rb').read()).get(5)
+    if blob and blob[:4] == b'\xfa\xde\x71\x71':
+        return blob[8:]
+    return None
+
+
 def sign(path, check=True):
-    """Ad-hoc re-sign keeping identifier, entitlements and the CS options of the old signature; verified after."""
+    """Ad-hoc re-sign keeping identifier, entitlements and the CS options of the old signature; verified after.
+    codesign on macOS, ldid on Linux (renegade_platform.py)."""
     old = cs_identity(path)
-    ents = subprocess.run(['codesign', '-d', '--entitlements', '-', '--xml', path], capture_output=True)
-    cmd = ['codesign', '-f', '-s', '-']
-    if old:
-        cmd += ['-i', old[0]]
-        opts = [n for bit, n in CS_FLAG_OPTIONS if old[2] & bit]
-        if opts:
-            cmd += ['-o', ','.join(opts)]
-    tmp = None
-    if ents.returncode == 0 and ents.stdout.strip().startswith(b'<?xml'):
-        tmp = path + '.ents.plist'
-        open(tmp, 'wb').write(ents.stdout)
-        cmd += ['--entitlements', tmp]
-    try:
-        for attempt in range(3):                # codesign sometimes fails under parallel load; the file is unchanged then
-            r = subprocess.run(cmd + [path], capture_output=True, text=True)
-            if r.returncode == 0:
-                break
-        else:
-            raise SystemExit(f'codesign failed for {path}: {r.stderr.strip()}')
-    finally:
-        if tmp and os.path.exists(tmp):
-            os.unlink(tmp)
+    ents = rplat.read_entitlements(path)
+    rplat.adhoc_sign(path, old[0] if old else None, old[2] if old else None, ents)
     if check and old:
         new = cs_identity(path)
         if not new or new[0] != old[0] or new[1] != old[1]:

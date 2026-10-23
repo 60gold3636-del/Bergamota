@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Punch holes (APFS F_PUNCHHOLE) into a raw HFS+ image over every block the volume's allocation bitmap says is free.
+"""Punch holes (APFS F_PUNCHHOLE; Linux fallocate) into a raw HFS+ image over every block the volume's allocation bitmap says is free.
 
   hfs_trim.py IMAGE            (image must be unmounted/detached)
 
@@ -7,12 +7,13 @@ The raw image is a sparse file; blocks that HFS+ freed again (a file deleted aft
 and non-zero, which costs disk now and makes the .simg bigger later. Free blocks are zero by definition, so punching
 is lossless. Prints the freed amount.
 """
-import fcntl
 import os
 import struct
 import sys
 
-F_PUNCHHOLE = 99
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import renegade_platform as rplat  # noqa: E402
+
 
 
 def main():
@@ -40,7 +41,7 @@ def main():
             start = blk
         elif used and start is not None:
             off, ln = start * bsize, (blk - start) * bsize
-            fcntl.fcntl(f.fileno(), F_PUNCHHOLE, struct.pack('<IIqq', 0, 0, off, ln))
+            rplat.punch_hole_safe(f.fileno(), off, ln)
             freed += ln
             runs += 1
             start = None

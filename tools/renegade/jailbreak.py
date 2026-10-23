@@ -10,7 +10,7 @@
   (image mode, called by mkroot-full.py stage `jb` and `renegade update`: image_stage(ROOT, OWNERS) copies the stage
    to ROOT/private/var/jb, keeps /var a symlink and writes the owner map for hfsroot_owners.py)
 
-Nothing downloaded is ever executed on the Mac: it is only unpacked (zstd -d | tar, ar + xz/zstd in Python). The
+Nothing downloaded is ever executed on the build host except the pinned host ldid (Linux signer, SHA-256 verified): it is only unpacked (zstd -d | tar, ar + xz/zstd in Python). The
 phone runs the Procursus tools; plain arm64 binaries run as they are, any arm64e slice goes through pacstrip.py
 and is re-signed ad hoc keeping its entitlements (the signatures are ldid-style, which `codesign -d` cannot read:
 the entitlement blob is parsed here).
@@ -38,6 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, HERE)
 import pacstrip  # noqa: E402
+import renegade_platform as rplat  # noqa: E402
 
 CACHE = os.path.join(ROOT, 'research/jb')
 STAGE = os.path.join(CACHE, 'stage')
@@ -81,6 +82,29 @@ PINS = {
         source='https://github.com/opa334/ldid'),
 }
 LDID_VERSION = 'v2.1.5-procursus7-new'
+
+# ldid that runs ON THE BUILD HOST (Linux: the ad-hoc signer instead of codesign, renegade_platform.py). opa334's fork
+# publishes only the iOS binary above; the official release assets for Linux (and macOS) are the Procursus ldid of the
+# same base (ProcursusTeam/ldid v2.1.5-procursus7, 2023-01-18). GitHub publishes no checksums for them: the SHA-256 values
+# are pinned from the downloaded assets, so a later change of an asset is caught. Same rules as PINS: cached in the
+# git-ignored research/jb/, verified after every download and before every use, never run before it matches.
+HOST_LDID_TAG = 'v2.1.5-procursus7'
+HOST_LDID = {
+    ('linux', 'x86_64'): dict(
+        file='ldid_linux_x86_64', size=2956104,
+        sha256='4b8862b2fefa2cd7fa8f88cb0310779619aeaa8c72d6aff22f019b470f2fa99a'),
+    ('linux', 'aarch64'): dict(
+        file='ldid_linux_aarch64', size=2745416,
+        sha256='bddd525902f242d4cdf7aa40a7f0c2c85c42ab9440d58664251e8738ef0c565d'),
+    # macOS: not used by default (codesign is); here for RENEGADE_SIGNER=ldid comparisons and tests
+    ('macos', 'arm64'): dict(
+        file='ldid_macosx_arm64', size=2572056,
+        sha256='5dff8e6b8d9dc3ff7226276c81e09930865f15381f54cb55b98b196a94c5ca50'),
+    ('macos', 'x86_64'): dict(
+        file='ldid_macosx_x86_64', size=2824936,
+        sha256='9d46e0feedf96e399edfca09872802ba21e729f79c01927ad25ea2b0a35bca23'),
+}
+HOST_LDID_URL = 'https://github.com/ProcursusTeam/ldid/releases/download/%s/%s'
 APT_SUITE = '2000'                                  # Procursus CF suite for iOS 17/18 (dists/2000, rootless iphoneos-arm64)
 
 SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
@@ -142,6 +166,46 @@ def fetch(names=None):
             die(f'{name}: SHA-256/size mismatch (got {got}, pinned {pin["sha256"]}): refusing to use it')
         os.replace(tmp, cached(name))
         log(f'{name}: ok {pin["sha256"]}')
+
+
+def host_ldid_pin():
+    import platform as pyplatform
+    mach = pyplatform.machine().lower()
+    mach = {'amd64': 'x86_64', 'arm64': 'arm64' if rplat.name() == 'macos' else 'aarch64'}.get(mach, mach)
+    pin = HOST_LDID.get((rplat.name(), mach))
+    if not pin:
+        die(f'no pinned ldid for {rplat.name()}/{mach}: set RENEGADE_LDID to an ldid you trust, or build one from '
+            'https://github.com/ProcursusTeam/ldid')
+    return pin
+
+
+def host_ldid(download=True):
+    """Path of the pinned, SHA-256-verified ldid for this host (downloaded into research/jb/ on first use).
+    download=False (dry run): only returns where it would be."""
+    pin = host_ldid_pin()
+    path = os.path.join(CACHE, 'ldid-host-' + HOST_LDID_TAG, pin['file'])
+    ok = os.path.exists(path) and os.path.getsize(path) == pin['size'] and sha256_file(path) == pin['sha256']
+    if ok or not download:
+        if ok:
+            os.chmod(path, 0o755)
+        return path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    url = HOST_LDID_URL % (HOST_LDID_TAG, pin['file'])
+    log(f'ldid (host signer): downloading {url}')
+    tmp = path + '.part'
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'renegade-jb'})
+        with urllib.request.urlopen(req, timeout=60) as r, open(tmp, 'wb') as f:
+            shutil.copyfileobj(r, f)
+    except OSError as e:
+        die(f'cannot download {url}: {e} (offline? download it by hand to {path} or set RENEGADE_LDID)')
+    got = sha256_file(tmp)
+    if got != pin['sha256'] or os.path.getsize(tmp) != pin['size']:
+        os.unlink(tmp)
+        die(f'host ldid: SHA-256/size mismatch (got {got}, pinned {pin["sha256"]}): refusing to use it')
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, path)
+    return path
 
 
 # --- unpack helpers (never execute anything) ------------------------------------------------------------------------
@@ -248,34 +312,8 @@ def macho_slices(path):
     return out
 
 
-def code_signature_blobs(buf):
-    """{slot type: blob bytes} of the first arm64 slice's embedded signature."""
-    for base in pacstrip.slices(buf):
-        ncmds = struct.unpack_from('<I', buf, base + 16)[0]
-        off = base + 32
-        for _ in range(ncmds):
-            cmd, size = struct.unpack_from('<II', buf, off)
-            if cmd == pacstrip.LC_CODE_SIGNATURE:
-                sb = base + struct.unpack_from('<I', buf, off + 8)[0]
-                if struct.unpack_from('>I', buf, sb)[0] != 0xFADE0CC0:
-                    return {}
-                out = {}
-                for i in range(struct.unpack_from('>I', buf, sb + 8)[0]):
-                    t, o = struct.unpack_from('>II', buf, sb + 12 + 8 * i)
-                    ln = struct.unpack_from('>I', buf, sb + o + 4)[0]
-                    out[t] = bytes(buf[sb + o:sb + o + ln])
-                return out
-            off += size
-        return {}
-    return {}
-
-
-def entitlements_xml(path):
-    """XML entitlements of a (ldid- or Apple-signed) binary, parsed from the signature blob (slot 5), or None."""
-    blob = code_signature_blobs(open(path, 'rb').read()).get(5)
-    if blob and blob[:4] == b'\xfa\xde\x71\x71':
-        return blob[8:]
-    return None
+code_signature_blobs = pacstrip.code_signature_blobs
+entitlements_xml = pacstrip.entitlements_xml
 
 
 def strip_signature(path):
@@ -311,30 +349,17 @@ def strip_signature(path):
 
 
 def resign(path, ident=None):
-    """Ad-hoc re-sign keeping identifier, CS options and entitlements."""
+    """Ad-hoc re-sign keeping identifier, CS options and entitlements (codesign, or ldid on Linux)."""
     old = pacstrip.cs_identity(path)
     ents = entitlements_xml(path)
     strip_signature(path)
-    cmd = ['codesign', '-f', '-s', '-']
-    if ident or old:
-        cmd += ['-i', ident or old[0]]
-    if old:
-        opts = [n for bit, n in pacstrip.CS_FLAG_OPTIONS if old[2] & bit]
-        if opts:
-            cmd += ['-o', ','.join(opts)]
-    tmpdir = tempfile.mkdtemp(prefix='rjb-ents-')       # outside the bundle: codesign would seal it as a resource
-    tmp = os.path.join(tmpdir, 'ents.plist')
     if ents:
         plistlib.loads(ents)                          # must parse
-        open(tmp, 'wb').write(ents)
-        cmd += ['--entitlements', tmp]
+    os.chmod(path, os.stat(path).st_mode | 0o200)
     try:
-        os.chmod(path, os.stat(path).st_mode | 0o200)
-        r = subprocess.run(cmd + [path], capture_output=True, text=True)
-        if r.returncode:
-            die(f'codesign failed for {path}: {r.stderr.strip()}')
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        rplat.adhoc_sign(path, ident or (old[0] if old else None), old[2] if old else None, ents, retries=1)
+    except SystemExit as e:
+        die(str(e))
     got = entitlements_xml(path)
     if ents and (got is None or plistlib.loads(got) != plistlib.loads(ents)):
         die(f'entitlements changed by re-sign of {path}')
@@ -735,6 +760,8 @@ def main():
     a = ap.parse_args()
     if a.cmd == 'fetch':
         fetch()
+        if rplat.name() == 'linux':
+            host_ldid()
     elif a.cmd == 'stage':
         stage_build()
     elif a.cmd == 'live':
