@@ -262,12 +262,28 @@ def layout_fixes(root):
 
 
 # --- stage: macho ---------------------------------------------------------------------------------------------------
+def macho_filetype(buf):
+    """filetype of a thin Mach-O, or of the first slice of a fat one (None if neither)."""
+    import struct
+    if buf[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe'):
+        return struct.unpack_from('<I', buf, 12)[0]
+    if buf[:4] in (b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf') and len(buf) >= 32:
+        off = struct.unpack_from('>I', buf, 16)[0] if buf[3] == 0xbe else struct.unpack_from('>Q', buf, 16)[0]
+        if off + 16 <= len(buf):
+            return struct.unpack_from('<I', buf, off + 12)[0]
+    return None
+
+
 def macho_worker(path):
     try:
         with open(path, 'rb') as f:
             if f.read(4) not in MAGICS:
                 return path, None, None
         buf = bytearray(open(path, 'rb').read())
+        if rplat.is_linux() and macho_filetype(buf) == 0xb:
+            # MH_KEXT_BUNDLE: ldid cannot sign it ("Unsupported Mach-O type"), and the kernel never loads kexts
+            # from the root (its drivers are built in), so it stays exactly as Apple shipped it
+            return path, 'kext', None
         orig = bytes(buf)
         counts, fj = Counter(), []
         for base in pacstrip.slices(buf):
