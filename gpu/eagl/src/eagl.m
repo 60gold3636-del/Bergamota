@@ -444,12 +444,13 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
                     width:(uint32_t)width height:(uint32_t)height format:(NSUInteger)format type:(NSUInteger)type
                     plane:(uint32_t)plane {
     return [self texImageIOSurface:ioSurface target:target internalFormat:internalFormat width:width height:height
-                            format:format type:type plane:plane invert:NO];
+                            format:format type:type plane:plane invert:YES];   // public form: rows as stored
 }
 
 - (BOOL)texImageIOSurface:(IOSurfaceRef)ioSurface target:(NSUInteger)target internalFormat:(NSUInteger)internalFormat
                     width:(uint32_t)width height:(uint32_t)height format:(NSUInteger)format type:(NSUInteger)type
                     plane:(uint32_t)plane invert:(BOOL)invert {
+    EAGL_DEBUG("texImageIOSurface %p target 0x%lx ifmt 0x%lx %ux%u fmt 0x%lx type 0x%lx invert %d\n", ioSurface, (unsigned long)target, (unsigned long)internalFormat, width, height, (unsigned long)format, (unsigned long)type, invert);
     if (cur_ctx() != self || !ioSurface || plane != 0) return NO;
     OSType pf = IOSurfaceGetPixelFormat(ioSurface);
     if (pf != 'BGRA' && pf != 'RGBA' && pf != 0) return NO;      // only 8-bit 4 byte surfaces for now
@@ -462,7 +463,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     const uint8_t *src = IOSurfaceGetBaseAddress(ioSurface);
     size_t bpr = IOSurfaceGetBytesPerRow(ioSurface);
     for (uint32_t y = 0; y < h; y++) {
-        const uint32_t *sp = (const uint32_t *)(src + (invert ? (h - 1 - y) : y) * bpr);
+        const uint32_t *sp = (const uint32_t *)(src + (invert ? y : (h - 1 - y)) * bpr);   // CA passes invert:NO and renders with a flipped projection (invertedRender:YES): its textures must be flipped on upload
         uint32_t *dp = tmp + (size_t)y * w;
         if (pf == 'RGBA') memcpy(dp, sp, (size_t)w * 4);
         else for (uint32_t x = 0; x < w; x++) { uint32_t q = sp[x]; dp[x] = (q & 0xff00ff00u) | ((q & 0xff) << 16) | ((q >> 16) & 0xff); }
@@ -475,6 +476,12 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     GLenum ifmt = internalFormat == GL_BGRA_EXT ? GL_RGBA : (GLenum)internalFormat;
     glTexImage2D((GLenum)target, 0, ifmt, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+    // IOSurface textures have no mip chain: make the texture complete with sane defaults (the client overrides them if it cares).
+    glTexParameteri((GLenum)target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri((GLenum)target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    EAGL_DEBUG("  first texel RGBA %08x, centre %08x\n", tmp[0], tmp[(size_t)(h / 2) * w + w / 2]);
     glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, oldRow);
     free(tmp);

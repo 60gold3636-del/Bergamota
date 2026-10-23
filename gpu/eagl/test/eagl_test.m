@@ -186,9 +186,9 @@ static void test_attach_and_texture(void) {
     uint8_t px[4];
     glReadPixels(5, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);        // GL row 5 = surface row 5 (not inverted): R=30
     CHECK(px[0] == 30 && px[1] == 20 && px[2] == 10 && px[3] == 255, "texture holds the surface pixels, BGRA swizzled to RGBA (RGBA %d %d %d %d)", px[0], px[1], px[2], px[3]);
-    ti = [ctx texImageIOSurface:src target:GL_TEXTURE_2D internalFormat:GL_RGBA width:32 height:32 format:GL_BGRA_EXT type:GL_UNSIGNED_BYTE plane:0 invert:YES];
+    ti = [ctx texImageIOSurface:src target:GL_TEXTURE_2D internalFormat:GL_RGBA width:32 height:32 format:GL_BGRA_EXT type:GL_UNSIGNED_BYTE plane:0 invert:NO];
     glReadPixels(5, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    CHECK(ti && px[0] == 200, "invert:YES flips rows (R=%d)", px[0]);
+    CHECK(ti && px[0] == 200, "invert:NO flips rows (R=%d)", px[0]);
 
     // sharegroup: a texture created in ctx is visible in a second context of the same group
     EAGLContext *c2 = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3 sharegroup:ctx.sharegroup];
@@ -233,6 +233,40 @@ static void test_macro_context(void) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
     CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0, "glTexImage2D (9 args, stack) through the macro context (RGBA %d %d %d %d)", px[0], px[1], px[2], px[3]);
+    [EAGLContext setCurrentContext:nil]; [ctx release];
+}
+
+// Sampling a texture with NEAREST and LINEAR filters (CoreAnimation draws 1:1 and magnified layers with NEAREST).
+static void test_sampling(void) {
+    EAGLContext *ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
+    [EAGLContext setCurrentContext:ctx];
+    GLuint fbo, rb, tex;
+    glGenFramebuffers(1, &fbo); glGenRenderbuffers(1, &rb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo); glBindRenderbuffer(GL_RENDERBUFFER, rb);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 64, 64);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+    uint32_t texels[4] = { 0xff00ff00u, 0xff0000ffu, 0xffff0000u, 0xff00ffffu };   // RGBA bytes: green, red, blue, yellow
+    glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    const char *vs = "attribute vec2 pos; varying vec2 uv; void main(){ uv = pos*0.5+0.5; gl_Position = vec4(pos,0.0,1.0); }";
+    const char *fs = "precision mediump float; uniform sampler2D t; varying vec2 uv; void main(){ gl_FragColor = texture2D(t, uv); }";
+    GLuint prog = program(vs, fs);
+    static const GLfloat quad[] = { -1,-1, 1,-1, -1,1, 1,1 };
+    glViewport(0, 0, 64, 64);
+    glUseProgram(prog); glUniform1i(glGetUniformLocation(prog, "t"), 0);
+    glEnableVertexAttribArray(0); glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
+    static const struct { GLint minf, magf; const char *name; } modes[] = {
+        { GL_NEAREST, GL_NEAREST, "NEAREST/NEAREST" }, { GL_LINEAR, GL_NEAREST, "LINEAR/NEAREST" }, { GL_LINEAR, GL_LINEAR, "LINEAR/LINEAR" } };
+    for (int i = 0; i < 3; i++) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, modes[i].minf);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, modes[i].magf);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        uint8_t px[4]; glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);     // bottom-left quarter = first texel (green)
+        CHECK(px[1] > 200 && px[0] < 60 && px[2] < 60, "sampling %s: texel (0,0) is green (RGBA %d %d %d %d)", modes[i].name, px[0], px[1], px[2], px[3]);
+    }
     [EAGLContext setCurrentContext:nil]; [ctx release];
 }
 
@@ -281,6 +315,7 @@ int main(int argc, char **argv) {
         test_present(kEAGLRenderingAPIOpenGLES3, VS300, FS300, "ES3");
         test_attach_and_texture();
         test_macro_context();
+        test_sampling();
         {   // OpenGL ES 1.1 context (fixed function): creation and one fixed-function call
             EAGLContext *c1 = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES1];
             CHECK(c1 != nil && [EAGLContext setCurrentContext:c1], "[ES1] context");

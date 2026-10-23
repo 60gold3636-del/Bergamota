@@ -189,3 +189,40 @@ a separate, later, reversible step (launchd environment override, see the propos
 
 Not yet exercised by step 1: layers with image contents (`texImageIOSurface:`), shadows/blur/vibrancy shaders, many layers (the 560 ms/frame softpipe cost applies), `CAEAGLLayer` drawables, and the render
 server's own use (`CA::WindowServer`, display-link, IOMFB swap). The remaining unknown from the static analysis is where the render server creates its `EAGLContext`.
+
+## CARenderer scenes: results and frame times (256x256 target, softpipe, one SDM845 core; phone, 2026-10-23)
+
+`test/eagl_ca_test.m` renders six scenes through real CA::OGL (separate tool). Checked on the phone with the build before the last two shim changes below:
+
+| scene | result | ms/frame (3-5 frames, noisy) |
+|---|---|---|
+| 2 solid layers | red + green correct | 50-80 |
+| CGImage layer (CA converts it to an IOSurface and calls `texImageIOSurface:...invert:`) | drawn, see orientation below | 31-40 |
+| IOSurface as `layer.contents` | drawn | 30 |
+| shadow (radius 12) | darkens the neighbourhood, far background untouched | 37-80 |
+| `CAFilter gaussianBlur` backgroundFilter (radius 8, 192x192) | blurs the checker edge | 170-240 |
+| `CAFilter colorSaturate 0` | desaturates | 260-450 |
+| 300 translucent layers, half with corner radius | drawn | 320-540 |
+
+Per-layer cost is a few ms, blur/saturate filters 200-400 ms at 256x256 (full-screen 750x1334 would be about 13x the pixels): softpipe is far from interactive; the numbers are the baseline for phase E.
+
+Findings that changed the shim:
+* **Orientation contract.** CA renders with a vertically flipped projection when it calls `attachImage:toCoreSurface:invertedRender:YES`, so the GL framebuffer rows already are the surface rows: the sync must copy WITHOUT flipping for `inverted=YES` (that is what the shim does) and flip for NO. The test therefore passes YES (with NO the whole scene came out mirrored).
+* **Texture uploads.** CA calls `texImageIOSurface:...plane:invert:` with `invert:NO` while rendering inverted, and the pictures came out upside down with a plain row copy: the private variant now flips on upload when `invert` is NO (and not when YES); the public variant without `invert` keeps the rows as stored. **These two changes are built and the unit test is updated, but NOT yet run on the phone** (the phone went to fastboot for the xnu-11215 storage test right after the build; no files were left half-pushed: the push script failed at its first SSH command, before any copy). Expected on the next run: `eagl_test` 41 checks pass, `eagl_ca_test` image/IOSurface scenes pass with top green/bottom blue and top red/bottom green.
+* Tracing aids added: `EAGL_TRACE=1` (macro-slot calls logged through trace thunks; `EAGLShimSetTrace(1)` toggles printing, `EAGL_TRACE_SHADERS=1` prints shader sources), `EAGL_DUMP=/dir` in `eagl_ca_test` writes each scene as PPM. Shader seen so far: CA's textured fragment shader is plain `texture2D(texture0, texcoord0_0)`; programs are compiled lazily per layer type.
+* `texImageIOSurface` now sets complete default texture parameters (LINEAR, CLAMP_TO_EDGE); CA overrides them right after the call.
+* Operational: the kernel caches code signatures per vnode, so always `rm` a binary on the phone before pushing a new build (the push scripts do).
+
+## Plan for the backboardd experiment (NOT executed; needs the user's approval)
+
+Goal: let the live render server (backboardd, which draws SpringBoard) load the injected shim, so CoreAnimation's GLES path runs on Mesa. Nothing below has been done.
+
+1. **Files written on the phone** (all new, nothing existing edited or replaced):
+   * `/var/root/gpu-eagl-inj/fw/OpenGLES.framework/OpenGLES` and `/var/root/gpu-eagl-inj/fw/libOSMesa.8.dylib` (pacstrip'd, ad-hoc signed, sha256-verified; already the layout used by the tests);
+   * `/var/root/gpu-eagl-inj/revert.sh` (the undo, below);
+   * the launchd override: a copy of the backboardd job plist with `EnvironmentVariables: DYLD_INSERT_LIBRARIES=/var/root/gpu-eagl-inj/fw/OpenGLES.framework/OpenGLES` (exact file/mechanism depends on how this image launches backboardd: the original plist stays untouched and its sha256 is recorded first; if the only way is editing the original, a `.orig` copy is made before and `revert.sh` copies it back).
+2. **What must hold before the first try:** the CoreAnimation scenes above pass on the phone with the flip fixes; an SSH session stays open; the kernel is the stable one (xnu-8796, ufsdmasync=1) and the user has said when the phone can be used.
+3. **Auto-revert (dead-man switch):** before touching launchd, start on the phone a detached `sh -c 'sleep 180; /var/root/gpu-eagl-inj/revert.sh'` (nohup, survives the SSH session; cancelled by killing it once the experiment is judged good). `revert.sh` removes the override (or restores the `.orig`), then restarts backboardd (`launchctl kickstart -k` / kill, which launchd respawns) so the next start has no injection. If backboardd crash-loops, the switch still fires; if the whole phone hangs, a power-cycle boots with the override still present, so the override is designed to be useless after a reboot unless re-armed: `DYLD_INSERT_LIBRARIES` points into `/var/root/gpu-eagl-inj` and `revert.sh` is also run once from `/etc` rc-style start? (to be decided with the coordinator; the safest variant is that the override file lives in `/tmp`-like volatile storage or carries a boot-id check so a reboot ignores it).
+4. **What the user will see:** at the moment of the restart the screen goes black/blank for a few seconds while backboardd and SpringBoard restart (same as a respring). Then either (a) the normal UI, drawn by softpipe: slow (hundreds of ms per frame, so visibly laggy animations), or (b) a black/frozen screen or a respring loop if CA's GLES path misbehaves; then after at most 3 minutes the dead-man switch restarts backboardd without injection and the software renderer UI returns. SSH is expected to keep working throughout (backboardd is not on the SSH path).
+5. **Undo by hand:** `ssh root@192.168.7.2 /var/root/gpu-eagl-inj/revert.sh` (or: delete the override plist / restore `<plist>.orig`, then `killall backboardd`); full cleanup: `rm -rf /var/root/gpu-eagl-inj`. If SSH is unavailable, a normal reboot loads the unmodified system (see item 3 for the volatile-override design).
+6. **Success criteria / data collected:** backboardd log lines with `EAGL(shim)` messages (`EAGL_SHIM_DEBUG=1` in the override), whether `Failed to initialize Metal or OpenGLES contexts!` disappears, whether the display shows content, frame time from the swap path. Abort criteria: respring loop, panic, or SSH loss.

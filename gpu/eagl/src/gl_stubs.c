@@ -948,452 +948,911 @@ GL_STUB(glWeightPointerOES, 456)
         "mov x0, x1\n mov x1, x2\n mov x2, x3\n mov x3, x4\n mov x4, x5\n mov x5, x6\n mov x6, x7\n" \
         GL_BR); }
 
+#define GL_TSTUB(name, idx) \
+    __attribute__((visibility("hidden"), naked, used)) void mt_##name(void) { __asm__ volatile( \
+        "stp x29, x30, [sp, #-16]!\n mov x29, sp\n sub sp, sp, #144\n" \
+        "stp x0, x1, [sp, #0]\n stp x2, x3, [sp, #16]\n stp x4, x5, [sp, #32]\n stp x6, x7, [sp, #48]\n" \
+        "stp q0, q1, [sp, #64]\n stp q2, q3, [sp, #96]\n" \
+        "mov x0, #" #idx "\n ldp x1, x2, [sp, #8]\n ldp x3, x4, [sp, #24]\n bl _gl_trace_hook\n" \
+        "ldp x0, x1, [sp, #0]\n ldp x2, x3, [sp, #16]\n ldp x4, x5, [sp, #32]\n ldp x6, x7, [sp, #48]\n" \
+        "ldp q0, q1, [sp, #64]\n ldp q2, q3, [sp, #96]\n add sp, sp, #144\n ldp x29, x30, [sp], #16\n" \
+        "adrp x16, _gl_tab@PAGE\n add x16, x16, _gl_tab@PAGEOFF\n ldr x16, [x16, #" #idx "*8]\n" \
+        "mov x0, x1\n mov x1, x2\n mov x2, x3\n mov x3, x4\n mov x4, x5\n mov x5, x6\n mov x6, x7\n" \
+        GL_BR); }
+extern void gl_trace_hook(int idx, long a, long b, long c, long d);
+
 GL_MSTUB(glActiveShaderProgramEXT, 0)
+GL_TSTUB(glActiveShaderProgramEXT, 0)
 GL_MSTUB(glActiveTexture, 1)
+GL_TSTUB(glActiveTexture, 1)
 GL_MSTUB(glAlphaFunc, 2)
+GL_TSTUB(glAlphaFunc, 2)
 GL_MSTUB(glAlphaFuncx, 3)
+GL_TSTUB(glAlphaFuncx, 3)
 GL_MSTUB(glAttachShader, 4)
+GL_TSTUB(glAttachShader, 4)
 GL_MSTUB(glBeginQuery, 5)
+GL_TSTUB(glBeginQuery, 5)
 GL_MSTUB(glBeginQueryEXT, 6)
+GL_TSTUB(glBeginQueryEXT, 6)
 GL_MSTUB(glBeginTransformFeedback, 7)
+GL_TSTUB(glBeginTransformFeedback, 7)
 GL_MSTUB(glBindAttribLocation, 8)
+GL_TSTUB(glBindAttribLocation, 8)
 GL_MSTUB(glBindBuffer, 9)
+GL_TSTUB(glBindBuffer, 9)
 GL_MSTUB(glBindBufferBase, 10)
+GL_TSTUB(glBindBufferBase, 10)
 GL_MSTUB(glBindBufferRange, 11)
+GL_TSTUB(glBindBufferRange, 11)
 GL_MSTUB(glBindFramebuffer, 12)
+GL_TSTUB(glBindFramebuffer, 12)
 GL_MSTUB(glBindFramebufferOES, 13)
+GL_TSTUB(glBindFramebufferOES, 13)
 GL_MSTUB(glBindProgramPipelineEXT, 14)
+GL_TSTUB(glBindProgramPipelineEXT, 14)
 GL_MSTUB(glBindRenderbuffer, 15)
+GL_TSTUB(glBindRenderbuffer, 15)
 GL_MSTUB(glBindRenderbufferOES, 16)
+GL_TSTUB(glBindRenderbufferOES, 16)
 GL_MSTUB(glBindSampler, 17)
+GL_TSTUB(glBindSampler, 17)
 GL_MSTUB(glBindTexture, 18)
+GL_TSTUB(glBindTexture, 18)
 GL_MSTUB(glBindTransformFeedback, 19)
+GL_TSTUB(glBindTransformFeedback, 19)
 GL_MSTUB(glBindVertexArray, 20)
+GL_TSTUB(glBindVertexArray, 20)
 GL_MSTUB(glBindVertexArrayOES, 21)
+GL_TSTUB(glBindVertexArrayOES, 21)
 GL_MSTUB(glBlendColor, 22)
+GL_TSTUB(glBlendColor, 22)
 GL_MSTUB(glBlendEquation, 23)
+GL_TSTUB(glBlendEquation, 23)
 GL_MSTUB(glBlendEquationOES, 24)
+GL_TSTUB(glBlendEquationOES, 24)
 GL_MSTUB(glBlendEquationSeparate, 25)
+GL_TSTUB(glBlendEquationSeparate, 25)
 GL_MSTUB(glBlendEquationSeparateOES, 26)
+GL_TSTUB(glBlendEquationSeparateOES, 26)
 GL_MSTUB(glBlendFunc, 27)
+GL_TSTUB(glBlendFunc, 27)
 GL_MSTUB(glBlendFuncSeparate, 28)
+GL_TSTUB(glBlendFuncSeparate, 28)
 GL_MSTUB(glBlendFuncSeparateOES, 29)
+GL_TSTUB(glBlendFuncSeparateOES, 29)
 GL_MSTUB(glBufferData, 31)
+GL_TSTUB(glBufferData, 31)
 GL_MSTUB(glBufferSubData, 32)
+GL_TSTUB(glBufferSubData, 32)
 GL_MSTUB(glCheckFramebufferStatus, 33)
+GL_TSTUB(glCheckFramebufferStatus, 33)
 GL_MSTUB(glCheckFramebufferStatusOES, 34)
+GL_TSTUB(glCheckFramebufferStatusOES, 34)
 GL_MSTUB(glClear, 35)
+GL_TSTUB(glClear, 35)
 GL_MSTUB(glClearBufferfi, 36)
+GL_TSTUB(glClearBufferfi, 36)
 GL_MSTUB(glClearBufferfv, 37)
+GL_TSTUB(glClearBufferfv, 37)
 GL_MSTUB(glClearBufferiv, 38)
+GL_TSTUB(glClearBufferiv, 38)
 GL_MSTUB(glClearBufferuiv, 39)
+GL_TSTUB(glClearBufferuiv, 39)
 GL_MSTUB(glClearColor, 40)
+GL_TSTUB(glClearColor, 40)
 GL_MSTUB(glClearColorx, 41)
+GL_TSTUB(glClearColorx, 41)
 GL_MSTUB(glClearDepthf, 42)
+GL_TSTUB(glClearDepthf, 42)
 GL_MSTUB(glClearDepthx, 43)
+GL_TSTUB(glClearDepthx, 43)
 GL_MSTUB(glClearStencil, 44)
+GL_TSTUB(glClearStencil, 44)
 GL_MSTUB(glClientActiveTexture, 45)
+GL_TSTUB(glClientActiveTexture, 45)
 GL_MSTUB(glClientWaitSync, 46)
+GL_TSTUB(glClientWaitSync, 46)
 GL_MSTUB(glClientWaitSyncAPPLE, 47)
+GL_TSTUB(glClientWaitSyncAPPLE, 47)
 GL_MSTUB(glClipPlanef, 48)
+GL_TSTUB(glClipPlanef, 48)
 GL_MSTUB(glClipPlanex, 49)
+GL_TSTUB(glClipPlanex, 49)
 GL_MSTUB(glColor4f, 50)
+GL_TSTUB(glColor4f, 50)
 GL_MSTUB(glColor4ub, 51)
+GL_TSTUB(glColor4ub, 51)
 GL_MSTUB(glColor4x, 52)
+GL_TSTUB(glColor4x, 52)
 GL_MSTUB(glColorMask, 53)
+GL_TSTUB(glColorMask, 53)
 GL_MSTUB(glColorPointer, 54)
+GL_TSTUB(glColorPointer, 54)
 GL_MSTUB(glCompileShader, 55)
+GL_TSTUB(glCompileShader, 55)
 GL_MSTUB(glCompressedTexImage2D, 56)
+GL_TSTUB(glCompressedTexImage2D, 56)
 GL_MSTUB(glCopyBufferSubData, 60)
+GL_TSTUB(glCopyBufferSubData, 60)
 GL_MSTUB(glCopyTextureLevelsAPPLE, 64)
+GL_TSTUB(glCopyTextureLevelsAPPLE, 64)
 GL_MSTUB(glCreateProgram, 65)
+GL_TSTUB(glCreateProgram, 65)
 GL_MSTUB(glCreateShader, 66)
+GL_TSTUB(glCreateShader, 66)
 GL_MSTUB(glCreateShaderProgramvEXT, 67)
+GL_TSTUB(glCreateShaderProgramvEXT, 67)
 GL_MSTUB(glCullFace, 68)
+GL_TSTUB(glCullFace, 68)
 GL_MSTUB(glCurrentPaletteMatrixOES, 69)
+GL_TSTUB(glCurrentPaletteMatrixOES, 69)
 GL_MSTUB(glDeleteBuffers, 70)
+GL_TSTUB(glDeleteBuffers, 70)
 GL_MSTUB(glDeleteFencesAPPLE, 71)
+GL_TSTUB(glDeleteFencesAPPLE, 71)
 GL_MSTUB(glDeleteFramebuffers, 72)
+GL_TSTUB(glDeleteFramebuffers, 72)
 GL_MSTUB(glDeleteFramebuffersOES, 73)
+GL_TSTUB(glDeleteFramebuffersOES, 73)
 GL_MSTUB(glDeleteProgram, 74)
+GL_TSTUB(glDeleteProgram, 74)
 GL_MSTUB(glDeleteProgramPipelinesEXT, 75)
+GL_TSTUB(glDeleteProgramPipelinesEXT, 75)
 GL_MSTUB(glDeleteQueries, 76)
+GL_TSTUB(glDeleteQueries, 76)
 GL_MSTUB(glDeleteQueriesEXT, 77)
+GL_TSTUB(glDeleteQueriesEXT, 77)
 GL_MSTUB(glDeleteRenderbuffers, 78)
+GL_TSTUB(glDeleteRenderbuffers, 78)
 GL_MSTUB(glDeleteRenderbuffersOES, 79)
+GL_TSTUB(glDeleteRenderbuffersOES, 79)
 GL_MSTUB(glDeleteSamplers, 80)
+GL_TSTUB(glDeleteSamplers, 80)
 GL_MSTUB(glDeleteShader, 81)
+GL_TSTUB(glDeleteShader, 81)
 GL_MSTUB(glDeleteSync, 82)
+GL_TSTUB(glDeleteSync, 82)
 GL_MSTUB(glDeleteSyncAPPLE, 83)
+GL_TSTUB(glDeleteSyncAPPLE, 83)
 GL_MSTUB(glDeleteTextures, 84)
+GL_TSTUB(glDeleteTextures, 84)
 GL_MSTUB(glDeleteTransformFeedbacks, 85)
+GL_TSTUB(glDeleteTransformFeedbacks, 85)
 GL_MSTUB(glDeleteVertexArrays, 86)
+GL_TSTUB(glDeleteVertexArrays, 86)
 GL_MSTUB(glDeleteVertexArraysOES, 87)
+GL_TSTUB(glDeleteVertexArraysOES, 87)
 GL_MSTUB(glDepthFunc, 88)
+GL_TSTUB(glDepthFunc, 88)
 GL_MSTUB(glDepthMask, 89)
+GL_TSTUB(glDepthMask, 89)
 GL_MSTUB(glDepthRangef, 90)
+GL_TSTUB(glDepthRangef, 90)
 GL_MSTUB(glDepthRangex, 91)
+GL_TSTUB(glDepthRangex, 91)
 GL_MSTUB(glDetachShader, 92)
+GL_TSTUB(glDetachShader, 92)
 GL_MSTUB(glDisable, 93)
+GL_TSTUB(glDisable, 93)
 GL_MSTUB(glDisableClientState, 94)
+GL_TSTUB(glDisableClientState, 94)
 GL_MSTUB(glDisableVertexAttribArray, 95)
+GL_TSTUB(glDisableVertexAttribArray, 95)
 GL_MSTUB(glDiscardFramebufferEXT, 96)
+GL_TSTUB(glDiscardFramebufferEXT, 96)
 GL_MSTUB(glDrawArrays, 97)
+GL_TSTUB(glDrawArrays, 97)
 GL_MSTUB(glDrawArraysInstanced, 98)
+GL_TSTUB(glDrawArraysInstanced, 98)
 GL_MSTUB(glDrawArraysInstancedEXT, 99)
+GL_TSTUB(glDrawArraysInstancedEXT, 99)
 GL_MSTUB(glDrawBuffers, 100)
+GL_TSTUB(glDrawBuffers, 100)
 GL_MSTUB(glDrawElements, 101)
+GL_TSTUB(glDrawElements, 101)
 GL_MSTUB(glDrawElementsInstanced, 102)
+GL_TSTUB(glDrawElementsInstanced, 102)
 GL_MSTUB(glDrawElementsInstancedEXT, 103)
+GL_TSTUB(glDrawElementsInstancedEXT, 103)
 GL_MSTUB(glDrawRangeElements, 104)
+GL_TSTUB(glDrawRangeElements, 104)
 GL_MSTUB(glDrawTexfOES, 105)
+GL_TSTUB(glDrawTexfOES, 105)
 GL_MSTUB(glDrawTexfvOES, 106)
+GL_TSTUB(glDrawTexfvOES, 106)
 GL_MSTUB(glDrawTexiOES, 107)
+GL_TSTUB(glDrawTexiOES, 107)
 GL_MSTUB(glDrawTexivOES, 108)
+GL_TSTUB(glDrawTexivOES, 108)
 GL_MSTUB(glDrawTexsOES, 109)
+GL_TSTUB(glDrawTexsOES, 109)
 GL_MSTUB(glDrawTexsvOES, 110)
+GL_TSTUB(glDrawTexsvOES, 110)
 GL_MSTUB(glDrawTexxOES, 111)
+GL_TSTUB(glDrawTexxOES, 111)
 GL_MSTUB(glDrawTexxvOES, 112)
+GL_TSTUB(glDrawTexxvOES, 112)
 GL_MSTUB(glEnable, 113)
+GL_TSTUB(glEnable, 113)
 GL_MSTUB(glEnableClientState, 114)
+GL_TSTUB(glEnableClientState, 114)
 GL_MSTUB(glEnableVertexAttribArray, 115)
+GL_TSTUB(glEnableVertexAttribArray, 115)
 GL_MSTUB(glEndQuery, 116)
+GL_TSTUB(glEndQuery, 116)
 GL_MSTUB(glEndQueryEXT, 117)
+GL_TSTUB(glEndQueryEXT, 117)
 GL_MSTUB(glEndTransformFeedback, 118)
+GL_TSTUB(glEndTransformFeedback, 118)
 GL_MSTUB(glFenceSync, 119)
+GL_TSTUB(glFenceSync, 119)
 GL_MSTUB(glFenceSyncAPPLE, 120)
+GL_TSTUB(glFenceSyncAPPLE, 120)
 GL_MSTUB(glFinish, 121)
+GL_TSTUB(glFinish, 121)
 GL_MSTUB(glFinishFenceAPPLE, 122)
+GL_TSTUB(glFinishFenceAPPLE, 122)
 GL_MSTUB(glFinishObjectAPPLE, 123)
+GL_TSTUB(glFinishObjectAPPLE, 123)
 GL_MSTUB(glFlush, 124)
+GL_TSTUB(glFlush, 124)
 GL_MSTUB(glFlushMappedBufferRange, 125)
+GL_TSTUB(glFlushMappedBufferRange, 125)
 GL_MSTUB(glFlushMappedBufferRangeEXT, 126)
+GL_TSTUB(glFlushMappedBufferRangeEXT, 126)
 GL_MSTUB(glFogf, 127)
+GL_TSTUB(glFogf, 127)
 GL_MSTUB(glFogfv, 128)
+GL_TSTUB(glFogfv, 128)
 GL_MSTUB(glFogx, 129)
+GL_TSTUB(glFogx, 129)
 GL_MSTUB(glFogxv, 130)
+GL_TSTUB(glFogxv, 130)
 GL_MSTUB(glFramebufferParameteriAPPLE, 131)
+GL_TSTUB(glFramebufferParameteriAPPLE, 131)
 GL_MSTUB(glFramebufferRenderbuffer, 132)
+GL_TSTUB(glFramebufferRenderbuffer, 132)
 GL_MSTUB(glFramebufferRenderbufferOES, 133)
+GL_TSTUB(glFramebufferRenderbufferOES, 133)
 GL_MSTUB(glFramebufferTexture2D, 134)
+GL_TSTUB(glFramebufferTexture2D, 134)
 GL_MSTUB(glFramebufferTexture2DOES, 135)
+GL_TSTUB(glFramebufferTexture2DOES, 135)
 GL_MSTUB(glFramebufferTextureLayer, 136)
+GL_TSTUB(glFramebufferTextureLayer, 136)
 GL_MSTUB(glFrontFace, 137)
+GL_TSTUB(glFrontFace, 137)
 GL_MSTUB(glFrustumf, 138)
+GL_TSTUB(glFrustumf, 138)
 GL_MSTUB(glFrustumx, 139)
+GL_TSTUB(glFrustumx, 139)
 GL_MSTUB(glGenBuffers, 140)
+GL_TSTUB(glGenBuffers, 140)
 GL_MSTUB(glGenFencesAPPLE, 141)
+GL_TSTUB(glGenFencesAPPLE, 141)
 GL_MSTUB(glGenFramebuffers, 142)
+GL_TSTUB(glGenFramebuffers, 142)
 GL_MSTUB(glGenFramebuffersOES, 143)
+GL_TSTUB(glGenFramebuffersOES, 143)
 GL_MSTUB(glGenProgramPipelinesEXT, 144)
+GL_TSTUB(glGenProgramPipelinesEXT, 144)
 GL_MSTUB(glGenQueries, 145)
+GL_TSTUB(glGenQueries, 145)
 GL_MSTUB(glGenQueriesEXT, 146)
+GL_TSTUB(glGenQueriesEXT, 146)
 GL_MSTUB(glGenRenderbuffers, 147)
+GL_TSTUB(glGenRenderbuffers, 147)
 GL_MSTUB(glGenRenderbuffersOES, 148)
+GL_TSTUB(glGenRenderbuffersOES, 148)
 GL_MSTUB(glGenSamplers, 149)
+GL_TSTUB(glGenSamplers, 149)
 GL_MSTUB(glGenTextures, 150)
+GL_TSTUB(glGenTextures, 150)
 GL_MSTUB(glGenTransformFeedbacks, 151)
+GL_TSTUB(glGenTransformFeedbacks, 151)
 GL_MSTUB(glGenVertexArrays, 152)
+GL_TSTUB(glGenVertexArrays, 152)
 GL_MSTUB(glGenVertexArraysOES, 153)
+GL_TSTUB(glGenVertexArraysOES, 153)
 GL_MSTUB(glGenerateMipmap, 154)
+GL_TSTUB(glGenerateMipmap, 154)
 GL_MSTUB(glGenerateMipmapOES, 155)
+GL_TSTUB(glGenerateMipmapOES, 155)
 GL_MSTUB(glGetActiveAttrib, 156)
+GL_TSTUB(glGetActiveAttrib, 156)
 GL_MSTUB(glGetActiveUniform, 157)
+GL_TSTUB(glGetActiveUniform, 157)
 GL_MSTUB(glGetActiveUniformBlockName, 158)
+GL_TSTUB(glGetActiveUniformBlockName, 158)
 GL_MSTUB(glGetActiveUniformBlockiv, 159)
+GL_TSTUB(glGetActiveUniformBlockiv, 159)
 GL_MSTUB(glGetActiveUniformsiv, 160)
+GL_TSTUB(glGetActiveUniformsiv, 160)
 GL_MSTUB(glGetAttachedShaders, 161)
+GL_TSTUB(glGetAttachedShaders, 161)
 GL_MSTUB(glGetAttribLocation, 162)
+GL_TSTUB(glGetAttribLocation, 162)
 GL_MSTUB(glGetBooleanv, 163)
+GL_TSTUB(glGetBooleanv, 163)
 GL_MSTUB(glGetBufferParameteri64v, 164)
+GL_TSTUB(glGetBufferParameteri64v, 164)
 GL_MSTUB(glGetBufferParameteriv, 165)
+GL_TSTUB(glGetBufferParameteriv, 165)
 GL_MSTUB(glGetBufferPointerv, 166)
+GL_TSTUB(glGetBufferPointerv, 166)
 GL_MSTUB(glGetBufferPointervOES, 167)
+GL_TSTUB(glGetBufferPointervOES, 167)
 GL_MSTUB(glGetClipPlanef, 168)
+GL_TSTUB(glGetClipPlanef, 168)
 GL_MSTUB(glGetClipPlanex, 169)
+GL_TSTUB(glGetClipPlanex, 169)
 GL_MSTUB(glGetError, 170)
+GL_TSTUB(glGetError, 170)
 GL_MSTUB(glGetFixedv, 171)
+GL_TSTUB(glGetFixedv, 171)
 GL_MSTUB(glGetFloatv, 172)
+GL_TSTUB(glGetFloatv, 172)
 GL_MSTUB(glGetFragDataLocation, 173)
+GL_TSTUB(glGetFragDataLocation, 173)
 GL_MSTUB(glGetFramebufferAttachmentParameteriv, 174)
+GL_TSTUB(glGetFramebufferAttachmentParameteriv, 174)
 GL_MSTUB(glGetFramebufferAttachmentParameterivOES, 175)
+GL_TSTUB(glGetFramebufferAttachmentParameterivOES, 175)
 GL_MSTUB(glGetFramebufferParameteriAPPLE, 176)
+GL_TSTUB(glGetFramebufferParameteriAPPLE, 176)
 GL_MSTUB(glGetInteger64i_v, 177)
+GL_TSTUB(glGetInteger64i_v, 177)
 GL_MSTUB(glGetInteger64v, 178)
+GL_TSTUB(glGetInteger64v, 178)
 GL_MSTUB(glGetInteger64vAPPLE, 179)
+GL_TSTUB(glGetInteger64vAPPLE, 179)
 GL_MSTUB(glGetIntegeri_v, 180)
+GL_TSTUB(glGetIntegeri_v, 180)
 GL_MSTUB(glGetIntegerv, 181)
+GL_TSTUB(glGetIntegerv, 181)
 GL_MSTUB(glGetInternalformativ, 182)
+GL_TSTUB(glGetInternalformativ, 182)
 GL_MSTUB(glGetLightfv, 183)
+GL_TSTUB(glGetLightfv, 183)
 GL_MSTUB(glGetLightxv, 184)
+GL_TSTUB(glGetLightxv, 184)
 GL_MSTUB(glGetMaterialfv, 185)
+GL_TSTUB(glGetMaterialfv, 185)
 GL_MSTUB(glGetMaterialxv, 186)
+GL_TSTUB(glGetMaterialxv, 186)
 GL_MSTUB(glGetObjectLabelEXT, 187)
+GL_TSTUB(glGetObjectLabelEXT, 187)
 GL_MSTUB(glGetPointerv, 188)
+GL_TSTUB(glGetPointerv, 188)
 GL_MSTUB(glGetProgramBinary, 189)
+GL_TSTUB(glGetProgramBinary, 189)
 GL_MSTUB(glGetProgramInfoLog, 190)
+GL_TSTUB(glGetProgramInfoLog, 190)
 GL_MSTUB(glGetProgramPipelineInfoLogEXT, 191)
+GL_TSTUB(glGetProgramPipelineInfoLogEXT, 191)
 GL_MSTUB(glGetProgramPipelineivEXT, 192)
+GL_TSTUB(glGetProgramPipelineivEXT, 192)
 GL_MSTUB(glGetProgramiv, 193)
+GL_TSTUB(glGetProgramiv, 193)
 GL_MSTUB(glGetQueryObjectivEXT, 194)
+GL_TSTUB(glGetQueryObjectivEXT, 194)
 GL_MSTUB(glGetQueryObjectuiv, 195)
+GL_TSTUB(glGetQueryObjectuiv, 195)
 GL_MSTUB(glGetQueryObjectuivEXT, 196)
+GL_TSTUB(glGetQueryObjectuivEXT, 196)
 GL_MSTUB(glGetQueryiv, 197)
+GL_TSTUB(glGetQueryiv, 197)
 GL_MSTUB(glGetQueryivEXT, 198)
+GL_TSTUB(glGetQueryivEXT, 198)
 GL_MSTUB(glGetRenderbufferParameteriv, 199)
+GL_TSTUB(glGetRenderbufferParameteriv, 199)
 GL_MSTUB(glGetRenderbufferParameterivOES, 200)
+GL_TSTUB(glGetRenderbufferParameterivOES, 200)
 GL_MSTUB(glGetSamplerParameterfv, 201)
+GL_TSTUB(glGetSamplerParameterfv, 201)
 GL_MSTUB(glGetSamplerParameteriv, 202)
+GL_TSTUB(glGetSamplerParameteriv, 202)
 GL_MSTUB(glGetShaderInfoLog, 203)
+GL_TSTUB(glGetShaderInfoLog, 203)
 GL_MSTUB(glGetShaderPrecisionFormat, 204)
+GL_TSTUB(glGetShaderPrecisionFormat, 204)
 GL_MSTUB(glGetShaderSource, 205)
+GL_TSTUB(glGetShaderSource, 205)
 GL_MSTUB(glGetShaderiv, 206)
+GL_TSTUB(glGetShaderiv, 206)
 GL_MSTUB(glGetString, 207)
+GL_TSTUB(glGetString, 207)
 GL_MSTUB(glGetStringi, 208)
+GL_TSTUB(glGetStringi, 208)
 GL_MSTUB(glGetSynciv, 209)
+GL_TSTUB(glGetSynciv, 209)
 GL_MSTUB(glGetSyncivAPPLE, 210)
+GL_TSTUB(glGetSyncivAPPLE, 210)
 GL_MSTUB(glGetTexEnvfv, 211)
+GL_TSTUB(glGetTexEnvfv, 211)
 GL_MSTUB(glGetTexEnviv, 212)
+GL_TSTUB(glGetTexEnviv, 212)
 GL_MSTUB(glGetTexEnvxv, 213)
+GL_TSTUB(glGetTexEnvxv, 213)
 GL_MSTUB(glGetTexImage, 214)
+GL_TSTUB(glGetTexImage, 214)
 GL_MSTUB(glGetTexLevelParameterfv, 215)
+GL_TSTUB(glGetTexLevelParameterfv, 215)
 GL_MSTUB(glGetTexLevelParameteriv, 216)
+GL_TSTUB(glGetTexLevelParameteriv, 216)
 GL_MSTUB(glGetTexParameterfv, 217)
+GL_TSTUB(glGetTexParameterfv, 217)
 GL_MSTUB(glGetTexParameteriv, 218)
+GL_TSTUB(glGetTexParameteriv, 218)
 GL_MSTUB(glGetTexParameterxv, 219)
+GL_TSTUB(glGetTexParameterxv, 219)
 GL_MSTUB(glGetTransformFeedbackVarying, 220)
+GL_TSTUB(glGetTransformFeedbackVarying, 220)
 GL_MSTUB(glGetUniformBlockIndex, 221)
+GL_TSTUB(glGetUniformBlockIndex, 221)
 GL_MSTUB(glGetUniformIndices, 222)
+GL_TSTUB(glGetUniformIndices, 222)
 GL_MSTUB(glGetUniformLocation, 223)
+GL_TSTUB(glGetUniformLocation, 223)
 GL_MSTUB(glGetUniformfv, 224)
+GL_TSTUB(glGetUniformfv, 224)
 GL_MSTUB(glGetUniformiv, 225)
+GL_TSTUB(glGetUniformiv, 225)
 GL_MSTUB(glGetUniformuiv, 226)
+GL_TSTUB(glGetUniformuiv, 226)
 GL_MSTUB(glGetVertexAttribIiv, 227)
+GL_TSTUB(glGetVertexAttribIiv, 227)
 GL_MSTUB(glGetVertexAttribIuiv, 228)
+GL_TSTUB(glGetVertexAttribIuiv, 228)
 GL_MSTUB(glGetVertexAttribPointerv, 229)
+GL_TSTUB(glGetVertexAttribPointerv, 229)
 GL_MSTUB(glGetVertexAttribfv, 230)
+GL_TSTUB(glGetVertexAttribfv, 230)
 GL_MSTUB(glGetVertexAttribiv, 231)
+GL_TSTUB(glGetVertexAttribiv, 231)
 GL_MSTUB(glHint, 232)
+GL_TSTUB(glHint, 232)
 GL_MSTUB(glInsertEventMarkerEXT, 233)
+GL_TSTUB(glInsertEventMarkerEXT, 233)
 GL_MSTUB(glInvalidateFramebuffer, 234)
+GL_TSTUB(glInvalidateFramebuffer, 234)
 GL_MSTUB(glInvalidateSubFramebuffer, 235)
+GL_TSTUB(glInvalidateSubFramebuffer, 235)
 GL_MSTUB(glIsBuffer, 236)
+GL_TSTUB(glIsBuffer, 236)
 GL_MSTUB(glIsEnabled, 237)
+GL_TSTUB(glIsEnabled, 237)
 GL_MSTUB(glIsFenceAPPLE, 238)
+GL_TSTUB(glIsFenceAPPLE, 238)
 GL_MSTUB(glIsFramebuffer, 239)
+GL_TSTUB(glIsFramebuffer, 239)
 GL_MSTUB(glIsFramebufferOES, 240)
+GL_TSTUB(glIsFramebufferOES, 240)
 GL_MSTUB(glIsProgram, 241)
+GL_TSTUB(glIsProgram, 241)
 GL_MSTUB(glIsProgramPipelineEXT, 242)
+GL_TSTUB(glIsProgramPipelineEXT, 242)
 GL_MSTUB(glIsQuery, 243)
+GL_TSTUB(glIsQuery, 243)
 GL_MSTUB(glIsQueryEXT, 244)
+GL_TSTUB(glIsQueryEXT, 244)
 GL_MSTUB(glIsRenderbuffer, 245)
+GL_TSTUB(glIsRenderbuffer, 245)
 GL_MSTUB(glIsRenderbufferOES, 246)
+GL_TSTUB(glIsRenderbufferOES, 246)
 GL_MSTUB(glIsSampler, 247)
+GL_TSTUB(glIsSampler, 247)
 GL_MSTUB(glIsShader, 248)
+GL_TSTUB(glIsShader, 248)
 GL_MSTUB(glIsSync, 249)
+GL_TSTUB(glIsSync, 249)
 GL_MSTUB(glIsSyncAPPLE, 250)
+GL_TSTUB(glIsSyncAPPLE, 250)
 GL_MSTUB(glIsTexture, 251)
+GL_TSTUB(glIsTexture, 251)
 GL_MSTUB(glIsTransformFeedback, 252)
+GL_TSTUB(glIsTransformFeedback, 252)
 GL_MSTUB(glIsVertexArray, 253)
+GL_TSTUB(glIsVertexArray, 253)
 GL_MSTUB(glIsVertexArrayOES, 254)
+GL_TSTUB(glIsVertexArrayOES, 254)
 GL_MSTUB(glLabelObjectEXT, 255)
+GL_TSTUB(glLabelObjectEXT, 255)
 GL_MSTUB(glLightModelf, 256)
+GL_TSTUB(glLightModelf, 256)
 GL_MSTUB(glLightModelfv, 257)
+GL_TSTUB(glLightModelfv, 257)
 GL_MSTUB(glLightModelx, 258)
+GL_TSTUB(glLightModelx, 258)
 GL_MSTUB(glLightModelxv, 259)
+GL_TSTUB(glLightModelxv, 259)
 GL_MSTUB(glLightf, 260)
+GL_TSTUB(glLightf, 260)
 GL_MSTUB(glLightfv, 261)
+GL_TSTUB(glLightfv, 261)
 GL_MSTUB(glLightx, 262)
+GL_TSTUB(glLightx, 262)
 GL_MSTUB(glLightxv, 263)
+GL_TSTUB(glLightxv, 263)
 GL_MSTUB(glLineWidth, 264)
+GL_TSTUB(glLineWidth, 264)
 GL_MSTUB(glLineWidthx, 265)
+GL_TSTUB(glLineWidthx, 265)
 GL_MSTUB(glLinkProgram, 266)
+GL_TSTUB(glLinkProgram, 266)
 GL_MSTUB(glLoadIdentity, 267)
+GL_TSTUB(glLoadIdentity, 267)
 GL_MSTUB(glLoadMatrixf, 268)
+GL_TSTUB(glLoadMatrixf, 268)
 GL_MSTUB(glLoadMatrixx, 269)
+GL_TSTUB(glLoadMatrixx, 269)
 GL_MSTUB(glLoadPaletteFromModelViewMatrixOES, 270)
+GL_TSTUB(glLoadPaletteFromModelViewMatrixOES, 270)
 GL_MSTUB(glLogicOp, 271)
+GL_TSTUB(glLogicOp, 271)
 GL_MSTUB(glMapBufferOES, 272)
+GL_TSTUB(glMapBufferOES, 272)
 GL_MSTUB(glMapBufferRange, 273)
+GL_TSTUB(glMapBufferRange, 273)
 GL_MSTUB(glMapBufferRangeEXT, 274)
+GL_TSTUB(glMapBufferRangeEXT, 274)
 GL_MSTUB(glMaterialf, 275)
+GL_TSTUB(glMaterialf, 275)
 GL_MSTUB(glMaterialfv, 276)
+GL_TSTUB(glMaterialfv, 276)
 GL_MSTUB(glMaterialx, 277)
+GL_TSTUB(glMaterialx, 277)
 GL_MSTUB(glMaterialxv, 278)
+GL_TSTUB(glMaterialxv, 278)
 GL_MSTUB(glMatrixIndexPointerOES, 279)
+GL_TSTUB(glMatrixIndexPointerOES, 279)
 GL_MSTUB(glMatrixMode, 280)
+GL_TSTUB(glMatrixMode, 280)
 GL_MSTUB(glMultMatrixf, 281)
+GL_TSTUB(glMultMatrixf, 281)
 GL_MSTUB(glMultMatrixx, 282)
+GL_TSTUB(glMultMatrixx, 282)
 GL_MSTUB(glMultiTexCoord4f, 283)
+GL_TSTUB(glMultiTexCoord4f, 283)
 GL_MSTUB(glMultiTexCoord4x, 284)
+GL_TSTUB(glMultiTexCoord4x, 284)
 GL_MSTUB(glNormal3f, 285)
+GL_TSTUB(glNormal3f, 285)
 GL_MSTUB(glNormal3x, 286)
+GL_TSTUB(glNormal3x, 286)
 GL_MSTUB(glNormalPointer, 287)
+GL_TSTUB(glNormalPointer, 287)
 GL_MSTUB(glOrthof, 288)
+GL_TSTUB(glOrthof, 288)
 GL_MSTUB(glOrthox, 289)
+GL_TSTUB(glOrthox, 289)
 GL_MSTUB(glPauseTransformFeedback, 290)
+GL_TSTUB(glPauseTransformFeedback, 290)
 GL_MSTUB(glPixelStorei, 291)
+GL_TSTUB(glPixelStorei, 291)
 GL_MSTUB(glPointParameterf, 292)
+GL_TSTUB(glPointParameterf, 292)
 GL_MSTUB(glPointParameterfv, 293)
+GL_TSTUB(glPointParameterfv, 293)
 GL_MSTUB(glPointParameterx, 294)
+GL_TSTUB(glPointParameterx, 294)
 GL_MSTUB(glPointParameterxv, 295)
+GL_TSTUB(glPointParameterxv, 295)
 GL_MSTUB(glPointSize, 296)
+GL_TSTUB(glPointSize, 296)
 GL_MSTUB(glPointSizePointerOES, 297)
+GL_TSTUB(glPointSizePointerOES, 297)
 GL_MSTUB(glPointSizex, 298)
+GL_TSTUB(glPointSizex, 298)
 GL_MSTUB(glPolygonOffset, 299)
+GL_TSTUB(glPolygonOffset, 299)
 GL_MSTUB(glPolygonOffsetx, 300)
+GL_TSTUB(glPolygonOffsetx, 300)
 GL_MSTUB(glPopGroupMarkerEXT, 301)
+GL_TSTUB(glPopGroupMarkerEXT, 301)
 GL_MSTUB(glPopMatrix, 302)
+GL_TSTUB(glPopMatrix, 302)
 GL_MSTUB(glProgramBinary, 303)
+GL_TSTUB(glProgramBinary, 303)
 GL_MSTUB(glProgramParameteri, 304)
+GL_TSTUB(glProgramParameteri, 304)
 GL_MSTUB(glProgramParameteriEXT, 305)
+GL_TSTUB(glProgramParameteriEXT, 305)
 GL_MSTUB(glProgramUniform1fEXT, 306)
+GL_TSTUB(glProgramUniform1fEXT, 306)
 GL_MSTUB(glProgramUniform1fvEXT, 307)
+GL_TSTUB(glProgramUniform1fvEXT, 307)
 GL_MSTUB(glProgramUniform1iEXT, 308)
+GL_TSTUB(glProgramUniform1iEXT, 308)
 GL_MSTUB(glProgramUniform1ivEXT, 309)
+GL_TSTUB(glProgramUniform1ivEXT, 309)
 GL_MSTUB(glProgramUniform1uiEXT, 310)
+GL_TSTUB(glProgramUniform1uiEXT, 310)
 GL_MSTUB(glProgramUniform1uivEXT, 311)
+GL_TSTUB(glProgramUniform1uivEXT, 311)
 GL_MSTUB(glProgramUniform2fEXT, 312)
+GL_TSTUB(glProgramUniform2fEXT, 312)
 GL_MSTUB(glProgramUniform2fvEXT, 313)
+GL_TSTUB(glProgramUniform2fvEXT, 313)
 GL_MSTUB(glProgramUniform2iEXT, 314)
+GL_TSTUB(glProgramUniform2iEXT, 314)
 GL_MSTUB(glProgramUniform2ivEXT, 315)
+GL_TSTUB(glProgramUniform2ivEXT, 315)
 GL_MSTUB(glProgramUniform2uiEXT, 316)
+GL_TSTUB(glProgramUniform2uiEXT, 316)
 GL_MSTUB(glProgramUniform2uivEXT, 317)
+GL_TSTUB(glProgramUniform2uivEXT, 317)
 GL_MSTUB(glProgramUniform3fEXT, 318)
+GL_TSTUB(glProgramUniform3fEXT, 318)
 GL_MSTUB(glProgramUniform3fvEXT, 319)
+GL_TSTUB(glProgramUniform3fvEXT, 319)
 GL_MSTUB(glProgramUniform3iEXT, 320)
+GL_TSTUB(glProgramUniform3iEXT, 320)
 GL_MSTUB(glProgramUniform3ivEXT, 321)
+GL_TSTUB(glProgramUniform3ivEXT, 321)
 GL_MSTUB(glProgramUniform3uiEXT, 322)
+GL_TSTUB(glProgramUniform3uiEXT, 322)
 GL_MSTUB(glProgramUniform3uivEXT, 323)
+GL_TSTUB(glProgramUniform3uivEXT, 323)
 GL_MSTUB(glProgramUniform4fEXT, 324)
+GL_TSTUB(glProgramUniform4fEXT, 324)
 GL_MSTUB(glProgramUniform4fvEXT, 325)
+GL_TSTUB(glProgramUniform4fvEXT, 325)
 GL_MSTUB(glProgramUniform4iEXT, 326)
+GL_TSTUB(glProgramUniform4iEXT, 326)
 GL_MSTUB(glProgramUniform4ivEXT, 327)
+GL_TSTUB(glProgramUniform4ivEXT, 327)
 GL_MSTUB(glProgramUniform4uiEXT, 328)
+GL_TSTUB(glProgramUniform4uiEXT, 328)
 GL_MSTUB(glProgramUniform4uivEXT, 329)
+GL_TSTUB(glProgramUniform4uivEXT, 329)
 GL_MSTUB(glProgramUniformMatrix2fvEXT, 330)
+GL_TSTUB(glProgramUniformMatrix2fvEXT, 330)
 GL_MSTUB(glProgramUniformMatrix2x3fvEXT, 331)
+GL_TSTUB(glProgramUniformMatrix2x3fvEXT, 331)
 GL_MSTUB(glProgramUniformMatrix2x4fvEXT, 332)
+GL_TSTUB(glProgramUniformMatrix2x4fvEXT, 332)
 GL_MSTUB(glProgramUniformMatrix3fvEXT, 333)
+GL_TSTUB(glProgramUniformMatrix3fvEXT, 333)
 GL_MSTUB(glProgramUniformMatrix3x2fvEXT, 334)
+GL_TSTUB(glProgramUniformMatrix3x2fvEXT, 334)
 GL_MSTUB(glProgramUniformMatrix3x4fvEXT, 335)
+GL_TSTUB(glProgramUniformMatrix3x4fvEXT, 335)
 GL_MSTUB(glProgramUniformMatrix4fvEXT, 336)
+GL_TSTUB(glProgramUniformMatrix4fvEXT, 336)
 GL_MSTUB(glProgramUniformMatrix4x2fvEXT, 337)
+GL_TSTUB(glProgramUniformMatrix4x2fvEXT, 337)
 GL_MSTUB(glProgramUniformMatrix4x3fvEXT, 338)
+GL_TSTUB(glProgramUniformMatrix4x3fvEXT, 338)
 GL_MSTUB(glPushGroupMarkerEXT, 339)
+GL_TSTUB(glPushGroupMarkerEXT, 339)
 GL_MSTUB(glPushMatrix, 340)
+GL_TSTUB(glPushMatrix, 340)
 GL_MSTUB(glReadBuffer, 341)
+GL_TSTUB(glReadBuffer, 341)
 GL_MSTUB(glReadPixels, 342)
+GL_TSTUB(glReadPixels, 342)
 GL_MSTUB(glReleaseShaderCompiler, 343)
+GL_TSTUB(glReleaseShaderCompiler, 343)
 GL_MSTUB(glRenderbufferStorage, 344)
+GL_TSTUB(glRenderbufferStorage, 344)
 GL_MSTUB(glRenderbufferStorageMultisample, 345)
+GL_TSTUB(glRenderbufferStorageMultisample, 345)
 GL_MSTUB(glRenderbufferStorageMultisampleAPPLE, 346)
+GL_TSTUB(glRenderbufferStorageMultisampleAPPLE, 346)
 GL_MSTUB(glRenderbufferStorageOES, 347)
+GL_TSTUB(glRenderbufferStorageOES, 347)
 GL_MSTUB(glResolveMultisampleFramebufferAPPLE, 348)
+GL_TSTUB(glResolveMultisampleFramebufferAPPLE, 348)
 GL_MSTUB(glResumeTransformFeedback, 349)
+GL_TSTUB(glResumeTransformFeedback, 349)
 GL_MSTUB(glRotatef, 350)
+GL_TSTUB(glRotatef, 350)
 GL_MSTUB(glRotatex, 351)
+GL_TSTUB(glRotatex, 351)
 GL_MSTUB(glSampleCoverage, 352)
+GL_TSTUB(glSampleCoverage, 352)
 GL_MSTUB(glSampleCoveragex, 353)
+GL_TSTUB(glSampleCoveragex, 353)
 GL_MSTUB(glSamplerParameterf, 354)
+GL_TSTUB(glSamplerParameterf, 354)
 GL_MSTUB(glSamplerParameterfv, 355)
+GL_TSTUB(glSamplerParameterfv, 355)
 GL_MSTUB(glSamplerParameteri, 356)
+GL_TSTUB(glSamplerParameteri, 356)
 GL_MSTUB(glSamplerParameteriv, 357)
+GL_TSTUB(glSamplerParameteriv, 357)
 GL_MSTUB(glScalef, 358)
+GL_TSTUB(glScalef, 358)
 GL_MSTUB(glScalex, 359)
+GL_TSTUB(glScalex, 359)
 GL_MSTUB(glScissor, 360)
+GL_TSTUB(glScissor, 360)
 GL_MSTUB(glSetFenceAPPLE, 361)
+GL_TSTUB(glSetFenceAPPLE, 361)
 GL_MSTUB(glShadeModel, 362)
+GL_TSTUB(glShadeModel, 362)
 GL_MSTUB(glShaderBinary, 363)
+GL_TSTUB(glShaderBinary, 363)
 GL_MSTUB(glShaderSource, 364)
+GL_TSTUB(glShaderSource, 364)
 GL_MSTUB(glStencilFunc, 365)
+GL_TSTUB(glStencilFunc, 365)
 GL_MSTUB(glStencilFuncSeparate, 366)
+GL_TSTUB(glStencilFuncSeparate, 366)
 GL_MSTUB(glStencilMask, 367)
+GL_TSTUB(glStencilMask, 367)
 GL_MSTUB(glStencilMaskSeparate, 368)
+GL_TSTUB(glStencilMaskSeparate, 368)
 GL_MSTUB(glStencilOp, 369)
+GL_TSTUB(glStencilOp, 369)
 GL_MSTUB(glStencilOpSeparate, 370)
+GL_TSTUB(glStencilOpSeparate, 370)
 GL_MSTUB(glTestFenceAPPLE, 371)
+GL_TSTUB(glTestFenceAPPLE, 371)
 GL_MSTUB(glTestObjectAPPLE, 372)
+GL_TSTUB(glTestObjectAPPLE, 372)
 GL_MSTUB(glTexCoordPointer, 373)
+GL_TSTUB(glTexCoordPointer, 373)
 GL_MSTUB(glTexEnvf, 374)
+GL_TSTUB(glTexEnvf, 374)
 GL_MSTUB(glTexEnvfv, 375)
+GL_TSTUB(glTexEnvfv, 375)
 GL_MSTUB(glTexEnvi, 376)
+GL_TSTUB(glTexEnvi, 376)
 GL_MSTUB(glTexEnviv, 377)
+GL_TSTUB(glTexEnviv, 377)
 GL_MSTUB(glTexEnvx, 378)
+GL_TSTUB(glTexEnvx, 378)
 GL_MSTUB(glTexEnvxv, 379)
+GL_TSTUB(glTexEnvxv, 379)
 GL_MSTUB(glTexParameterf, 382)
+GL_TSTUB(glTexParameterf, 382)
 GL_MSTUB(glTexParameterfv, 383)
+GL_TSTUB(glTexParameterfv, 383)
 GL_MSTUB(glTexParameteri, 384)
+GL_TSTUB(glTexParameteri, 384)
 GL_MSTUB(glTexParameteriv, 385)
+GL_TSTUB(glTexParameteriv, 385)
 GL_MSTUB(glTexParameterx, 386)
+GL_TSTUB(glTexParameterx, 386)
 GL_MSTUB(glTexParameterxv, 387)
+GL_TSTUB(glTexParameterxv, 387)
 GL_MSTUB(glTexStorage2D, 388)
+GL_TSTUB(glTexStorage2D, 388)
 GL_MSTUB(glTexStorage2DEXT, 389)
+GL_TSTUB(glTexStorage2DEXT, 389)
 GL_MSTUB(glTexStorage3D, 390)
+GL_TSTUB(glTexStorage3D, 390)
 GL_MSTUB(glTransformFeedbackVaryings, 393)
+GL_TSTUB(glTransformFeedbackVaryings, 393)
 GL_MSTUB(glTranslatef, 394)
+GL_TSTUB(glTranslatef, 394)
 GL_MSTUB(glTranslatex, 395)
+GL_TSTUB(glTranslatex, 395)
 GL_MSTUB(glUniform1f, 396)
+GL_TSTUB(glUniform1f, 396)
 GL_MSTUB(glUniform1fv, 397)
+GL_TSTUB(glUniform1fv, 397)
 GL_MSTUB(glUniform1i, 398)
+GL_TSTUB(glUniform1i, 398)
 GL_MSTUB(glUniform1iv, 399)
+GL_TSTUB(glUniform1iv, 399)
 GL_MSTUB(glUniform1ui, 400)
+GL_TSTUB(glUniform1ui, 400)
 GL_MSTUB(glUniform1uiv, 401)
+GL_TSTUB(glUniform1uiv, 401)
 GL_MSTUB(glUniform2f, 402)
+GL_TSTUB(glUniform2f, 402)
 GL_MSTUB(glUniform2fv, 403)
+GL_TSTUB(glUniform2fv, 403)
 GL_MSTUB(glUniform2i, 404)
+GL_TSTUB(glUniform2i, 404)
 GL_MSTUB(glUniform2iv, 405)
+GL_TSTUB(glUniform2iv, 405)
 GL_MSTUB(glUniform2ui, 406)
+GL_TSTUB(glUniform2ui, 406)
 GL_MSTUB(glUniform2uiv, 407)
+GL_TSTUB(glUniform2uiv, 407)
 GL_MSTUB(glUniform3f, 408)
+GL_TSTUB(glUniform3f, 408)
 GL_MSTUB(glUniform3fv, 409)
+GL_TSTUB(glUniform3fv, 409)
 GL_MSTUB(glUniform3i, 410)
+GL_TSTUB(glUniform3i, 410)
 GL_MSTUB(glUniform3iv, 411)
+GL_TSTUB(glUniform3iv, 411)
 GL_MSTUB(glUniform3ui, 412)
+GL_TSTUB(glUniform3ui, 412)
 GL_MSTUB(glUniform3uiv, 413)
+GL_TSTUB(glUniform3uiv, 413)
 GL_MSTUB(glUniform4f, 414)
+GL_TSTUB(glUniform4f, 414)
 GL_MSTUB(glUniform4fv, 415)
+GL_TSTUB(glUniform4fv, 415)
 GL_MSTUB(glUniform4i, 416)
+GL_TSTUB(glUniform4i, 416)
 GL_MSTUB(glUniform4iv, 417)
+GL_TSTUB(glUniform4iv, 417)
 GL_MSTUB(glUniform4ui, 418)
+GL_TSTUB(glUniform4ui, 418)
 GL_MSTUB(glUniform4uiv, 419)
+GL_TSTUB(glUniform4uiv, 419)
 GL_MSTUB(glUniformBlockBinding, 420)
+GL_TSTUB(glUniformBlockBinding, 420)
 GL_MSTUB(glUniformMatrix2fv, 421)
+GL_TSTUB(glUniformMatrix2fv, 421)
 GL_MSTUB(glUniformMatrix2x3fv, 422)
+GL_TSTUB(glUniformMatrix2x3fv, 422)
 GL_MSTUB(glUniformMatrix2x4fv, 423)
+GL_TSTUB(glUniformMatrix2x4fv, 423)
 GL_MSTUB(glUniformMatrix3fv, 424)
+GL_TSTUB(glUniformMatrix3fv, 424)
 GL_MSTUB(glUniformMatrix3x2fv, 425)
+GL_TSTUB(glUniformMatrix3x2fv, 425)
 GL_MSTUB(glUniformMatrix3x4fv, 426)
+GL_TSTUB(glUniformMatrix3x4fv, 426)
 GL_MSTUB(glUniformMatrix4fv, 427)
+GL_TSTUB(glUniformMatrix4fv, 427)
 GL_MSTUB(glUniformMatrix4x2fv, 428)
+GL_TSTUB(glUniformMatrix4x2fv, 428)
 GL_MSTUB(glUniformMatrix4x3fv, 429)
+GL_TSTUB(glUniformMatrix4x3fv, 429)
 GL_MSTUB(glUnmapBuffer, 430)
+GL_TSTUB(glUnmapBuffer, 430)
 GL_MSTUB(glUnmapBufferOES, 431)
+GL_TSTUB(glUnmapBufferOES, 431)
 GL_MSTUB(glUseProgram, 432)
+GL_TSTUB(glUseProgram, 432)
 GL_MSTUB(glUseProgramStagesEXT, 433)
+GL_TSTUB(glUseProgramStagesEXT, 433)
 GL_MSTUB(glValidateProgram, 434)
+GL_TSTUB(glValidateProgram, 434)
 GL_MSTUB(glValidateProgramPipelineEXT, 435)
+GL_TSTUB(glValidateProgramPipelineEXT, 435)
 GL_MSTUB(glVertexAttrib1f, 436)
+GL_TSTUB(glVertexAttrib1f, 436)
 GL_MSTUB(glVertexAttrib1fv, 437)
+GL_TSTUB(glVertexAttrib1fv, 437)
 GL_MSTUB(glVertexAttrib2f, 438)
+GL_TSTUB(glVertexAttrib2f, 438)
 GL_MSTUB(glVertexAttrib2fv, 439)
+GL_TSTUB(glVertexAttrib2fv, 439)
 GL_MSTUB(glVertexAttrib3f, 440)
+GL_TSTUB(glVertexAttrib3f, 440)
 GL_MSTUB(glVertexAttrib3fv, 441)
+GL_TSTUB(glVertexAttrib3fv, 441)
 GL_MSTUB(glVertexAttrib4f, 442)
+GL_TSTUB(glVertexAttrib4f, 442)
 GL_MSTUB(glVertexAttrib4fv, 443)
+GL_TSTUB(glVertexAttrib4fv, 443)
 GL_MSTUB(glVertexAttribDivisor, 444)
+GL_TSTUB(glVertexAttribDivisor, 444)
 GL_MSTUB(glVertexAttribDivisorEXT, 445)
+GL_TSTUB(glVertexAttribDivisorEXT, 445)
 GL_MSTUB(glVertexAttribI4i, 446)
+GL_TSTUB(glVertexAttribI4i, 446)
 GL_MSTUB(glVertexAttribI4iv, 447)
+GL_TSTUB(glVertexAttribI4iv, 447)
 GL_MSTUB(glVertexAttribI4ui, 448)
+GL_TSTUB(glVertexAttribI4ui, 448)
 GL_MSTUB(glVertexAttribI4uiv, 449)
+GL_TSTUB(glVertexAttribI4uiv, 449)
 GL_MSTUB(glVertexAttribIPointer, 450)
+GL_TSTUB(glVertexAttribIPointer, 450)
 GL_MSTUB(glVertexAttribPointer, 451)
+GL_TSTUB(glVertexAttribPointer, 451)
 GL_MSTUB(glVertexPointer, 452)
+GL_TSTUB(glVertexPointer, 452)
 GL_MSTUB(glViewport, 453)
+GL_TSTUB(glViewport, 453)
 GL_MSTUB(glWaitSync, 454)
+GL_TSTUB(glWaitSync, 454)
 GL_MSTUB(glWaitSyncAPPLE, 455)
+GL_TSTUB(glWaitSyncAPPLE, 455)
 GL_MSTUB(glWeightPointerOES, 456)
+GL_TSTUB(glWeightPointerOES, 456)
 extern void mw_CopyTexImage2D(void);
 extern void mw_CopyTexSubImage2D(void);
 extern void mw_CompressedTexSubImage2D(void);
@@ -1864,4 +2323,463 @@ void *const ms_thunks[GL_NFUNCS + 1] = {
     (void *)ms_glWaitSync,
     (void *)ms_glWaitSyncAPPLE,
     (void *)ms_glWeightPointerOES,
+    0 };
+void *const mt_thunks[GL_NFUNCS + 1] = {
+    (void *)mt_glActiveShaderProgramEXT,
+    (void *)mt_glActiveTexture,
+    (void *)mt_glAlphaFunc,
+    (void *)mt_glAlphaFuncx,
+    (void *)mt_glAttachShader,
+    (void *)mt_glBeginQuery,
+    (void *)mt_glBeginQueryEXT,
+    (void *)mt_glBeginTransformFeedback,
+    (void *)mt_glBindAttribLocation,
+    (void *)mt_glBindBuffer,
+    (void *)mt_glBindBufferBase,
+    (void *)mt_glBindBufferRange,
+    (void *)mt_glBindFramebuffer,
+    (void *)mt_glBindFramebufferOES,
+    (void *)mt_glBindProgramPipelineEXT,
+    (void *)mt_glBindRenderbuffer,
+    (void *)mt_glBindRenderbufferOES,
+    (void *)mt_glBindSampler,
+    (void *)mt_glBindTexture,
+    (void *)mt_glBindTransformFeedback,
+    (void *)mt_glBindVertexArray,
+    (void *)mt_glBindVertexArrayOES,
+    (void *)mt_glBlendColor,
+    (void *)mt_glBlendEquation,
+    (void *)mt_glBlendEquationOES,
+    (void *)mt_glBlendEquationSeparate,
+    (void *)mt_glBlendEquationSeparateOES,
+    (void *)mt_glBlendFunc,
+    (void *)mt_glBlendFuncSeparate,
+    (void *)mt_glBlendFuncSeparateOES,
+    (void *)mw_BlitFramebuffer,
+    (void *)mt_glBufferData,
+    (void *)mt_glBufferSubData,
+    (void *)mt_glCheckFramebufferStatus,
+    (void *)mt_glCheckFramebufferStatusOES,
+    (void *)mt_glClear,
+    (void *)mt_glClearBufferfi,
+    (void *)mt_glClearBufferfv,
+    (void *)mt_glClearBufferiv,
+    (void *)mt_glClearBufferuiv,
+    (void *)mt_glClearColor,
+    (void *)mt_glClearColorx,
+    (void *)mt_glClearDepthf,
+    (void *)mt_glClearDepthx,
+    (void *)mt_glClearStencil,
+    (void *)mt_glClientActiveTexture,
+    (void *)mt_glClientWaitSync,
+    (void *)mt_glClientWaitSyncAPPLE,
+    (void *)mt_glClipPlanef,
+    (void *)mt_glClipPlanex,
+    (void *)mt_glColor4f,
+    (void *)mt_glColor4ub,
+    (void *)mt_glColor4x,
+    (void *)mt_glColorMask,
+    (void *)mt_glColorPointer,
+    (void *)mt_glCompileShader,
+    (void *)mt_glCompressedTexImage2D,
+    (void *)mw_CompressedTexImage3D,
+    (void *)mw_CompressedTexSubImage2D,
+    (void *)mw_CompressedTexSubImage3D,
+    (void *)mt_glCopyBufferSubData,
+    (void *)mw_CopyTexImage2D,
+    (void *)mw_CopyTexSubImage2D,
+    (void *)mw_CopyTexSubImage3D,
+    (void *)mt_glCopyTextureLevelsAPPLE,
+    (void *)mt_glCreateProgram,
+    (void *)mt_glCreateShader,
+    (void *)mt_glCreateShaderProgramvEXT,
+    (void *)mt_glCullFace,
+    (void *)mt_glCurrentPaletteMatrixOES,
+    (void *)mt_glDeleteBuffers,
+    (void *)mt_glDeleteFencesAPPLE,
+    (void *)mt_glDeleteFramebuffers,
+    (void *)mt_glDeleteFramebuffersOES,
+    (void *)mt_glDeleteProgram,
+    (void *)mt_glDeleteProgramPipelinesEXT,
+    (void *)mt_glDeleteQueries,
+    (void *)mt_glDeleteQueriesEXT,
+    (void *)mt_glDeleteRenderbuffers,
+    (void *)mt_glDeleteRenderbuffersOES,
+    (void *)mt_glDeleteSamplers,
+    (void *)mt_glDeleteShader,
+    (void *)mt_glDeleteSync,
+    (void *)mt_glDeleteSyncAPPLE,
+    (void *)mt_glDeleteTextures,
+    (void *)mt_glDeleteTransformFeedbacks,
+    (void *)mt_glDeleteVertexArrays,
+    (void *)mt_glDeleteVertexArraysOES,
+    (void *)mt_glDepthFunc,
+    (void *)mt_glDepthMask,
+    (void *)mt_glDepthRangef,
+    (void *)mt_glDepthRangex,
+    (void *)mt_glDetachShader,
+    (void *)mt_glDisable,
+    (void *)mt_glDisableClientState,
+    (void *)mt_glDisableVertexAttribArray,
+    (void *)mt_glDiscardFramebufferEXT,
+    (void *)mt_glDrawArrays,
+    (void *)mt_glDrawArraysInstanced,
+    (void *)mt_glDrawArraysInstancedEXT,
+    (void *)mt_glDrawBuffers,
+    (void *)mt_glDrawElements,
+    (void *)mt_glDrawElementsInstanced,
+    (void *)mt_glDrawElementsInstancedEXT,
+    (void *)mt_glDrawRangeElements,
+    (void *)mt_glDrawTexfOES,
+    (void *)mt_glDrawTexfvOES,
+    (void *)mt_glDrawTexiOES,
+    (void *)mt_glDrawTexivOES,
+    (void *)mt_glDrawTexsOES,
+    (void *)mt_glDrawTexsvOES,
+    (void *)mt_glDrawTexxOES,
+    (void *)mt_glDrawTexxvOES,
+    (void *)mt_glEnable,
+    (void *)mt_glEnableClientState,
+    (void *)mt_glEnableVertexAttribArray,
+    (void *)mt_glEndQuery,
+    (void *)mt_glEndQueryEXT,
+    (void *)mt_glEndTransformFeedback,
+    (void *)mt_glFenceSync,
+    (void *)mt_glFenceSyncAPPLE,
+    (void *)mt_glFinish,
+    (void *)mt_glFinishFenceAPPLE,
+    (void *)mt_glFinishObjectAPPLE,
+    (void *)mt_glFlush,
+    (void *)mt_glFlushMappedBufferRange,
+    (void *)mt_glFlushMappedBufferRangeEXT,
+    (void *)mt_glFogf,
+    (void *)mt_glFogfv,
+    (void *)mt_glFogx,
+    (void *)mt_glFogxv,
+    (void *)mt_glFramebufferParameteriAPPLE,
+    (void *)mt_glFramebufferRenderbuffer,
+    (void *)mt_glFramebufferRenderbufferOES,
+    (void *)mt_glFramebufferTexture2D,
+    (void *)mt_glFramebufferTexture2DOES,
+    (void *)mt_glFramebufferTextureLayer,
+    (void *)mt_glFrontFace,
+    (void *)mt_glFrustumf,
+    (void *)mt_glFrustumx,
+    (void *)mt_glGenBuffers,
+    (void *)mt_glGenFencesAPPLE,
+    (void *)mt_glGenFramebuffers,
+    (void *)mt_glGenFramebuffersOES,
+    (void *)mt_glGenProgramPipelinesEXT,
+    (void *)mt_glGenQueries,
+    (void *)mt_glGenQueriesEXT,
+    (void *)mt_glGenRenderbuffers,
+    (void *)mt_glGenRenderbuffersOES,
+    (void *)mt_glGenSamplers,
+    (void *)mt_glGenTextures,
+    (void *)mt_glGenTransformFeedbacks,
+    (void *)mt_glGenVertexArrays,
+    (void *)mt_glGenVertexArraysOES,
+    (void *)mt_glGenerateMipmap,
+    (void *)mt_glGenerateMipmapOES,
+    (void *)mt_glGetActiveAttrib,
+    (void *)mt_glGetActiveUniform,
+    (void *)mt_glGetActiveUniformBlockName,
+    (void *)mt_glGetActiveUniformBlockiv,
+    (void *)mt_glGetActiveUniformsiv,
+    (void *)mt_glGetAttachedShaders,
+    (void *)mt_glGetAttribLocation,
+    (void *)mt_glGetBooleanv,
+    (void *)mt_glGetBufferParameteri64v,
+    (void *)mt_glGetBufferParameteriv,
+    (void *)mt_glGetBufferPointerv,
+    (void *)mt_glGetBufferPointervOES,
+    (void *)mt_glGetClipPlanef,
+    (void *)mt_glGetClipPlanex,
+    (void *)mt_glGetError,
+    (void *)mt_glGetFixedv,
+    (void *)mt_glGetFloatv,
+    (void *)mt_glGetFragDataLocation,
+    (void *)mt_glGetFramebufferAttachmentParameteriv,
+    (void *)mt_glGetFramebufferAttachmentParameterivOES,
+    (void *)mt_glGetFramebufferParameteriAPPLE,
+    (void *)mt_glGetInteger64i_v,
+    (void *)mt_glGetInteger64v,
+    (void *)mt_glGetInteger64vAPPLE,
+    (void *)mt_glGetIntegeri_v,
+    (void *)mt_glGetIntegerv,
+    (void *)mt_glGetInternalformativ,
+    (void *)mt_glGetLightfv,
+    (void *)mt_glGetLightxv,
+    (void *)mt_glGetMaterialfv,
+    (void *)mt_glGetMaterialxv,
+    (void *)mt_glGetObjectLabelEXT,
+    (void *)mt_glGetPointerv,
+    (void *)mt_glGetProgramBinary,
+    (void *)mt_glGetProgramInfoLog,
+    (void *)mt_glGetProgramPipelineInfoLogEXT,
+    (void *)mt_glGetProgramPipelineivEXT,
+    (void *)mt_glGetProgramiv,
+    (void *)mt_glGetQueryObjectivEXT,
+    (void *)mt_glGetQueryObjectuiv,
+    (void *)mt_glGetQueryObjectuivEXT,
+    (void *)mt_glGetQueryiv,
+    (void *)mt_glGetQueryivEXT,
+    (void *)mt_glGetRenderbufferParameteriv,
+    (void *)mt_glGetRenderbufferParameterivOES,
+    (void *)mt_glGetSamplerParameterfv,
+    (void *)mt_glGetSamplerParameteriv,
+    (void *)mt_glGetShaderInfoLog,
+    (void *)mt_glGetShaderPrecisionFormat,
+    (void *)mt_glGetShaderSource,
+    (void *)mt_glGetShaderiv,
+    (void *)mt_glGetString,
+    (void *)mt_glGetStringi,
+    (void *)mt_glGetSynciv,
+    (void *)mt_glGetSyncivAPPLE,
+    (void *)mt_glGetTexEnvfv,
+    (void *)mt_glGetTexEnviv,
+    (void *)mt_glGetTexEnvxv,
+    (void *)mt_glGetTexImage,
+    (void *)mt_glGetTexLevelParameterfv,
+    (void *)mt_glGetTexLevelParameteriv,
+    (void *)mt_glGetTexParameterfv,
+    (void *)mt_glGetTexParameteriv,
+    (void *)mt_glGetTexParameterxv,
+    (void *)mt_glGetTransformFeedbackVarying,
+    (void *)mt_glGetUniformBlockIndex,
+    (void *)mt_glGetUniformIndices,
+    (void *)mt_glGetUniformLocation,
+    (void *)mt_glGetUniformfv,
+    (void *)mt_glGetUniformiv,
+    (void *)mt_glGetUniformuiv,
+    (void *)mt_glGetVertexAttribIiv,
+    (void *)mt_glGetVertexAttribIuiv,
+    (void *)mt_glGetVertexAttribPointerv,
+    (void *)mt_glGetVertexAttribfv,
+    (void *)mt_glGetVertexAttribiv,
+    (void *)mt_glHint,
+    (void *)mt_glInsertEventMarkerEXT,
+    (void *)mt_glInvalidateFramebuffer,
+    (void *)mt_glInvalidateSubFramebuffer,
+    (void *)mt_glIsBuffer,
+    (void *)mt_glIsEnabled,
+    (void *)mt_glIsFenceAPPLE,
+    (void *)mt_glIsFramebuffer,
+    (void *)mt_glIsFramebufferOES,
+    (void *)mt_glIsProgram,
+    (void *)mt_glIsProgramPipelineEXT,
+    (void *)mt_glIsQuery,
+    (void *)mt_glIsQueryEXT,
+    (void *)mt_glIsRenderbuffer,
+    (void *)mt_glIsRenderbufferOES,
+    (void *)mt_glIsSampler,
+    (void *)mt_glIsShader,
+    (void *)mt_glIsSync,
+    (void *)mt_glIsSyncAPPLE,
+    (void *)mt_glIsTexture,
+    (void *)mt_glIsTransformFeedback,
+    (void *)mt_glIsVertexArray,
+    (void *)mt_glIsVertexArrayOES,
+    (void *)mt_glLabelObjectEXT,
+    (void *)mt_glLightModelf,
+    (void *)mt_glLightModelfv,
+    (void *)mt_glLightModelx,
+    (void *)mt_glLightModelxv,
+    (void *)mt_glLightf,
+    (void *)mt_glLightfv,
+    (void *)mt_glLightx,
+    (void *)mt_glLightxv,
+    (void *)mt_glLineWidth,
+    (void *)mt_glLineWidthx,
+    (void *)mt_glLinkProgram,
+    (void *)mt_glLoadIdentity,
+    (void *)mt_glLoadMatrixf,
+    (void *)mt_glLoadMatrixx,
+    (void *)mt_glLoadPaletteFromModelViewMatrixOES,
+    (void *)mt_glLogicOp,
+    (void *)mt_glMapBufferOES,
+    (void *)mt_glMapBufferRange,
+    (void *)mt_glMapBufferRangeEXT,
+    (void *)mt_glMaterialf,
+    (void *)mt_glMaterialfv,
+    (void *)mt_glMaterialx,
+    (void *)mt_glMaterialxv,
+    (void *)mt_glMatrixIndexPointerOES,
+    (void *)mt_glMatrixMode,
+    (void *)mt_glMultMatrixf,
+    (void *)mt_glMultMatrixx,
+    (void *)mt_glMultiTexCoord4f,
+    (void *)mt_glMultiTexCoord4x,
+    (void *)mt_glNormal3f,
+    (void *)mt_glNormal3x,
+    (void *)mt_glNormalPointer,
+    (void *)mt_glOrthof,
+    (void *)mt_glOrthox,
+    (void *)mt_glPauseTransformFeedback,
+    (void *)mt_glPixelStorei,
+    (void *)mt_glPointParameterf,
+    (void *)mt_glPointParameterfv,
+    (void *)mt_glPointParameterx,
+    (void *)mt_glPointParameterxv,
+    (void *)mt_glPointSize,
+    (void *)mt_glPointSizePointerOES,
+    (void *)mt_glPointSizex,
+    (void *)mt_glPolygonOffset,
+    (void *)mt_glPolygonOffsetx,
+    (void *)mt_glPopGroupMarkerEXT,
+    (void *)mt_glPopMatrix,
+    (void *)mt_glProgramBinary,
+    (void *)mt_glProgramParameteri,
+    (void *)mt_glProgramParameteriEXT,
+    (void *)mt_glProgramUniform1fEXT,
+    (void *)mt_glProgramUniform1fvEXT,
+    (void *)mt_glProgramUniform1iEXT,
+    (void *)mt_glProgramUniform1ivEXT,
+    (void *)mt_glProgramUniform1uiEXT,
+    (void *)mt_glProgramUniform1uivEXT,
+    (void *)mt_glProgramUniform2fEXT,
+    (void *)mt_glProgramUniform2fvEXT,
+    (void *)mt_glProgramUniform2iEXT,
+    (void *)mt_glProgramUniform2ivEXT,
+    (void *)mt_glProgramUniform2uiEXT,
+    (void *)mt_glProgramUniform2uivEXT,
+    (void *)mt_glProgramUniform3fEXT,
+    (void *)mt_glProgramUniform3fvEXT,
+    (void *)mt_glProgramUniform3iEXT,
+    (void *)mt_glProgramUniform3ivEXT,
+    (void *)mt_glProgramUniform3uiEXT,
+    (void *)mt_glProgramUniform3uivEXT,
+    (void *)mt_glProgramUniform4fEXT,
+    (void *)mt_glProgramUniform4fvEXT,
+    (void *)mt_glProgramUniform4iEXT,
+    (void *)mt_glProgramUniform4ivEXT,
+    (void *)mt_glProgramUniform4uiEXT,
+    (void *)mt_glProgramUniform4uivEXT,
+    (void *)mt_glProgramUniformMatrix2fvEXT,
+    (void *)mt_glProgramUniformMatrix2x3fvEXT,
+    (void *)mt_glProgramUniformMatrix2x4fvEXT,
+    (void *)mt_glProgramUniformMatrix3fvEXT,
+    (void *)mt_glProgramUniformMatrix3x2fvEXT,
+    (void *)mt_glProgramUniformMatrix3x4fvEXT,
+    (void *)mt_glProgramUniformMatrix4fvEXT,
+    (void *)mt_glProgramUniformMatrix4x2fvEXT,
+    (void *)mt_glProgramUniformMatrix4x3fvEXT,
+    (void *)mt_glPushGroupMarkerEXT,
+    (void *)mt_glPushMatrix,
+    (void *)mt_glReadBuffer,
+    (void *)mt_glReadPixels,
+    (void *)mt_glReleaseShaderCompiler,
+    (void *)mt_glRenderbufferStorage,
+    (void *)mt_glRenderbufferStorageMultisample,
+    (void *)mt_glRenderbufferStorageMultisampleAPPLE,
+    (void *)mt_glRenderbufferStorageOES,
+    (void *)mt_glResolveMultisampleFramebufferAPPLE,
+    (void *)mt_glResumeTransformFeedback,
+    (void *)mt_glRotatef,
+    (void *)mt_glRotatex,
+    (void *)mt_glSampleCoverage,
+    (void *)mt_glSampleCoveragex,
+    (void *)mt_glSamplerParameterf,
+    (void *)mt_glSamplerParameterfv,
+    (void *)mt_glSamplerParameteri,
+    (void *)mt_glSamplerParameteriv,
+    (void *)mt_glScalef,
+    (void *)mt_glScalex,
+    (void *)mt_glScissor,
+    (void *)mt_glSetFenceAPPLE,
+    (void *)mt_glShadeModel,
+    (void *)mt_glShaderBinary,
+    (void *)mt_glShaderSource,
+    (void *)mt_glStencilFunc,
+    (void *)mt_glStencilFuncSeparate,
+    (void *)mt_glStencilMask,
+    (void *)mt_glStencilMaskSeparate,
+    (void *)mt_glStencilOp,
+    (void *)mt_glStencilOpSeparate,
+    (void *)mt_glTestFenceAPPLE,
+    (void *)mt_glTestObjectAPPLE,
+    (void *)mt_glTexCoordPointer,
+    (void *)mt_glTexEnvf,
+    (void *)mt_glTexEnvfv,
+    (void *)mt_glTexEnvi,
+    (void *)mt_glTexEnviv,
+    (void *)mt_glTexEnvx,
+    (void *)mt_glTexEnvxv,
+    (void *)mw_TexImage2D,
+    (void *)mw_TexImage3D,
+    (void *)mt_glTexParameterf,
+    (void *)mt_glTexParameterfv,
+    (void *)mt_glTexParameteri,
+    (void *)mt_glTexParameteriv,
+    (void *)mt_glTexParameterx,
+    (void *)mt_glTexParameterxv,
+    (void *)mt_glTexStorage2D,
+    (void *)mt_glTexStorage2DEXT,
+    (void *)mt_glTexStorage3D,
+    (void *)mw_TexSubImage2D,
+    (void *)mw_TexSubImage3D,
+    (void *)mt_glTransformFeedbackVaryings,
+    (void *)mt_glTranslatef,
+    (void *)mt_glTranslatex,
+    (void *)mt_glUniform1f,
+    (void *)mt_glUniform1fv,
+    (void *)mt_glUniform1i,
+    (void *)mt_glUniform1iv,
+    (void *)mt_glUniform1ui,
+    (void *)mt_glUniform1uiv,
+    (void *)mt_glUniform2f,
+    (void *)mt_glUniform2fv,
+    (void *)mt_glUniform2i,
+    (void *)mt_glUniform2iv,
+    (void *)mt_glUniform2ui,
+    (void *)mt_glUniform2uiv,
+    (void *)mt_glUniform3f,
+    (void *)mt_glUniform3fv,
+    (void *)mt_glUniform3i,
+    (void *)mt_glUniform3iv,
+    (void *)mt_glUniform3ui,
+    (void *)mt_glUniform3uiv,
+    (void *)mt_glUniform4f,
+    (void *)mt_glUniform4fv,
+    (void *)mt_glUniform4i,
+    (void *)mt_glUniform4iv,
+    (void *)mt_glUniform4ui,
+    (void *)mt_glUniform4uiv,
+    (void *)mt_glUniformBlockBinding,
+    (void *)mt_glUniformMatrix2fv,
+    (void *)mt_glUniformMatrix2x3fv,
+    (void *)mt_glUniformMatrix2x4fv,
+    (void *)mt_glUniformMatrix3fv,
+    (void *)mt_glUniformMatrix3x2fv,
+    (void *)mt_glUniformMatrix3x4fv,
+    (void *)mt_glUniformMatrix4fv,
+    (void *)mt_glUniformMatrix4x2fv,
+    (void *)mt_glUniformMatrix4x3fv,
+    (void *)mt_glUnmapBuffer,
+    (void *)mt_glUnmapBufferOES,
+    (void *)mt_glUseProgram,
+    (void *)mt_glUseProgramStagesEXT,
+    (void *)mt_glValidateProgram,
+    (void *)mt_glValidateProgramPipelineEXT,
+    (void *)mt_glVertexAttrib1f,
+    (void *)mt_glVertexAttrib1fv,
+    (void *)mt_glVertexAttrib2f,
+    (void *)mt_glVertexAttrib2fv,
+    (void *)mt_glVertexAttrib3f,
+    (void *)mt_glVertexAttrib3fv,
+    (void *)mt_glVertexAttrib4f,
+    (void *)mt_glVertexAttrib4fv,
+    (void *)mt_glVertexAttribDivisor,
+    (void *)mt_glVertexAttribDivisorEXT,
+    (void *)mt_glVertexAttribI4i,
+    (void *)mt_glVertexAttribI4iv,
+    (void *)mt_glVertexAttribI4ui,
+    (void *)mt_glVertexAttribI4uiv,
+    (void *)mt_glVertexAttribIPointer,
+    (void *)mt_glVertexAttribPointer,
+    (void *)mt_glVertexPointer,
+    (void *)mt_glViewport,
+    (void *)mt_glWaitSync,
+    (void *)mt_glWaitSyncAPPLE,
+    (void *)mt_glWeightPointerOES,
     0 };

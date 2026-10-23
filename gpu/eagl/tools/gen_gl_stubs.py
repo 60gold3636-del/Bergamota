@@ -70,15 +70,34 @@ def main():
         for suf in ('OES', 'EXT', 'APPLE', 'ANGLE', 'KHR', 'IMG'):
             if n.endswith(suf): return n[2:-len(suf)]
         return n[2:]
+    # Tracing variant (EAGL_TRACE=1): save the argument registers, log the call (name + first four integer args after `rend`), forward.
+    w('#define GL_TSTUB(name, idx) \\')
+    w('    __attribute__((visibility("hidden"), naked, used)) void mt_##name(void) { __asm__ volatile( \\')
+    w('        "stp x29, x30, [sp, #-16]!\\n mov x29, sp\\n sub sp, sp, #144\\n" \\')
+    w('        "stp x0, x1, [sp, #0]\\n stp x2, x3, [sp, #16]\\n stp x4, x5, [sp, #32]\\n stp x6, x7, [sp, #48]\\n" \\')
+    w('        "stp q0, q1, [sp, #64]\\n stp q2, q3, [sp, #96]\\n" \\')
+    w('        "mov x0, #" #idx "\\n ldp x1, x2, [sp, #8]\\n ldp x3, x4, [sp, #24]\\n bl _gl_trace_hook\\n" \\')
+    w('        "ldp x0, x1, [sp, #0]\\n ldp x2, x3, [sp, #16]\\n ldp x4, x5, [sp, #32]\\n ldp x6, x7, [sp, #48]\\n" \\')
+    w('        "ldp q0, q1, [sp, #64]\\n ldp q2, q3, [sp, #96]\\n add sp, sp, #144\\n ldp x29, x30, [sp], #16\\n" \\')
+    w('        "adrp x16, _gl_tab@PAGE\\n add x16, x16, _gl_tab@PAGEOFF\\n ldr x16, [x16, #" #idx "*8]\\n" \\')
+    w('        "mov x0, x1\\n mov x1, x2\\n mov x2, x3\\n mov x3, x4\\n mov x4, x5\\n mov x5, x6\\n mov x6, x7\\n" \\')
+    w('        GL_BR); }')
+    w('extern void gl_trace_hook(int idx, long a, long b, long c, long d);')
+    w('')
     for i, s in enumerate(syms):
         if base(s) not in wide:
             w('GL_MSTUB(%s, %d)' % (s, i))
+            w('GL_TSTUB(%s, %d)' % (s, i))
     for b in wide:
         w('extern void mw_%s(void);' % b)
     w('')
     w('void *const ms_thunks[GL_NFUNCS + 1] = {')
     for i, s in enumerate(syms):
         w('    (void *)%s,' % (('mw_' + base(s)) if base(s) in wide else ('ms_' + s)))
+    w('    0 };')
+    w('void *const mt_thunks[GL_NFUNCS + 1] = {')
+    for i, s in enumerate(syms):
+        w('    (void *)%s,' % (('mw_' + base(s)) if base(s) in wide else ('mt_' + s)))
     w('    0 };')
     sys.stdout.write('\n'.join(out) + '\n')
 

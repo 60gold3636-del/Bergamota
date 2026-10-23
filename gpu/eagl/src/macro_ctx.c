@@ -11,7 +11,20 @@
 
 static void macro_unmapped(void) { static int n; if (n++ < 5) fprintf(stderr, "OpenGLES(shim): call through an unmapped EAGLMacroContext slot\n"); }
 
+extern void *const mt_thunks[];
+static volatile int g_trace_on;
+__attribute__((visibility("default"))) void EAGLShimSetTrace(int on) { g_trace_on = on; }
+void gl_trace_hook(int idx, long a, long b, long c, long d) {
+    if (!g_trace_on) return;
+    fprintf(stderr, "GL %s(0x%lx, 0x%lx, 0x%lx, 0x%lx)\n", gl_names[idx], a, b, c, d);
+    if (!strcmp(gl_names[idx], "glShaderSource") && c && getenv("EAGL_TRACE_SHADERS")) {
+        const char *const *src = (const char *const *)c;
+        for (long i = 0; i < b; i++) fprintf(stderr, "---- shader %ld source %ld\n%s\n----\n", a, i, src[i]);
+    }
+}
+
 void *macro_ctx_new(void *rend) {
+    void *const *thunks = getenv("EAGL_TRACE") ? mt_thunks : ms_thunks;
     void **m = calloc(1, MACRO_CTX_SIZE);
     if (!m) return NULL;
     m[0] = rend;
@@ -22,7 +35,7 @@ void *macro_ctx_new(void *rend) {
         if (k >= 0 && macro_slots[s].off + 8 <= MACRO_CTX_SIZE) {
             // aliases (glFoo / glFooOES) share a slot: prefer the entry without a vendor suffix
             void **dst = &m[macro_slots[s].off / 8];
-            if (*dst == (void *)macro_unmapped || strlen(gl_names[k]) < 64) *dst = ms_thunks[k];
+            if (*dst == (void *)macro_unmapped || strlen(gl_names[k]) < 64) *dst = thunks[k];
         }
     }
     return m;
