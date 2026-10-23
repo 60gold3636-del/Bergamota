@@ -24,6 +24,7 @@
 #import <mach-o/dyld.h>
 #import <pthread.h>
 #import <mach/mach.h>
+#import <mach/vm_map.h>
 #import <sys/stat.h>
 #import <unistd.h>
 #import <stdatomic.h>
@@ -141,11 +142,27 @@ static EAGLContext *cur_ctx(void) {
 }
 
 // Copy an RGBA w*h bottom-up GL readback into a BGRA IOSurface, top-down (or bottom-up when `keep` is set).
+// A display/swap-chain IOSurface can be mapped read-only in this process (a write then dies with SIGBUS / KERN_PROTECTION_FAILURE, seen in
+// backboardd): check the mapping before the CPU fallback writes into it.
+static BOOL mapping_writable(const void *p, size_t len) {
+    vm_address_t addr = (vm_address_t)p;
+    vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t obj;
+    if (vm_region_64(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) return NO;
+    return (vm_address_t)p >= addr && (vm_address_t)p + len <= addr + size && (info.protection & VM_PROT_WRITE);
+}
+
 static void rgba_to_surface(const uint8_t *src, uint32_t w, uint32_t h, IOSurfaceRef s, BOOL flip, BOOL opaque) {
     kern_return_t lk = IOSurfaceLock(s, 0, NULL);
     uint8_t *dst = lk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(s) : NULL;
-    if (!dst) { if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL); return; }
     size_t bpr = IOSurfaceGetBytesPerRow(s);
+    if (!dst || !mapping_writable(dst, bpr * IOSurfaceGetHeight(s))) {
+        if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL);
+        EAGL_DEBUG("CPU sync skipped: surface %u is not mapped writable here\n", IOSurfaceGetID(s));
+        return;
+    }
     size_t sw = IOSurfaceGetWidth(s), sh = IOSurfaceGetHeight(s);
     uint32_t cw = w < sw ? w : (uint32_t)sw, ch = h < sh ? h : (uint32_t)sh;
     for (uint32_t y = 0; y < ch; y++) {

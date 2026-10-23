@@ -55,7 +55,7 @@ EOT
   ;;
 arm)     ph "setsid nohup sh -c 'sleep 180; $D/revert.sh' > /dev/null 2>&1 < /dev/null & echo dead-man armed" ;;
 mode)    case "${2:-}" in soft|1) ph "echo \"$2 \$($D/bgl-launch --bgl-print-boot-uuid) ${3:-}\" > /private/var/run/bglrender; cat /private/var/run/bglrender";; off) ph "rm -f /private/var/run/bglrender; echo marker removed";; *) echo "mode soft|1|off"; exit 1;; esac ;;
-respring) ph "for p in \$(ps ax | grep '/usr/libexec/backboardd' | grep -v grep | cut -c1-6); do kill -9 \$p; done; echo killed backboardd" ;;
+respring) ph "echo \"\$($D/bgl-launch --bgl-print-boot-uuid) 0 0\" > /private/var/tmp/bgl-render.state; for p in \$(ps ax | grep '/usr/libexec/backboardd' | grep -v grep | cut -c1-6); do kill -9 \$p; done; echo killed backboardd" ;;
 disarm)  ph "for p in \$(ps ax | grep 'sleep 180' | grep -v grep | cut -c1-6); do kill \$p; done; echo dead-man cancelled" ;;
 revert)  ph "$D/revert.sh; echo reverted" ;;
 *) sed -n 3,16p "$0"; exit 1 ;;
