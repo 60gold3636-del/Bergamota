@@ -97,6 +97,10 @@ final class PhoneMonitor {
     /// Whether the phone's `sweetreboot` lists `bergamota` (kept after iOS goes away; nil = never checked).
     var sweetrebootBergamota: Bool?
     var infoError: String?
+    /// Latest `sweetmetrics` sample (iOS up only) and the last ~2 minutes of them for the sparklines.
+    var metrics: PhoneMetrics?
+    var metricsError: String?
+    var metricsHistory = MetricsHistory()
     var toolWarnings: [String] = []
     var lastPoll: Date?
 
@@ -104,6 +108,10 @@ final class PhoneMonitor {
     @ObservationIgnored var observers: [(PhoneState, PhoneState) -> Void] = []
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var infoInFlight = false
+    @ObservationIgnored private var metricsTask: Task<Void, Never>?
+    @ObservationIgnored private var metricsInFlight = false
+    /// `sweetmetrics` is not installed on the phone: ask again only every 15 s.
+    @ObservationIgnored private var metricsMissingAt: Date?
     @ObservationIgnored private var lastSig = ""
     @ObservationIgnored private var primed = false
     @ObservationIgnored private let settings: AppSettings
@@ -120,6 +128,15 @@ final class PhoneMonitor {
                 await self?.pollOnce()
                 let elapsed = Date().timeIntervalSince(began)
                 try? await Task.sleep(nanoseconds: UInt64(max(0.2, 2.0 - elapsed) * 1e9))
+            }
+        }
+        // Metrics run on their own loop: a slow SSH call must not hold up the detection polls above.
+        metricsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let began = Date()
+                await self?.refreshMetrics()
+                let elapsed = Date().timeIntervalSince(began)
+                try? await Task.sleep(nanoseconds: UInt64(max(0.3, 2.0 - elapsed) * 1e9))
             }
         }
     }
@@ -178,7 +195,7 @@ final class PhoneMonitor {
         if new != old {
             state = new
             stateSince = Date()
-            if new != .ios { info = nil; infoError = nil }
+            if new != .ios { info = nil; infoError = nil; metrics = nil; metricsError = nil; metricsHistory.clear(); metricsMissingAt = nil }
         }
         for o in observers { o(old, new) }
     }
@@ -325,6 +342,37 @@ final class PhoneMonitor {
         infoError = nil
         info = Self.parseInfo(r.stdout)
         if let b = info?.sweetrebootBergamota { sweetrebootBergamota = b }
+    }
+
+    /// One `sweetmetrics` run over SSH (read-only, ~0.3 s on the phone). Never blocks the main thread: Shell.run waits off it.
+    func refreshMetrics() async {
+        guard state == .ios, !metricsInFlight else { return }
+        if let at = metricsMissingAt, Date().timeIntervalSince(at) < 15 { return }
+        guard let ssh = settings.ssh else { metricsError = "ssh not found"; return }
+        metricsInFlight = true
+        defer { metricsInFlight = false }
+        let ip = settings.phoneIP
+        let remote = "/usr/local/bin/sweetmetrics" + (settings.metricsGPUInfo ? " --gpu-info" : "")
+        let r = await Shell.run(ssh, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "root@\(ip)", remote], timeout: 6)
+        guard state == .ios else { return }      // the phone went away while we waited
+        if r.launchError != nil || r.timedOut || (r.status != 0 && PhoneMetrics.extractJSON(r.stdout) == nil) {
+            let err = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if r.status == 127 || err.contains("not found") || err.contains("No such file") {
+                metricsMissingAt = Date()
+                metricsError = "sweetmetrics is not on the phone (/usr/local/bin): renegade update, or scp it (docs/BERGAMOTA_METRICS.md)"
+            } else {
+                metricsError = r.timedOut ? "sweetmetrics timed out" : (err.isEmpty ? "sweetmetrics failed (exit \(r.status))" : err)
+            }
+            return
+        }
+        guard let m = PhoneMetrics.parse(r.stdout) else {
+            metricsError = "sweetmetrics printed no JSON: " + String(r.stdout.prefix(120))
+            return
+        }
+        metricsMissingAt = nil
+        metricsError = nil
+        metrics = m
+        metricsHistory.add(m)
     }
 
     nonisolated static func parseInfo(_ out: String) -> IOSInfo {

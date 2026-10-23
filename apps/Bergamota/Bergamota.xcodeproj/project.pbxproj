@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		00E1F2BA24558405C7543157 /* RemoteControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24B936B85666259BB68E2523 /* RemoteControl.swift */; };
 		03AF35A3C4F3936768133087 /* Activity.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04C3C713F599A5893B08F2A /* Activity.swift */; };
+		18F55A1A9E0A6771EFAD4933 /* MetricsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BE0EBD954A629D19871354 /* MetricsViews.swift */; };
 		1AFD9BEBEC8D77117666AABB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0B92F02006A156A7A40A6A7 /* Assets.xcassets */; };
 		246CA0151193F5F83DE55484 /* ActivityBannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1287FE4F58266A0E0CB225D8 /* ActivityBannerView.swift */; };
 		27224D0BE64A7F5BDEB9C419 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E0006BEE820A89BEF4C071C /* ContentView.swift */; };
@@ -19,6 +20,7 @@
 		7669F747ECECA4DDC3B8F292 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A566265151DD90D00679BB5 /* AppModel.swift */; };
 		7A0AAC06E703B069426948A0 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F680F8CC74E2C42A62FDAF5 /* AppSettings.swift */; };
 		8C6AB67C5E307BC48A5C44BF /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9689CF0534145D62FF6FDCCE /* SettingsView.swift */; };
+		93B49DF7DDA26400BCA18E8E /* Metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF9B4B1EB51DD61060567508 /* Metrics.swift */; };
 		969B6F0992415FC91C9A1EB1 /* CIModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3DACBCD7340496B4654CED4 /* CIModel.swift */; };
 		A914B655C8FC74AB45CB9BD4 /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 935046D9F93402D85B583C91 /* Shell.swift */; };
 		AE2A3922C3A39D6470DBACE8 /* PhoneMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CD4C58E6D1931CF4B158745 /* PhoneMonitor.swift */; };
@@ -41,6 +43,7 @@
 		24B936B85666259BB68E2523 /* RemoteControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteControl.swift; sourceTree = "<group>"; };
 		299DD6841170662BFEDCE97C /* FlashUserdataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashUserdataView.swift; sourceTree = "<group>"; };
 		2E0006BEE820A89BEF4C071C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		38BE0EBD954A629D19871354 /* MetricsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsViews.swift; sourceTree = "<group>"; };
 		47A42F44F37DC3FEED5F3D41 /* ControlPlaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlPlaneView.swift; sourceTree = "<group>"; };
 		48D311CBC40367F62751677D /* Bergamota.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bergamota.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A566265151DD90D00679BB5 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -53,6 +56,7 @@
 		935046D9F93402D85B583C91 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shell.swift; sourceTree = "<group>"; };
 		9689CF0534145D62FF6FDCCE /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		9E9BB85C4769A7EEEB93854A /* CIView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CIView.swift; sourceTree = "<group>"; };
+		AF9B4B1EB51DD61060567508 /* Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metrics.swift; sourceTree = "<group>"; };
 		B0B92F02006A156A7A40A6A7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B6828D58FB3900E94C33ABDD /* UserdataFlash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserdataFlash.swift; sourceTree = "<group>"; };
 		BB6E1461BFF3858229E88FC2 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
@@ -84,6 +88,7 @@
 				559A25AF93EAE71251215417 /* BuildModel.swift */,
 				C3DACBCD7340496B4654CED4 /* CIModel.swift */,
 				CA529915B5B2FC1CC115AF32 /* LogStore.swift */,
+				AF9B4B1EB51DD61060567508 /* Metrics.swift */,
 				4EA4729BAD7FDDE0D68743AA /* Notifier.swift */,
 				7CD4C58E6D1931CF4B158745 /* PhoneMonitor.swift */,
 				D0357E193A87BD78D0EDAC7C /* PhoneTools.swift */,
@@ -118,6 +123,7 @@
 				299DD6841170662BFEDCE97C /* FlashUserdataView.swift */,
 				D56F9CEB69DEBE9F6E432BBB /* LogView.swift */,
 				C336382D40088FEC32DFE355 /* MediaView.swift */,
+				38BE0EBD954A629D19871354 /* MetricsViews.swift */,
 				9689CF0534145D62FF6FDCCE /* SettingsView.swift */,
 			);
 			path = Views;
@@ -220,6 +226,8 @@
 				633D6E56FD67DFDB7FB12FE2 /* LogStore.swift in Sources */,
 				AE6DA8C5C8B1AED24B85A5DA /* LogView.swift in Sources */,
 				D98F285E66ED92FFE9DCC6DC /* MediaView.swift in Sources */,
+				93B49DF7DDA26400BCA18E8E /* Metrics.swift in Sources */,
+				18F55A1A9E0A6771EFAD4933 /* MetricsViews.swift in Sources */,
 				3FE85DF37181E833C1FB0430 /* Notifier.swift in Sources */,
 				AE2A3922C3A39D6470DBACE8 /* PhoneMonitor.swift in Sources */,
 				EBC91199213853269848A876 /* PhoneTools.swift in Sources */,

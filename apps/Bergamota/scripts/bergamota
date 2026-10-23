@@ -10,6 +10,7 @@
 #   bergamota upload [--dest photos|/phone/folder] FILE... [--wait]
 #   bergamota reboot fastboot|bergamota|recovery [--wait]     (iOS up; SSH sweetreboot; fastboot = ABL, bergamota = Bergamota fastboot)
 #   bergamota enter-bergamota [--wait]     (ABL fastboot -> Bergamota fastboot: fastboot boot bergamota-fastboot.img)
+#   bergamota metrics [--json]     (live phone metrics from status.json phone.metrics: CPU clusters, GPU, renderer, battery)
 #   bergamota status
 #   bergamota stop
 # Requests are written to ~/Library/Application Support/Bergamota/inbox/ ; results land in inbox/done or inbox/failed.
@@ -18,7 +19,7 @@ BASE="$HOME/Library/Application Support/Bergamota"
 INBOX="$BASE/inbox"
 
 die() { echo "bergamota: $*" >&2; exit 1; }
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # submit KIND JSON [wait]: write atomically (tmp name is not *.json), optionally wait for the result.
 submit() {
@@ -179,6 +180,42 @@ print(f"liveLog   listening={l['listening']} saving={l.get('savingTo')} {l.get('
 b = d.get("build", {})
 print(f"build     {'RUNNING' if b.get('building') else 'idle'}  last={b.get('last')}")
 if d.get("lastRequest"): print(f"request   {d['lastRequest']}")
+PY
+	;;
+metrics)
+	[ -f "$BASE/status.json" ] || die "no status.json (is Bergamota running?)"
+	python3 - "$BASE/status.json" "${1:-}" <<'PY'
+import json, sys, datetime
+d = json.load(open(sys.argv[1])); p = d["phone"]; m = p.get("metrics")
+if not m:
+    print("no metrics: " + (p.get("metricsError") or f"phone state is {p['state']} (metrics need iOS up and /usr/local/bin/sweetmetrics on the phone)"))
+    sys.exit(1)
+if sys.argv[2] == "--json":
+    print(json.dumps(m, indent=2)); sys.exit(0)
+def khz(v): return "unknown" if v is None else (f"{v/1e6:.2f} GHz" if v >= 1e6 else f"{v/1e3:.0f} MHz")
+def pct(v): return "--" if v is None else f"{v:.0f}%"
+try: age = f"{(datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(m['fetched'].replace('Z','+00:00'))).total_seconds():.0f}s ago"
+except Exception: age = "?"
+print(f"sample    {m.get('fetched')} ({age}), schema {m.get('schema')}")
+cpu = m.get("cpu", {})
+for c in cpu.get("clusters", []):
+    mode = c.get("mode", "unknown")
+    extra = {"static": f"capped at {c['capPercent']}%" if c.get("capPercent") is not None else "fixed", "governor": "governor " + str(c.get("governor")), "unknown": "unknown (fixed by bootloader)"}.get(mode, mode)
+    rng = f" min {khz(c['minKhz'])} max {khz(c['maxKhz'])}" if c.get("minKhz") or c.get("maxKhz") else ""
+    print(f"cpu       {c['name']:4} cpu{c['cpus'][0] if c.get('cpus') else '?'}-{c['cpus'][-1] if c.get('cpus') else '?'}  {khz(c.get('curKhz')):>9}  load {pct(c.get('loadPct')):>4}  {extra}{rng}")
+if cpu.get("loadPct"): print("          per-CPU load " + " ".join(f"{x:.0f}" for x in cpu["loadPct"]))
+g = m.get("gpu", {})
+mhz = g.get("mhz")
+print(f"gpu       {g.get('state','?'):8}  " + (f"level {g.get('level')}/{g.get('levels')}  " if g.get("level") is not None else "") + ("level/MHz/busy not reported (waiting on kern.sweet_gpu)" if mhz is None and g.get("busyPct") is None else f"{khz(None if mhz is None else mhz*1000)}  busy {pct(g.get('busyPct'))}") + f"  clients {g.get('clients',0)}")
+r = m.get("renderer", {})
+print(f"renderer  {r.get('label')}  (requested {r.get('requested')} by {r.get('requestedBy')}, injected {r.get('injected')}, backboardd GPU client {'yes' if r.get('gpuClientOpen') else 'no'})")
+b = m.get("battery", {})
+if b.get("present"):
+    ma = b.get("currentMa"); mv = b.get("voltageMv")
+    print(f"battery   {pct(b.get('percent'))}  {'charging' if b.get('charging') else 'not charging'}  " + ("mA unknown" if ma is None else f"{ma:+.0f} mA") + "  " + ("" if mv is None else f"{mv/1000:.2f} V"))
+else: print("battery   not present")
+if m.get("thermal"): print(f"thermal   battery {m['thermal'].get('batteryC')} C")
+for e in m.get("errors", []): print("note      " + e)
 PY
 	;;
 -h|--help|help) usage ;;
