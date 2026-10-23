@@ -57,6 +57,8 @@ int main(void)
 	con_hex("JUMP", 0x80f14c28ULL);
 	con_str("XNU", "jumping (fbcon clears screen)");
 	dump("out/preview/boot-2-jump.ppm");
+	bootui_handoff();
+	dump("out/preview/boot-2b-handoff.ppm");
 
 	/* Failure on the boot screen, then the text fallback / panic screens. */
 	bootui_init();
