@@ -6,18 +6,19 @@
 Zero FILL chunks and DONT_CARE chunks become holes. --consume punches a hole (F_PUNCHHOLE) over the part of IN.simg
 that was already converted, so both files never need the full disk at once; afterwards IN.simg is destroyed.
 """
-import fcntl
 import os
 import struct
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import renegade_platform as rplat  # noqa: E402
+
 RAW, FILL, DONT_CARE, CRC = 0xCAC1, 0xCAC2, 0xCAC3, 0xCAC4
-F_PUNCHHOLE = 99
 PIECE = 16 << 20
 
 
 def punch(fd, off, length):
-    fcntl.fcntl(fd, F_PUNCHHOLE, struct.pack('<IIqq', 0, 0, off, length))
+    rplat.punch_hole_safe(fd, off, length)
 
 
 def main():

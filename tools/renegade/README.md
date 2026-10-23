@@ -8,7 +8,7 @@ The Bergamota Project's patcher. iOS 18 ships every system binary as **arm64e** 
 | `renegade cache DIR` | `pacstrip_cache.py` | Does the same over the dyld shared cache (main + sub-caches) and refreshes the CodeDirectory page hashes |
 | `renegade fips DIR --patch` | `fips_rehmac.py` | Recomputes corecrypto's FIPS POST HMAC over the rewritten `__text` |
 | `renegade fetch` | `fetch-root.sh` | Downloads and decrypts the 22H352 iPhone11,8 root and cryptex dmgs |
-| `renegade root` | `mkroot-full.py` | Full root image: stages `copy, macho, cache, tweaks, seal`, no sudo (owners are set in the HFS+ catalog by `hfsroot_owners.py`) |
+| `renegade root` | `mkroot-full.py` | Full root image: stages `copy, macho, cache, tweaks, seal`. macOS: no sudo (owners are set in the HFS+ catalog by `hfsroot_owners.py`); Linux: root, see Platforms |
 | `renegade boot` | `mkboot-full.sh` | Enxerto boot image for the root on `userdata` |
 | `renegade jb fetch\|stage\|live\|remove\|status` | `jailbreak.py` | Jailbreak userland (below); `mkroot-full.py` stage `jb`, on by default (`--no-jb`) |
 | `renegade update SIMG` | `update.py` | Applies the root auto-fixes to a finished image in place, no IPSW needed (below) |
@@ -16,6 +16,66 @@ The Bergamota Project's patcher. iOS 18 ships every system binary as **arm64e** 
 | `renegade sparse IN OUT` | `img2simg.py` / `simg2img.py` | Converts between raw and Android sparse images, with `--consume` for tight disks |
 
 `root_tweaks18.py` holds the first-boot changes to the root (Setup skip, activation, SSH, staged system apps, ...). `dsctools/` symbolicates and disassembles the rewritten shared cache. The kernel half lives in Heartwood: patch 0131 (`sweetarm64e=1`) loads arm64e binaries, and 0141 emulates FJCVTZS, which has no 1:1 rewrite. Details and history are in `docs/IOS18_PORT.md`.
+
+## Platforms (macOS and Linux)
+
+Everything that differs between the two hosts lives in `renegade_platform.py` (not `platform.py`: that would shadow the standard library module). The image tools (`hfsx`, `hfsroot_owners`, `simg2img`, `img2simg`, `pacstrip`, `pacstrip_cache`, `fips_rehmac`, `jailbreak`) are Python and run on both. Hole punching (`hfs_trim`, `--consume`) uses `F_PUNCHHOLE` on macOS and `fallocate(PUNCH_HOLE)` on Linux (ext4, xfs, btrfs, tmpfs; if the filesystem cannot punch holes, a warning is printed and `--consume` keeps both files on disk until it ends).
+
+| Operation | macOS | Linux (root) |
+| --- | --- | --- |
+| Create the image | `mkfile -n` | sparse file |
+| Format: HFSX, case-sensitive, not journaled | `hdiutil attach -nomount` + `newfs_hfs -s` | `mkfs.hfsplus -s -v iOSRoot` (hfsprogs; no `-J`) |
+| Attach and mount read-write | `hdiutil attach`, no sudo | `losetup --find --show` + `mount -t hfsplus -o rw,force,nls=utf8` |
+| Read the IPSW volumes (APFS) | `hdiutil attach -readonly` (two mounts: owners on for the map, off for the copy) | `apfs-fuse` (read-only FUSE; as root one mount shows the real owners and every file) |
+| Copy into the root | `ditto` | Python copy (modes, owners, symlinks, hard links; no xattrs, ACLs or compression) |
+| Owners | recorded, applied to the HFS+ catalog offline by `hfsroot_owners.py` | `chown` for real (root; the hfsplus driver stores owners) **and** recorded, so the offline catalog pass runs on the same table |
+| fsck | `fsck_hfs -fn` | `fsck.hfsplus -f -n` |
+| Ad-hoc signing (identifier, CS options and entitlements kept) | `codesign -f -s -` | `ldid -S -I -C -Hsha256`, pinned and SHA-256 verified (`jailbreak.py`: `HOST_LDID`) |
+| Unmount | `hdiutil detach` | `umount` + `losetup -d` (`umount` / `fusermount3 -u` for apfs-fuse) |
+| `verify` stage | also `codesign -v` of a sample and the HFS-compression check | those two checks are skipped (the identity/CS-flag check of every re-signed Mach-O still runs) |
+| Download and decrypt the IPSW | `ipsw` (blacktop) | `ipsw` (Linux build) |
+| On-device tools (`sweetnet`, `ssh`, GPU payload) | built with `xcrun` | **never built**; installed only if prebuilt artifacts exist |
+
+**Unjournaled volume.** The image is formatted without a journal. That is what lets `hfsroot_owners.py` edit the catalog offline (it asserts the journaled bit is clear), and it is also what makes a read-write mount with the Linux hfsplus driver safe: the driver mounts journaled volumes read-only unless forced, and `force` is only there for the "not cleanly unmounted" flag of an image that came from macOS. Do not use `force` on a journaled volume.
+
+**Feature gating (any host).** Features that install a prebuilt on-device binary switch themselves off when the binary is missing, with a message at the point of the skip and a summary at the end of `renegade root` / `renegade update`; they never fail the run. Binaries are looked for in `research/sweetnet/` (also `ios18/`), the main checkout's, `$RENEGADE_SWEETNET`, `research/ssh-build/out/`, `research/bergamota-gl/` / `$RENEGADE_BGL`. On Linux nothing is compiled, so these are skipped unless a prebuilt artifact (for example from CI) was dropped into those directories.
+
+| Part | Needs | Without it |
+| --- | --- | --- |
+| launchd edits (`_PanicOnCrash`, CommCenter), containers, event timing, usbnet plists, audio, activation | nothing | always done |
+| Preferences (Setup skipped, migration, `SBShowBatteryPercentage`, ...) | nothing | always done |
+| Bluetooth `BT_HCI_TRANSPORT` in bluetoothd's job | nothing | always done |
+| Bluetooth BlueTool stub, `hcitest` | `bluetool-stub`, `hcitest` (xcrun) | skipped |
+| Jailbreak userland (Procursus, Sileo, TrollStore: prebuilt debs, re-signed with ldid on Linux), `/var/jb` | network, `zstd` | done |
+| dropbear SSH job | prebuilt `dropbear`, `dash`, `toybox` in `research/ssh-build/out/`; Linux also wants `dropbearkey` (`dropbear-bin`) or a `dropbear-linux` artifact for the host key | skipped with a message |
+| `sweetnetcfg`, `sweetreboot` | xcrun | skipped |
+| App registration (`appreg`: `sweetuicache`) | xcrun | skipped; the staged apps are still moved to `/Applications`, which is what lsd's own seeding of a fresh LaunchServices database picks up (unverified on the device); an image whose database is already seeded does not register them |
+| PosterBoard `sweetfp.dylib` | xcrun | skipped, PosterBoard left alone |
+| Default wallpaper and icon style (`sweetposterset`, `sweeticonstyle`, `sweetopen`, `SweetRun.app`) | xcrun, and `sweetuicache` | skipped |
+| `sweetmetrics`, `sweetprefs` tools | xcrun | skipped |
+| `bglrender` payload | `gpu/eagl/make-payload.sh` (Mac) | skipped, backboardd untouched |
+| First-boot job | `/bin/sh` in the root (dash from the ssh step) | the job is still installed without `sweetuicache`, for the jailbreak post-install; skipped only if `/bin/sh` is missing |
+
+### Linux
+
+Run as **root**: the image is mounted with a loop device and `mount(8)`, and apfs-fuse needs to read root-only files. `sudo -E tools/renegade/renegade root` (the research directory then holds root-owned files: `sudo chown -R "$USER" research` afterwards). `renegade update --check` reads the image with `hfsx.py` and needs no root. The kernel needs the `hfsplus` module (`modprobe hfsplus`; a container shares the host kernel).
+
+```sh
+# Debian / Ubuntu
+sudo apt install python3 hfsprogs util-linux zstd dropbear-bin       # dropbear-bin: host keys for the ssh step (optional)
+# ipsw (download + AEA decryption): the .deb or tarball of https://github.com/blacktop/ipsw/releases (linux_x86_64 / linux_arm64)
+# apfs-fuse is not packaged in Debian/Ubuntu: build it (https://github.com/sgan81/apfs-fuse, read its README for the packages)
+sudo apt install cmake g++ git libfuse3-dev libbz2-dev zlib1g-dev libattr1-dev fuse3
+git clone --recursive https://github.com/sgan81/apfs-fuse && cmake -S apfs-fuse -B apfs-fuse/build && make -C apfs-fuse/build -j && sudo install apfs-fuse/build/apfs-fuse /usr/local/bin/
+```
+
+`ldid` needs no package: the pinned `ProcursusTeam/ldid` release (`v2.1.5-procursus7`, `ldid_linux_x86_64` / `ldid_linux_aarch64`) is downloaded into `research/jb/ldid-host-v2.1.5-procursus7/` and checked against the SHA-256 in `jailbreak.py` before it is ever run (`RENEGADE_LDID=/path` uses another build). opa334's fork, which `jailbreak.py` pins for the phone, publishes only the iOS binary; the Procursus ldid is the same code base.
+
+`RENEGADE_APFS_VOLUME=N` picks the APFS volume of the OS dmg (default 0). `RENEGADE_DRY_RUN=1 tools/renegade/renegade root ...` (also `update`) prints the commands of the platform layer and runs nothing; `RENEGADE_PLATFORM=linux` on a Mac builds the Linux command lines (`renegade platform --plan linux`). `renegade test` runs the unit tests (command construction of both backends, the dry-run flow, the tree copy, the feature gating, and on macOS codesign-vs-ldid parity).
+
+Signing differences to know about: `ldid` writes a CodeDirectory version 2.4 (codesign: 2.5 with the exec-segment fields), adds a default requirements blob and no "Runtime Version". On a sample (thin arm64 and arm64e) the identifier, the CS flags (adhoc, hard, library-validation, runtime), the hash type (sha256 only) and the entitlements are identical to codesign's, and `codesign -v` accepts the result.
+
+**Not verified on a real Linux host or on the device** (there was no Linux machine): the `mkfs.hfsplus`, `mount -t hfsplus`, `fsck.hfsplus` and `apfs-fuse` command lines, `hfsroot_owners.py`/`hfs_trim.py` on an hfsprogs-formatted volume, `apfs-fuse` on the real IPSW dmgs (volume index, sealed-snapshot volumes), and whether the iOS kernel accepts a volume that the Linux hfsplus driver wrote.
 
 ## Jailbreak userland
 
@@ -38,7 +98,7 @@ Commands: `renegade jb fetch` (download + verify), `stage` (unpack into `researc
 
 ## Root auto-fixes (what was done by hand on the phone, baked into the image)
 
-`root_tweaks18.auto()` runs in the `tweaks` stage of `renegade root` and in `renegade update`. Every fix is on by default and has an opt-out (`--no-appreg`, `--no-posterboard`, `--no-bluetooth`, `--no-jb`, `--no-wallpaper`, or `RENEGADE_NO_<NAME>=1`). Build the on-device tools first: `tools/sweetnet/build.sh` (needs Xcode; output in `research/sweetnet/`, iOS 18 builds in `research/sweetnet/ios18/` are arm64e and go through `pacstrip --sign`).
+`root_tweaks18.auto()` runs in the `tweaks` stage of `renegade root` and in `renegade update`. Every fix is on by default, has an opt-out, and skips itself when its prebuilt binary is missing (`--no-appreg`, `--no-posterboard`, `--no-bluetooth`, `--no-jb`, `--no-wallpaper`, or `RENEGADE_NO_<NAME>=1`). The on-device tools come from `tools/sweetnet/build.sh` (needs a Mac with Xcode; output in `research/sweetnet/`, iOS 18 builds in `research/sweetnet/ios18/` are arm64e and go through `pacstrip --sign`). If they are not built (always on Linux), the features that need them are skipped automatically and listed at the end; see Platforms.
 
 | Fix | Function | What it does |
 | --- | --- | --- |
@@ -56,11 +116,11 @@ Commands: `renegade jb fetch` (download + verify), `stage` (unpack into `researc
 ## `renegade update`
 
 ```
-tools/sweetnet/build.sh                              # once: sweetuicache, sweetfp.dylib, BlueTool stub, hcitest
+tools/sweetnet/build.sh                              # optional, Mac only: sweetuicache, sweetfp.dylib, BlueTool stub, hcitest (skipped when missing)
 renegade update research/ios18/ios18-root-full.simg [--no-jb] [--no-appreg] [--no-posterboard] [--no-bluetooth] [--check]
 ```
 
-`simg2img --consume` (the simg is eaten while the raw image is written) -> `hdiutil attach` read-write, no sudo -> the tweak functions (idempotent) -> detach -> `hfs_trim` -> `hfsroot_owners` for the new paths only (everything created since the start, plus the paths chowned on purpose) -> `fsck_hfs -fn` -> `img2simg --consume` back to the `.simg`. Every step checks `df` and stops below 5 GiB free; the preflight (read only, via `hfsx.py`) checks the files the tweaks need, the built tools and, for the jailbreak payload, downloads and stages it before anything is consumed. `--check` stops after the preflight.
+`simg2img --consume` (the simg is eaten while the raw image is written) -> `hdiutil attach` read-write, no sudo (Linux: loop device + `mount -t hfsplus`, root) -> the tweak functions (idempotent) -> detach -> `hfs_trim` -> `hfsroot_owners` for the new paths only (everything created since the start, plus the paths chowned on purpose) -> `fsck_hfs -fn` (Linux: `fsck.hfsplus -f -n`) -> `img2simg --consume` back to the `.simg`. Every step checks `df` and stops below 5 GiB free; the preflight (read only, via `hfsx.py`) checks the files the tweaks need, the built tools and, for the jailbreak payload, downloads and stages it before anything is consumed. `--check` stops after the preflight.
 
 If it fails after the simg was consumed, the raw `IMAGE.img` is left next to the zeroed `IMAGE.simg` shell, detached. Fix the cause and run `renegade update IMAGE.img`: it starts at the attach step and writes `IMAGE.simg` at the end. Do not delete the `.img`.
 

@@ -3,13 +3,15 @@
 
   mkroot-full.py [--ipsw-dir DIR] [--out IMG] [--size 20g] [--stages copy,macho,cache,tweaks,seal] [--simg OUT.simg]
 
-No sudo. Stages (each one can be re-run on the same image; the image stays in --out between stages):
+macOS: no sudo. Linux: run as root (loop device + mount), IPSW volumes through apfs-fuse; see README.md "Linux".
+RENEGADE_DRY_RUN=1 prints the platform commands of the chosen stages and runs nothing. Platform specifics live in
+renegade_platform.py. Stages (each one can be re-run on the same image; the image stays in --out between stages):
   copy    attach the IPSW volumes read-only (OS dmg, SystemOS cryptex, AppOS cryptex; decrypt them first with
-          tools/renegade/fetch-root.sh), newfs_hfs -s (case-sensitive, NOT journaled: hfsroot_owners.py edits the
-          catalog), mount the image as the user, ditto OS-cryptex and App-cryptex FIRST and the OS volume on top
+          tools/renegade/fetch-root.sh), newfs_hfs -s / mkfs.hfsplus -s (case-sensitive, NOT journaled: hfsroot_owners.py
+          edits the catalog), mount the image, ditto (Linux: Python copy) OS-cryptex and App-cryptex FIRST and the OS volume on top
           (root files win), layout fixes (cache at /System/Library/Caches/com.apple.dyld, /System/Cryptexes/*
           -> merged view), owner/mode map of everything (lstat of the mounted IPSW volumes, owners on)
-  macho   pacstrip + ad-hoc codesign (entitlements kept) of every Mach-O, in parallel, hard links kept
+  macho   pacstrip + ad-hoc codesign / ldid (entitlements kept) of every Mach-O, in parallel, hard links kept
   cache   tools/renegade/pacstrip_cache.py over the dyld shared cache (code sections, signature page hashes)
   tweaks  the iOS 16 first-boot tweaks (root_tweaks18.py = sweet-root-tweaks.py) + iOS 18 launchd bring-up jobs +
           the Renegade auto-fixes (all ON, opt-outs --no-appreg --no-posterboard --no-bluetooth --no-jb): staged apps
@@ -38,6 +40,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, HERE)
 import pacstrip  # noqa: E402
+import renegade_platform as rplat  # noqa: E402
 
 MAGICS = {b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf'}
 MIN_FREE = 5 << 30
@@ -65,20 +68,12 @@ def need_free(what):
 
 
 def attach(img, mnt, readonly=True, owners=False):
-    os.makedirs(mnt, exist_ok=True)
-    cmd = ['hdiutil', 'attach', '-nobrowse', '-mountpoint', mnt]
-    if readonly:
-        cmd += ['-readonly', '-noverify']
-    if owners:
-        cmd += ['-owners', 'on']
-    # the decrypted IPSW dmgs and the HFS image are raw volumes: CRawDiskImage
-    cmd += ['-imagekey', 'diskimage-class=CRawDiskImage']
-    out = run(cmd + [img], capture_output=True).stdout
-    return out.split()[0]
+    """Mount a raw volume image (the HFS root, or an IPSW dmg with attach_ipsw); platform layer: hdiutil / loop+mount."""
+    return rplat.attach(img, mnt, readonly=readonly, owners=owners)
 
 
 def detach(dev):
-    subprocess.run(['hdiutil', 'detach', dev], capture_output=True)
+    rplat.detach(dev)
 
 
 def find_dmgs(d):
@@ -157,35 +152,9 @@ EXCLUDE = {
 }
 
 
-def copy_tree(src, dst, rel=''):
-    """ditto src -> dst, minus EXCLUDE (directories on the way to an excluded path are made by hand)."""
-    ex = [e for e in EXCLUDE if e == rel or e.startswith(rel + '/')] if rel else list(EXCLUDE)
-    if not ex:
-        r = subprocess.run(['ditto', '--nohfsCompression', '--nopreserveHFSCompression', '--noextattr', '--noqtn',
-                            '--norsrc', '--noacl', src, dst], capture_output=True, text=True)
-        return r.returncode, r.stderr
-    err, rc = '', 0
-    os.makedirs(dst, exist_ok=True)
-    shutil.copymode(src, dst)
-    for n in sorted(os.listdir(src)):
-        crel = (rel + '/' + n) if rel else n
-        if crel in EXCLUDE:
-            continue
-        s2, d2 = os.path.join(src, n), os.path.join(dst, n)
-        if os.path.islink(s2):                      # ditto would FOLLOW a symlink given as the source
-            if os.path.lexists(d2):
-                os.unlink(d2)
-            os.symlink(os.readlink(s2), d2)
-            continue
-        if os.path.isdir(s2):
-            r, e = copy_tree(s2, d2, crel)
-        else:
-            x = subprocess.run(['ditto', '--nohfsCompression', '--nopreserveHFSCompression', '--noextattr', '--noqtn',
-                                '--norsrc', '--noacl', s2, d2], capture_output=True, text=True)
-            r, e = x.returncode, x.stderr
-        rc |= r
-        err += e
-    return rc, err
+def copy_tree(src, dst):
+    """ditto (macOS) / Python copy (Linux) of src into dst, minus EXCLUDE. Returns (rc, stderr)."""
+    return rplat.copy_tree(src, dst, list(EXCLUDE))
 
 
 def stage_copy(a, img, rootmnt, dmgs):
@@ -206,27 +175,26 @@ def stage_copy(a, img, rootmnt, dmgs):
         if os.path.exists(img):
             detach_all(img)
             os.unlink(img)
-        run(['mkfile', '-n', a.size, img])
-        d = run(['hdiutil', 'attach', '-nomount', '-imagekey', 'diskimage-class=CRawDiskImage', img],
-                capture_output=True).stdout.split()[0]
-        run(['newfs_hfs', '-s', '-v', 'iOSRoot', d.replace('/disk', '/rdisk')], capture_output=True)
-        detach(d)
+        rplat.make_image(img, a.size)
+        rplat.format_hfsx(img, 'iOSRoot')          # case-sensitive (HFSX), NOT journaled: hfsroot_owners.py edits the catalog
         attach(img, rootmnt, readonly=False)
     log('image mounted at', rootmnt)
     for name in ('appos', 'sysos', 'os'):
         if name in skip:
             continue
         mnt = os.path.join(W, 'src-' + name)
-        dev = attach(dmgs[name], mnt, owners=True)
+        dev = rplat.attach_ipsw(dmgs[name], mnt, owners=True)
         n = walk_owners(mnt, table)
         size = apparent_size(mnt) - sum(apparent_size(os.path.join(mnt, e)) for e in EXCLUDE
                                         if os.path.isdir(os.path.join(mnt, e)))
-        detach(dev)
+        if not rplat.is_linux():
+            detach(dev)             # macOS: owners-on mounts hide root-only files, so the copy uses a second, noowners mount
         log(f'owner map: {name} {n} entries, {size / 2**30:.2f} GiB apparent')
         if free_bytes() < size + MIN_FREE:
             sys.exit(f'STOP: copying {name} ({size / 2**30:.1f} GiB) would leave < 5 GiB free '
                      f'({free_bytes() / 2**30:.1f} GiB free now)')
-        dev = attach(dmgs[name], mnt, owners=False)
+        if not rplat.is_linux():
+            dev = rplat.attach_ipsw(dmgs[name], mnt, owners=False)
         t0 = time.time()
         rc, err = copy_tree(mnt, rootmnt)
         detach(dev)
@@ -241,7 +209,7 @@ def stage_copy(a, img, rootmnt, dmgs):
         prune_after(rootmnt, name)
         if name == 'sysos':                          # give the pruned .symbols blocks back to the host
             subprocess.run(['sync'])
-            run(['hdiutil', 'detach', rootmnt], capture_output=True)
+            rplat.detach(rootmnt, check=True)
             run([sys.executable, '-I', os.path.join(HERE, 'hfs_trim.py'), img])
             attach(img, rootmnt, readonly=False)
         if a.delete_sources:
@@ -258,17 +226,8 @@ def stage_copy(a, img, rootmnt, dmgs):
 
 
 def detach_all(img):
-    out = subprocess.run(['hdiutil', 'info'], capture_output=True, text=True).stdout
-    # detach every device that was attached from this image path
-    dev = None
-    for line in out.splitlines():
-        if line.startswith('image-path') and os.path.abspath(img) in line:
-            dev = True
-        elif dev and line.startswith('/dev/disk'):
-            detach(line.split()[0])
-            dev = None
-        elif line.startswith('====='):
-            dev = None
+    """detach every device that was attached from this image path"""
+    rplat.detach_image(img)
 
 
 def prune_after(root, name):
@@ -329,6 +288,7 @@ def macho_worker(path):
 def stage_macho(a, root):
     need_free('macho stage')
     skip_prefix = os.path.join(root, 'System/Library/Caches/com.apple.dyld')
+    rplat.prepare_signer()                   # Linux: fetch/verify the pinned ldid once, before the pool starts
     inode_first, links, files = {}, [], []
     for r, dirs, fs in os.walk(root):
         if r.startswith(skip_prefix):
@@ -425,7 +385,11 @@ def stage_tweaks(a, root):
     rt.REBOOT_TOOL = rt.find_sweetnet('sweetreboot') or os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetreboot')
     # BlueTool stub, hcitest, ios18/sweetuicache and ios18/sweetfp.dylib: rt.find_sweetnet() (this checkout's
     # research/sweetnet first, then the main checkout's; tools/sweetnet/build.sh)
-    rec = rt.OwnerRecorder()                       # no sudo: owners are written into the HFS catalog at seal time
+    gaps = rt.tool_gaps({f: rt.enabled(f) for f in rt.FEATURES})      # prebuilt binaries missing: skip, do not fail
+    for f_, why in gaps.items():
+        os.environ['RENEGADE_NO_' + f_.upper()] = '1'
+        log(f'feature {f_} skipped automatically: {why}')
+    rec = rt.OwnerRecorder()                       # no sudo on macOS: owners are written into the HFS catalog at seal time
     chowned = rec.owners
     rec.install()                                  # rt.os is the os module: only this process is affected
     try:
@@ -514,6 +478,7 @@ def stage_tweaks(a, root):
                 continue
             f.write(f'{unicodedata.normalize("NFD", rel)}\t{u}\t{g}\t{os.lstat(p).st_mode & 0o7777:o}\n')
     log(f'{len(chowned)} owner overrides in {OWNER_EXTRA}')
+    rt.skip_summary()
 
 
 # --- stage: jb (optional) -------------------------------------------------------------------------------------------
@@ -561,7 +526,7 @@ def stage_seal(a, img, rootmnt):
     """Unmount, apply the owner map to the catalog, fsck."""
     if os.path.ismount(rootmnt):
         subprocess.run(['sync'])
-        r = subprocess.run(['hdiutil', 'detach', rootmnt], capture_output=True, text=True)
+        r = rplat.detach(rootmnt)
         if r.returncode:
             sys.exit('detach failed: ' + r.stderr)
     run([sys.executable, '-I', os.path.join(HERE, 'hfs_trim.py'), img])        # give freed blocks back to the host
@@ -573,15 +538,10 @@ def stage_seal(a, img, rootmnt):
     merged = os.path.join(W, 'owners-final.tsv')
     write_map(table, merged)
     run([sys.executable, '-I', os.path.join(HERE, 'hfsroot_owners.py'), img, '--map', merged, '--default-root'])
-    d = run(['hdiutil', 'attach', '-nomount', '-imagekey', 'diskimage-class=CRawDiskImage', img],
-            capture_output=True).stdout.split()[0]
-    try:
-        r = subprocess.run(['fsck_hfs', '-fn', d.replace('/disk', '/rdisk')], capture_output=True, text=True)
-        log('fsck_hfs -fn rc=', r.returncode, (r.stdout + r.stderr).strip()[-600:])
-        if r.returncode:
-            sys.exit('fsck_hfs reports errors')
-    finally:
-        detach(d)
+    rc, text = rplat.fsck(img)
+    log(rplat.fsck_tool(), '-fn rc=' if not rplat.is_linux() else '-f -n rc=', rc, text.strip()[-600:])
+    if rc:
+        sys.exit(rplat.fsck_tool() + ' reports errors')
 
 
 def stage_verify(a, img, rootmnt):
@@ -626,8 +586,11 @@ def stage_verify(a, img, rootmnt):
                 bad += 1
         chk(bad == 0, f'owner spot check of 3000 paths: {bad} mismatches')
         # compressed files would be fatal (no decmpfs in the kernel)
-        r = subprocess.run(['find', R, '-flags', '+compressed', '-print', '-quit'], capture_output=True, text=True)
-        chk(not r.stdout.strip(), 'no HFS-compressed files')
+        comp = rplat.find_compressed(R)
+        if comp is None:
+            log('SKIP no HFS-compressed files check (macOS only: Linux copies plain files, apfs-fuse reads decompressed data)')
+        else:
+            chk(not comp, 'no HFS-compressed files')
         # signatures of a sample of rewritten Mach-Os
         machos = []
         for sub in ('sbin', 'usr/libexec', 'usr/sbin', 'System/Library/CoreServices/SpringBoard.app'):
@@ -639,14 +602,20 @@ def stage_verify(a, img, rootmnt):
                             if fh.read(4) in MAGICS:
                                 machos.append(p)
         sample = random.Random(2).sample(machos, min(150, len(machos)))
-        badsig, resonly = [], []
+        badsig, resonly, nver = [], [], 0
         for p in sample:
-            r = subprocess.run(['codesign', '-v', p], capture_output=True, text=True)
-            if r.returncode:
+            v = rplat.verify_signature(p)
+            if v is None:
+                break
+            nver += 1
+            if not v[0]:
                 # bundle resource seals (CodeResources) are not checked by the kernel stand-in; page hashes are
-                (resonly if 'resource' in r.stderr else badsig).append(p)
-        chk(not badsig, f'codesign -v on {len(sample)} of {len(machos)} Mach-Os: {len(badsig)} bad {badsig[:3]}, '
-                        f'{len(resonly)} only with an invalid bundle resource seal')
+                (resonly if v[1] == 'resource' else badsig).append(p)
+        if nver:
+            chk(not badsig, f'codesign -v on {len(sample)} of {len(machos)} Mach-Os: {len(badsig)} bad {badsig[:3]}, '
+                            f'{len(resonly)} only with an invalid bundle resource seal')
+        else:
+            log('SKIP codesign -v of a sample (macOS only; the identity/CS-flag check below still runs on every re-signed Mach-O)')
         # every re-signed Mach-O: identifier, team id and CS options as before the re-sign
         idf = os.path.join(W, 'identities.tsv')
         if os.path.exists(idf):
@@ -724,6 +693,44 @@ def stage_simg(a, img, rootmnt):
     log('wrote', out, os.path.getsize(out), 'bytes', '(raw image consumed)' if not a.keep_raw else '')
 
 
+def dry_plan(a, img, rootmnt, dmgs, stages):
+    """RENEGADE_DRY_RUN=1: print what the platform layer would run for these stages (nothing is executed or created)."""
+    b = rplat.backend()
+    print(f'# dry run, backend: {b.name}; stages: {",".join(stages)}')
+    for s in stages:
+        print(f'## stage {s}')
+        if s == 'copy':
+            b.make_image(img, a.size)
+            b.format_hfsx(img, 'iOSRoot')
+            h = b.attach(img, rootmnt, readonly=False)
+            for name in ('appos', 'sysos', 'os'):
+                mnt = os.path.join(W, 'src-' + name)
+                d = b.attach_ipsw(dmgs[name], mnt, owners=True)
+                if not rplat.is_linux():
+                    b.detach(d)
+                    d = b.attach_ipsw(dmgs[name], mnt, owners=False)
+                b.copy_tree(mnt, rootmnt, list(EXCLUDE))
+                b.detach(d)
+            print('python3 -I hfs_trim.py', img, '  # punch the free blocks')
+        elif s == 'macho':
+            print('# for every rewritten Mach-O (pacstrip, then the ad-hoc re-sign keeping identifier, flags, entitlements):')
+            b.adhoc_sign('/ROOT/path/to/macho', 'IDENTIFIER', 0x12002, b'<entitlements xml>')
+        elif s == 'cache':
+            print('python3 -I pacstrip_cache.py DYLD_DIR; python3 -I fips_rehmac.py DYLD_DIR --patch   # pure Python')
+        elif s in ('tweaks', 'jb'):
+            print('# plist/file edits in the mounted root (root_tweaks18.py), jailbreak payload; prebuilt-binary features skip by themselves')
+        elif s == 'seal':
+            b.detach(rootmnt)
+            print('python3 -I hfs_trim.py', img)
+            print('python3 -I hfsroot_owners.py', img, '--map owners-final.tsv --default-root   # pure Python, offline catalog edit')
+            b.fsck(img)
+        elif s == 'verify':
+            b.attach(img, rootmnt, readonly=True, owners=True)
+            b.detach(rootmnt)
+        elif s == 'simg':
+            print('python3 -I img2simg.py', img, a.simg or os.path.splitext(img)[0] + '.simg', '' if a.keep_raw else '--consume')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--ipsw-dir', default=os.path.join(ROOT, 'research/ios18/ipsw/22H352__iPhone11,8'))
@@ -750,6 +757,14 @@ def main():
     for f_ in ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender'):
         if getattr(a, 'no_' + f_):
             os.environ['RENEGADE_NO_' + f_.upper()] = '1'
+    stages_ = a.stages.split(',')
+    rplat.need_privileges()
+    roles = ['image', 'fsck'] if any(x in stages_ for x in ('copy', 'macho', 'cache', 'tweaks', 'jb', 'seal', 'verify')) else []
+    if 'copy' in stages_:
+        roles += ['format', 'ipsw']
+    if 'jb' in stages_ or 'tweaks' in stages_:
+        roles.append('zstd')
+    rplat.check_tools(*roles)
     os.makedirs(W, exist_ok=True)
     rootmnt = os.path.join(W, 'root')
     # the jailbreak userland is part of the default build now (opt out: --no-jb / RENEGADE_NO_JB=1 / RENEGADE_JB=0)
@@ -759,6 +774,9 @@ def main():
         a.stages = ','.join(st[:st.index('seal')] + ['jb'] + st[st.index('seal'):]) if 'seal' in st else a.stages + ',jb'
     stages = a.stages.split(',')
     dmgs = find_dmgs(a.ipsw_dir)
+    if rplat.backend().dry:
+        dry_plan(a, a.out, rootmnt, dmgs, stages)
+        return
     if 'copy' not in stages and stages[0] in ('macho', 'cache', 'tweaks', 'jb') and not os.path.ismount(rootmnt):
         attach(a.out, rootmnt, readonly=False)
     for s in stages:

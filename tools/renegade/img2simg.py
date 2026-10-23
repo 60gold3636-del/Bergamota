@@ -10,21 +10,21 @@ the .simg is as big as its DATA, so with little free disk RAW and SIMG together 
 shrinks while the simg grows: afterwards RAW.img is destroyed (all zeros) and only OUT.simg is left.
 Flash with:  fastboot -S 512M flash userdata OUT.simg
 """
-import fcntl
 import os
 import struct
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import renegade_platform as rplat  # noqa: E402
+
 SPARSE_MAGIC = 0xED26FF3A
 RAW, FILL = 0xCAC1, 0xCAC2
 CHUNK_MAX = 4096                      # blocks per RAW chunk (16 MiB at 4K)
-F_PUNCHHOLE = 99
 PIECE = 16 << 20
 
 
 def punch(fd, off, length):
-    # struct fpunchhole { u32 fp_flags; u32 reserved; off_t fp_offset; off_t fp_length; }
-    fcntl.fcntl(fd, F_PUNCHHOLE, struct.pack('<IIqq', 0, 0, off, length))
+    rplat.punch_hole_safe(fd, off, length)      # macOS F_PUNCHHOLE, Linux fallocate(PUNCH_HOLE)
 
 
 def main():

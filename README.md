@@ -63,7 +63,7 @@ Qualcomm ABL (stock, unlocked)
 
 ## Getting started
 
-You need a Mac, a Poco F1 with an **unlocked bootloader**, and a backup of its partitions (see [`NOTES.md`](NOTES.md)).
+You need a Mac (the Renegade root step also runs on Linux, see 3b), a Poco F1 with an **unlocked bootloader**, and a backup of its partitions (see [`NOTES.md`](NOTES.md)).
 
 ```sh
 brew install --cask android-platform-tools
@@ -117,6 +117,19 @@ tools/renegade/renegade fetch         # root dmg + SystemOS/AppOS cryptexes, dec
 tools/renegade/renegade root          # -> research/ios18/ios18-root-full.simg
 tools/renegade/renegade update research/ios18/ios18-root-full.simg   # later: re-apply the tweaks in place
 ```
+
+**3b. Renegade on Linux (Debian/Ubuntu).** The root image can be built and updated on Linux without compiling anything. The on-device tools that need Xcode (`sweetuicache`, `sweetfp`, the wallpaper tools, `sweetmetrics`, `sweetprefs`, the `bglrender` payload) are skipped automatically, with a summary at the end, unless prebuilt copies are in `research/sweetnet/` or `research/bergamota-gl/`. Everything that is plist or data still happens: launchd edits, preferences (battery %), event timing, Bluetooth environment, the jailbreak userland (Procursus, Sileo, TrollStore) and the dropbear job if its prebuilt binaries exist. It needs **root** (loop device and `mount -t hfsplus`) and the `hfsplus` kernel module:
+
+```sh
+sudo apt install python3 hfsprogs util-linux zstd dropbear-bin cmake g++ git libfuse3-dev libbz2-dev zlib1g-dev libattr1-dev fuse3
+# ipsw: the .deb from https://github.com/blacktop/ipsw/releases ; apfs-fuse (not in the archives): build https://github.com/sgan81/apfs-fuse
+tools/renegade/renegade fetch                    # ipsw: root dmg + cryptexes, decrypted
+sudo -E tools/renegade/renegade root             # -> research/ios18/ios18-root-full.simg (the ldid signer is downloaded and SHA-256 checked)
+sudo -E tools/renegade/renegade update research/ios18/ios18-root-full.simg
+RENEGADE_DRY_RUN=1 tools/renegade/renegade root  # prints the mkfs/losetup/mount/apfs-fuse/ldid commands, runs nothing
+```
+
+Details, the macOS/Linux matrix and what is not verified yet: `tools/renegade/README.md`, "Platforms".
 
 **4. Enxerto (the boot image).** Pack the kernel, the ADT and the boot-args into an Enxerto boot image. It also takes the Apple logo for the boot screen from your root image, so it is never committed:
 

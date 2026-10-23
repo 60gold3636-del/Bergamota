@@ -46,6 +46,39 @@ screen (image versions v8-v14 in NOTES.md):
 """
 import glob, os, plistlib, shutil, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import renegade_platform as rplat
+
+# What was skipped and why, printed at the end of `renegade root` / `renegade update` (skip_summary()).
+SKIPPED = []
+
+
+def note_skip(feature, reason):
+    SKIPPED.append((feature, reason))
+
+
+def not_built(what='tools/sweetnet/build.sh'):
+    """Why a prebuilt on-device binary is missing. They are built with xcrun (a Mac with Xcode); nothing is compiled here."""
+    if rplat.is_linux():
+        return ('no prebuilt binary (they are built on a Mac with Xcode: %s; Linux only installs prebuilt artifacts found in '
+                'research/sweetnet/ or $RENEGADE_SWEETNET)' % what)
+    return 'not built (%s)' % what
+
+
+def skip_summary():
+    """Print the features that were skipped, once per distinct (feature, reason)."""
+    seen, rows = set(), []
+    for f, r in SKIPPED:
+        if (f, r) not in seen:
+            seen.add((f, r))
+            rows.append((f, r))
+    if not rows:
+        print('skipped features: none')
+        return
+    print('skipped features (%d):' % len(rows))
+    for f, r in rows:
+        print('  - %s: %s' % (f, r))
+
 BUILD, VERSION = '22H352', '18.7.8'
 MOBILE = 501
 
@@ -127,6 +160,7 @@ def bluetooth(root):
     stub_path = BLUETOOL_STUB or find_sweetnet('bluetool-stub')
     if not stub_path or not os.path.exists(stub_path):
         print('bluetooth: BlueTool stub not built (tools/sweetnet/build.sh): BlueTool left alone')
+        note_skip('bluetooth BlueTool stub + hcitest', not_built() + '; the bluetoothd launchd environment was still set')
         return
     dst = os.path.join(root, 'usr/sbin/BlueTool')
     orig = dst + '.orig'
@@ -253,15 +287,58 @@ def mac_user_pubkey():
     return None, None
 
 
+def host_exe(out, name):
+    """Host-side helper of tools/ssh/build.sh that runs on THIS machine: NAME-mac on macOS, NAME-linux (a prebuilt
+    artifact) on Linux. None if absent."""
+    p = os.path.join(out, name + ('-linux' if rplat.is_linux() else '-mac'))
+    return p if os.path.isfile(p) else None
+
+
+def toybox_applets(out):
+    """Names of the toybox applets (symlinked in /usr/local/bin). Order of preference: the host toybox listing itself
+    (what macOS always did), `toybox-applets.txt` next to the binaries, else derived: the CONFIG_X=y lines of
+    tools/ssh/toybox.config that also appear as a C string in the iOS binary (identical to the real list on the
+    22H352 build: checked against toybox-mac, plus the aliases `[` for test and `nc` for netcat)."""
+    import re
+    import subprocess
+    host = host_exe(out, 'toybox')
+    if host:
+        return subprocess.run([host], capture_output=True, text=True).stdout.split()
+    lst = os.path.join(out, 'toybox-applets.txt')
+    if os.path.isfile(lst):
+        return open(lst).read().split()
+    cfg = os.path.join(HERE, '..', 'ssh', 'toybox.config')
+    binary = open(os.path.join(out, 'toybox'), 'rb').read()
+    cand = {m.lower() for m in re.findall(r'^CONFIG_([A-Z0-9_]+)=y', open(cfg).read(), re.M)}
+    found = {c for c in cand if b'\0' + c.encode() + b'\0' in binary} - {'toybox'}
+    if 'test' in found:
+        found.add('[')
+    if 'netcat' in found:
+        found.add('nc')
+    return sorted(found)
+
+
+def host_dropbearkey(out):
+    """A dropbearkey that runs here: the host build of tools/ssh/build.sh, or (Linux) the distribution's."""
+    host = host_exe(out, 'dropbear')
+    if host:
+        return host, True
+    import shutil as _sh
+    return _sh.which('dropbearkey'), False
+
+
 def ssh(root):
     """Key-only SSH over the USB link (docs/SSH_OVER_USB.md): dropbear, dash
     as /bin/sh, toybox, host keys, authorized_keys, launchd job. Needs the
     binaries from tools/ssh/build.sh in research/ssh-build/out."""
     out = os.path.normpath(SSH_OUT)
-    need = [os.path.join(out, n) for n in ('dropbear', 'dash', 'toybox', 'dropbear-mac', 'toybox-mac')]
+    # macOS also needs the host builds (applet list, host keys); Linux needs only the iOS binaries (see toybox_applets)
+    need = [os.path.join(out, n) for n in (('dropbear', 'dash', 'toybox') if rplat.is_linux() else
+                                           ('dropbear', 'dash', 'toybox', 'dropbear-mac', 'toybox-mac'))]
     missing = [p for p in need if not os.path.isfile(p)]
     if missing:
         print('ssh: skipped, not built (run tools/ssh/build.sh):', ', '.join(os.path.basename(p) for p in missing))
+        note_skip('ssh (dropbear, dash, toybox)', not_built('tools/ssh/build.sh') + ': ' + ', '.join(os.path.basename(p) for p in missing))
         return
     keyfile, key = mac_user_pubkey()
     if key is None:
@@ -273,7 +350,7 @@ def ssh(root):
         relink('dropbear', os.path.join(bindir, n))
     install_file(os.path.join(out, 'toybox'), os.path.join(bindir, 'toybox'))
     import subprocess
-    applets = subprocess.run([os.path.join(out, 'toybox-mac')], capture_output=True, text=True).stdout.split()
+    applets = toybox_applets(out)
     n = 0
     for a in applets:
         dst = os.path.join(bindir, a)
@@ -321,13 +398,22 @@ def ssh(root):
     os.chown(kd, 0, 0)
     os.chmod(kd, 0o700)
     import tempfile
+    keytool, is_multi = host_dropbearkey(out)
     with tempfile.TemporaryDirectory() as tmp:
         tool = os.path.join(tmp, 'dropbearkey')
-        os.symlink(os.path.join(out, 'dropbear-mac'), tool)
+        if keytool and is_multi:
+            os.symlink(keytool, tool)               # dropbearmulti picks the applet from argv[0]
+        elif keytool:
+            tool = keytool
         for typ in ('ed25519', 'ecdsa'):
             kf = os.path.join(kd, 'dropbear_%s_host_key' % typ)
             if os.path.exists(kf):
                 print('ssh: host key kept', os.path.basename(kf))
+                continue
+            if not keytool:
+                print('ssh: no dropbearkey for the host (Linux: apt install dropbear-bin, or add dropbear-linux next to the '
+                      'binaries): host key %s NOT generated, dropbear will not start without it' % typ)
+                note_skip('ssh host key (' + typ + ')', 'no dropbearkey on this host (apt install dropbear-bin)')
                 continue
             subprocess.run([tool, '-t', typ, '-f', kf], check=True, capture_output=True)
             os.chown(kf, 0, 0)
@@ -363,6 +449,7 @@ def netcfg(root):
     Relaunched until it succeeds (configd may not be up yet)."""
     if not os.path.exists(NETCFG):
         print('netcfg: skipped, build it first (tools/sweetnet/build.sh)')
+        note_skip('netcfg (sweetnetcfg + launchd job)', not_built())
         return
     dst = os.path.join(root, 'usr/local/bin/sweetnetcfg')
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -391,6 +478,7 @@ def sweetreboot(root):
     kernel patch 0137): sets kern.sweet_reboot_mode and reboots. No launchd job."""
     if not os.path.exists(REBOOT_TOOL):
         print('sweetreboot: skipped, build it first (tools/sweetnet/build.sh)')
+        note_skip('sweetreboot', not_built())
         return
     dst = os.path.join(root, 'usr/local/bin/sweetreboot')
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -406,10 +494,12 @@ def sweetmetrics(root):
     with a message when it is not built; RENEGADE_NO_METRICS=1 skips it."""
     if os.environ.get('RENEGADE_NO_METRICS') == '1':
         print('sweetmetrics: skipped (RENEGADE_NO_METRICS=1)')
+        note_skip('sweetmetrics', 'RENEGADE_NO_METRICS=1')
         return
     src = find_sweetnet('ios18/sweetmetrics')
     if not src:
         print('sweetmetrics: not built (tools/sweetnet/build.sh): skipped')
+        note_skip('sweetmetrics', not_built())
         return
     install_file(src, os.path.join(root, 'usr/local/bin/sweetmetrics'))
     print('sweetmetrics: /usr/local/bin/sweetmetrics')
@@ -585,21 +675,38 @@ POSTER_BIN = 'Applications/PosterBoard.app/PosterBoard'
 class OwnerRecorder:
     """Stand-in for os.chown/os.lchown while building WITHOUT root (mkroot-full.py, update.py): the owners are written
     into the HFS+ catalog afterwards by hfsroot_owners.py. `rec.install()` patches the os module of this process.
+    On Linux as root (mounted with the hfsplus driver, which stores owners) the chown is also applied, and every owner is
+    recorded, so the offline catalog pass (hfsroot_owners.py) sees the same table as on macOS.
     A chown to the owner of the process is not recorded: the image is mounted noowners, so every file shows up as the
     mounting user (501:20), and code that rewrites a file in place passes that pair on (`save(path, ..., st.st_uid,
     st.st_gid, ...)`) without meaning it; recording it gave /System/Library/xpc/launchd.plist the owner 501:20."""
 
     def __init__(self):
         self.owners = {}
+        self.real = rplat.real_owners()
+        self._chown, self._lchown = os.chown, os.lchown
 
-    def __call__(self, path, uid, gid, **kw):
-        if (uid, gid) == (os.getuid(), os.getgid()):
+    def _record(self, path, uid, gid):
+        if (uid, gid) == (os.getuid(), os.getgid()) and not self.real:
             return
         self.owners[os.path.abspath(path)] = (uid, gid)
 
+    def __call__(self, path, uid, gid, **kw):
+        self._record(path, uid, gid)
+
+    def chown(self, path, uid, gid, **kw):
+        if self.real:                       # Linux as root: the owner is set for real AND kept for the catalog pass
+            self._chown(path, uid, gid, **kw)
+        self._record(path, uid, gid)
+
+    def lchown(self, path, uid, gid):
+        if self.real:
+            self._lchown(path, uid, gid)
+        self._record(path, uid, gid)
+
     def install(self):
-        os.chown = self
-        os.lchown = self
+        os.chown = self.chown
+        os.lchown = self.lchown
 
 
 def add_job(root, label, job):
@@ -635,10 +742,8 @@ def macho_has_dylib(path, dylib):
 
 
 def entitlements_of(path):
-    import subprocess
-    r = subprocess.run(['codesign', '-d', '--entitlements', '-', '--xml', path], capture_output=True)
-    out = r.stdout.strip()
-    return plistlib.loads(out) if out.startswith(b'<?xml') else None
+    out = rplat.read_entitlements(path)
+    return plistlib.loads(out) if out else None
 
 
 def posterboard(root):
@@ -658,6 +763,7 @@ def posterboard(root):
     dylib = SWEETFP or find_sweetnet('ios18/sweetfp.dylib')
     if not dylib:
         print('posterboard: sweetfp.dylib not built (tools/sweetnet/build.sh): skipped, PosterBoard left alone')
+        note_skip('posterboard sweetfp', not_built() + '; PosterBoard left alone')
         return
     install_file(dylib, os.path.join(root, SWEETFP_PATH.lstrip('/')), 0o755)    # first: the binary must never name a missing dylib
     print('posterboard:', SWEETFP_PATH, 'installed')
@@ -813,19 +919,34 @@ def firstboot(root, appreg=True, jb=True, wallpaper=True):
     if not appreg and not jb and not wallpaper:
         print('firstboot: appreg, jb and wallpaper are all off: no job')
         return
-    uic = UICACHE or find_sweetnet('ios18/sweetuicache')
-    if not uic:
-        print('firstboot: sweetuicache not built (tools/sweetnet/build.sh): skipped')
-        return
     if not os.path.exists(os.path.join(root, 'bin/sh')):
         print('firstboot: /bin/sh missing (the ssh tweak installs dash): skipped')
+        note_skip('first-boot job (app registration, wallpaper, jailbreak post-install)',
+                  '/bin/sh missing in the root: dash comes from the ssh tweak, which needs prebuilt dropbear/dash/toybox')
         return
-    install_file(uic, os.path.join(root, 'usr/local/bin/sweetuicache'))
+    uic = UICACHE or find_sweetnet('ios18/sweetuicache')
+    if uic:
+        install_file(uic, os.path.join(root, 'usr/local/bin/sweetuicache'))
+    else:
+        # No sweetuicache (xcrun-built): the job still runs, for the jailbreak post-install. The apps were moved into
+        # /Applications offline by staged_apps(); lsd registers system apps itself when it seeds a fresh LaunchServices
+        # database (fresh userdata), but an already-seeded database does not learn about them without sweetuicache.
+        print('firstboot: sweetuicache not built (tools/sweetnet/build.sh): app registration skipped')
+        if appreg:
+            note_skip('appreg (sweetuicache)', not_built() + '; the apps are still moved to /Applications and lsd registers them '
+                      'itself when it seeds a fresh LaunchServices database (fresh userdata); an already-seeded database does not')
+        if wallpaper:
+            note_skip('wallpaper + icon style', 'needs sweetuicache to register SweetRun at first boot: ' + not_built())
+        appreg = wallpaper = False
+        if not jb:
+            print('firstboot: nothing left for the job to do: no job')
+            return
     if wallpaper:
         wall = [find_sweetnet('ios18/' + n) for n in ('sweetposterset', 'sweeticonstyle', 'sweetopen', 'SweetRun.app')]
         if not all(wall):
             print('firstboot: sweetposterset/sweeticonstyle/sweetopen/SweetRun.app not built (tools/sweetnet/build.sh): '
                   'default wallpaper and icon style skipped')
+            note_skip('wallpaper tools (sweetposterset, sweeticonstyle, sweetopen, SweetRun.app)', not_built())
             wallpaper = False
         else:
             for n, src in zip(('sweetposterset', 'sweeticonstyle', 'sweetopen'), wall):
@@ -924,6 +1045,8 @@ def bglrender(root):
     src = find_bgl()
     if not src:
         print('bglrender: payload not built (gpu/eagl/make-payload.sh): backboardd job left alone')
+        note_skip('bglrender', 'no prebuilt payload (gpu/eagl/make-payload.sh, needs a Mac; or a CI artifact in research/bergamota-gl/ '
+                  'or $RENEGADE_BGL); backboardd job left alone')
         return
     dst = os.path.join(root, BGL_DIR)
     for d in (dst, os.path.join(dst, 'OpenGLES.framework')):
@@ -949,6 +1072,30 @@ def bglrender(root):
     save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     print('bglrender: payload from %s installed in /%s; backboardd job -> %s (%d entr%s; inert without boot-arg bglrender=1|soft)' % (
         src, BGL_DIR, BGL_LAUNCH, n, 'y' if n == 1 else 'ies'))
+
+
+def tool_gaps(feats):
+    """Features of `feats` (name -> bool) that cannot run because the prebuilt binaries they install are missing
+    (always the case on Linux without CI artifacts). Returns {feature: reason} and records each in the skip summary;
+    callers switch those features off instead of failing."""
+    gaps = {}
+    if not (UICACHE or find_sweetnet('ios18/sweetuicache')):
+        if feats.get('appreg'):
+            gaps['appreg'] = ('sweetuicache ' + not_built() + '; the apps are still moved to /Applications and lsd registers them '
+                              'itself when it seeds a fresh LaunchServices database (fresh userdata); an already-seeded one does not')
+        if feats.get('wallpaper'):
+            gaps['wallpaper'] = 'needs sweetuicache (registers SweetRun at first boot): ' + not_built()
+    if feats.get('wallpaper') and 'wallpaper' not in gaps and not all(
+            find_sweetnet('ios18/' + n) for n in ('sweetposterset', 'sweeticonstyle', 'sweetopen', 'SweetRun.app')):
+        gaps['wallpaper'] = 'sweetposterset/sweeticonstyle/sweetopen/SweetRun.app ' + not_built()
+    if feats.get('posterboard') and not (SWEETFP or find_sweetnet('ios18/sweetfp.dylib')):
+        gaps['posterboard'] = 'sweetfp.dylib ' + not_built() + '; PosterBoard is left alone'
+    if feats.get('bglrender') and not find_bgl():
+        gaps['bglrender'] = ('payload: no prebuilt bergamota-gl (gpu/eagl/make-payload.sh needs a Mac; or a CI artifact in '
+                             'research/bergamota-gl/ or $RENEGADE_BGL)')
+    for f, r in gaps.items():
+        note_skip(f, r)
+    return gaps
 
 
 def configure_paths():
@@ -1007,6 +1154,7 @@ def sweetprefs_tool(root):
     src = find_sweetnet('ios18/sweetprefs')
     if not src:
         print('sweetprefs: not built (tools/sweetnet/build.sh): skipped')
+        note_skip('sweetprefs tool', not_built() + '; the preferences themselves (battery %, ...) are written as plists')
         return
     install_file(src, os.path.join(root, 'usr/local/bin/sweetprefs'))
     print('sweetprefs: /usr/local/bin/sweetprefs installed')
@@ -1093,6 +1241,7 @@ def main():
                            'SilentICDPUpgrade')})
     merge_pref(root, 'com.apple.managedconfiguration.notbackedup', {
         'LockdownActivationIndicatesCloudConfigurationAvailable': False})
+    skip_summary()
 
 
 if __name__ == '__main__':
