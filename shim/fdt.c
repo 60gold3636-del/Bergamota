@@ -230,3 +230,23 @@ void fdt_board_info(uintptr_t fdt)
 		}
 	}
 }
+
+/* Value of "key=" as a whole word of /chosen bootargs (pointer into the FDT), or 0. */
+const char *fdt_cmdline_opt(uintptr_t fdt, const char *key)
+{
+	uint32_t len = 0;
+	const char *a = (const char *)fdt_chosen_prop(fdt, "bootargs", &len);
+
+	if (!a)
+		return 0;
+	for (uint32_t i = 0; i < len && a[i]; i++) {
+		const char *k = key, *s = a + i;
+		if (i && a[i - 1] != ' ')
+			continue;
+		while (*k && *s == *k)
+			s++, k++;
+		if (!*k)
+			return s;
+	}
+	return 0;
+}

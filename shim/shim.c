@@ -13,6 +13,7 @@
 #include "mmu.h"
 #include "loader.h"
 #include "bergamota.h"
+#include "charge_mode.h"
 #include "usb_power.h"
 #include "ufs.h"
 #include "fdt.h"
@@ -375,6 +376,16 @@ static uint32_t to_us(uint64_t ticks)
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
+
+	/*
+	 * Off-mode charging (docs/BERGAMOTA_CHARGE.md): ABL's charger path adds androidboot.mode=charger.
+	 * Shows the charging screen until Power is held ~2 s, then the normal flow below continues.
+	 * Without the flag this is one cmdline scan and nothing else.
+	 */
+	if (charge_wanted(dtb)) {
+		stage = "charge";
+		charge_run(dtb);
+	}
 
 	/* Cold power-on: ABL leaves USB off unless it entered fastboot. No-op when already alive. */
 	stage = "usb power";

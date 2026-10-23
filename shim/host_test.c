@@ -6,6 +6,7 @@
 #include "bootui.h"
 #include "console.h"
 #include "fbui.h"
+#include "charge.h"
 
 static uint32_t host_fb[FB_H * FB_STRIDE / 4];
 
@@ -98,5 +99,39 @@ int main(void)
 		  "dwc3 id 5533330a dsts 00000800 gctl 00000000/00004000 qusb 00000000 pll 00000000 smmu 00000000/00000000",
 		  "buf b8000000+1024MiB  cmd boot  reply FAIL inflate failed");
 	dump("out/preview/fastboot-7-error.ppm");
+
+	/* Off-mode charging screen with fake PMIC readings (same mapping as charge_mode.c). */
+	static const struct {
+		const char *name;
+		struct pmic_batt b;
+	} cs[] = {
+		{ "15-charging", { 1, 15, 3612, 1480, 1, 1, PMIC_CHG_CHARGING, 3, 0x04, 0x25 } },
+		{ "62-charging", { 1, 62, 4120, 1100, 1, 1, PMIC_CHG_CHARGING, 3, 0x04, 0x9e } },
+		{ "100-charged", { 1, 100, 4352, 0, 1, 1, PMIC_CHG_FULL, 5, 0x04, 0xff } },
+		{ "8-not-charging", { 1, 8, 3480, -310, 1, 0, PMIC_CHG_NONE, 0, 0, 0x14 } },
+		{ "unavailable", { 0, 0, 0, 0, 0, 1, PMIC_CHG_NONE, 0, 0x04, 0 } },
+	};
+	for (unsigned i = 0; i < sizeof cs / sizeof cs[0]; i++) {
+		struct charge_view v;
+		char path[96];
+		snprintf(path, sizeof path, "out/preview/charge-%s.ppm", cs[i].name);
+		charge_ui_init();
+		charge_view_from(&v, &cs[i].b);
+		charge_ui_update(&v);
+		charge_ui_diag("pmic ok  msoc b8  chg 3  usbin 1  apsd 04  pon 10",
+			       "wled 07ff/07ff  entered via mode=charger");
+		dump(path);
+	}
+	/* incremental update (62 -> 63 %) and the "fastboot could not start" notice */
+	{
+		struct charge_view v = { CHARGE_CHARGING, 62, 4120, 1100, 1 };
+		charge_ui_init();
+		charge_ui_update(&v);
+		v.soc = 63;
+		v.mv = 4131;
+		charge_ui_update(&v);
+		charge_ui_notice("fastboot stopped: USB clocks off", 0xffff6a5aU);
+		dump("out/preview/charge-63-notice.ppm");
+	}
 	return 0;
 }
