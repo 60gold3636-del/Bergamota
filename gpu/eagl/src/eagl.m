@@ -23,6 +23,7 @@
 #import <objc/runtime.h>
 #import <mach-o/dyld.h>
 #import <pthread.h>
+#import <sys/time.h>
 #import <mach/mach.h>
 #import <mach/vm_map.h>
 #import <sys/stat.h>
@@ -145,13 +146,20 @@ static EAGLContext *cur_ctx(void) {
 // A display/swap-chain IOSurface can be mapped read-only in this process (a write then dies with SIGBUS / KERN_PROTECTION_FAILURE, seen in
 // backboardd): check the mapping before the CPU fallback writes into it.
 static BOOL mapping_writable(const void *p, size_t len) {
-    vm_address_t addr = (vm_address_t)p;
-    vm_size_t size = 0;
-    vm_region_basic_info_data_64_t info;
-    mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
-    mach_port_t obj;
-    if (vm_region_64(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) return NO;
-    return (vm_address_t)p >= addr && (vm_address_t)p + len <= addr + size && (info.protection & VM_PROT_WRITE);
+    // Walk the VM regions covering [p, p+len): every one must exist and be writable (a surface mapping may consist of several regions; the first
+    // version required ONE region for the whole range and so skipped legitimate writes: the text/icons of the UI went missing).
+    vm_address_t cur = (vm_address_t)p, end = cur + len;
+    while (cur < end) {
+        vm_address_t addr = cur;
+        vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj;
+        if (vm_region_64(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) return NO;
+        if (addr > cur || !(info.protection & VM_PROT_WRITE)) return NO;
+        cur = addr + size;
+    }
+    return YES;
 }
 
 static void rgba_to_surface(const uint8_t *src, uint32_t w, uint32_t h, IOSurfaceRef s, BOOL flip, BOOL opaque) {
@@ -259,6 +267,46 @@ static void maybe_dump(EAGLContext *c, int idx, BOOL isTex, uint32_t gw, uint32_
     free(buf);
 }
 
+// Per-frame statistics for display-size surfaces (EAGL_SHIM_DEBUG): time since the previous sync, duration of the blit, and a sampled average
+// luminance / fraction of black samples of what the CPU sees in the surface afterwards. A flashing display shows up as black or stale frames.
+static double now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return tv.tv_sec * 1e3 + tv.tv_usec / 1e3; }
+static void frame_stats(Attach *a, double t_start, double t_end, int gpu) {
+    static double last_t, t0; static int n;
+    size_t w = IOSurfaceGetWidth(a->surf), h = IOSurfaceGetHeight(a->surf);
+    if (w < 1000 || h < 2000 || n > 3000) return;
+    if (!t0) t0 = t_start;
+    double lum = -1, black = -1;
+    kern_return_t lk = IOSurfaceLock(a->surf, kIOSurfaceLockReadOnly, NULL);
+    const uint8_t *sp = lk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(a->surf) : NULL;
+    if (sp && IOSurfaceGetPixelFormat(a->surf) == 'BGRA') {
+        size_t bpr = IOSurfaceGetBytesPerRow(a->surf), cnt = 0, blk = 0; double sum = 0;
+        for (size_t y = 3; y < h; y += 61) for (size_t x = 5; x < w; x += 53) { const uint8_t *q = sp + y * bpr + x * 4; sum += (q[0] + q[1] + q[2]) / 3.0; if (q[0] + q[1] + q[2] < 6) blk++; cnt++; }
+        lum = sum / cnt; black = (double)blk / cnt;
+    }
+    if (lk == KERN_SUCCESS) IOSurfaceUnlock(a->surf, kIOSurfaceLockReadOnly, NULL);
+    // thumbnails (1/16 scale) of the first 80 syncs: /private/var/tmp/bgl-thumbs.bin = repeated { u32 index, u32 surface, u32 w, u32 h, w*h*3 RGB } (contact sheet on the Mac)
+    {
+        static uint8_t *tb; static size_t tlen; enum { TW = 71, TH = 153, MAXF = 80 };
+        if (n < MAXF && sp == NULL) { /* surface unreadable: nothing */ }
+        if (n < MAXF) {
+            if (!tb) tb = malloc((size_t)MAXF * (16 + TW * TH * 3));
+            kern_return_t lk2 = IOSurfaceLock(a->surf, kIOSurfaceLockReadOnly, NULL);
+            const uint8_t *sp2 = lk2 == KERN_SUCCESS ? IOSurfaceGetBaseAddress(a->surf) : NULL;
+            if (tb && sp2 && IOSurfaceGetPixelFormat(a->surf) == 'BGRA') {
+                size_t bpr = IOSurfaceGetBytesPerRow(a->surf);
+                uint32_t *hd = (uint32_t *)(tb + tlen); hd[0] = n + 1; hd[1] = IOSurfaceGetID(a->surf); hd[2] = TW; hd[3] = TH;
+                uint8_t *o = tb + tlen + 16;
+                for (int y = 0; y < TH; y++) for (int x = 0; x < TW; x++) { const uint8_t *q = sp2 + (size_t)(y * 16) * bpr + (size_t)(x * 16) * 4; *o++ = q[2]; *o++ = q[1]; *o++ = q[0]; }
+                tlen += 16 + TW * TH * 3;
+                if (n + 1 == MAXF) { FILE *f = fopen("/private/var/tmp/bgl-thumbs.bin", "wb"); if (f) { fwrite(tb, 1, tlen, f); fclose(f); } fprintf(stderr, "EAGL(shim): thumbnails written (%zu bytes)\n", tlen); }
+            }
+            if (lk2 == KERN_SUCCESS) IOSurfaceUnlock(a->surf, kIOSurfaceLockReadOnly, NULL);
+        }
+    }
+    fprintf(stderr, "EAGL(shim): FS #%d t=%.0f dt=%.1f blit=%.1fms surf=%u gpu=%d lum=%.1f black=%.2f\n", ++n, t_end - t0, last_t ? t_start - last_t : 0.0, t_end - t_start, IOSurfaceGetID(a->surf), gpu, lum, black);
+    last_t = t_start;
+}
+
 // Flush every attachImage: association of this context into its IOSurface.
 static void sync_attached(EAGLContext *c) {
     struct _EAGLContextPrivate *p = c->_private;
@@ -266,9 +314,10 @@ static void sync_attached(EAGLContext *c) {
         Attach *a = &p->att[i];
         BOOL isTex = a->kind ? (a->kind == 1) : (glIsTexture(a->name) && !glIsRenderbuffer(a->name));
         // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
+        double t_start = g_debug ? now_ms() : 0;
         BOOL flip = a->kind ? a->inverted : !a->inverted;      // target-form attach (the render server): YES = rows flipped, NO = as GL has them (seen on the phone: NO + flip drew the UI upside down)
         if (osm_sweet_active() && osm_sweet_blit(a->name, isTex, IOSurfaceGetID(a->surf), flip, NO)) {
-            if (g_debug) maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), YES);
+            if (g_debug) { frame_stats(a, t_start, now_ms(), 1); maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), YES); }
             continue;
         }
         uint32_t w, h;
@@ -278,7 +327,7 @@ static void sync_attached(EAGLContext *c) {
             rgba_to_surface(buf, w, h, a->surf, flip, NO);
             free(buf);
         }
-        if (g_debug) maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), NO);
+        if (g_debug) { frame_stats(a, t_start, now_ms(), 0); maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), NO); }
     }
 }
 
