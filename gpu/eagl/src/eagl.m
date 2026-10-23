@@ -45,7 +45,7 @@
 
 #define EAGL_DEBUG(...) do { if (g_debug) fprintf(stderr, "EAGL(shim): " __VA_ARGS__); } while (0)
 extern void gl_unimpl(void);
-static int g_direct;                // BGL_DIRECT=1 (marker word "direct"): display textures are the surface memory, no blit
+static int g_direct = 1;            // display textures ARE the surface memory (default). BGL_NODIRECT=1 (boot-arg bgldirect=0, marker word "nodirect") falls back to texture + blit
 static int g_dirty_track = 1;       // copy display-size attachments only when drawn into (default; BGL_SYNC_ALL=1 copies every attachment at every flush). Copying both double-buffered display textures every flush overwrote the idle surface with stale pixels: flicker and a missing wallpaper
 static int g_debug, g_debug_frames;   // EAGL_SHIM_DEBUG=1: log + PIPE statistics; =2 also per-frame luminance and thumbnails
 static volatile int g_target_attach;      // set once attachImage:<target> was used: the render server's convention (see texImageIOSurface)
@@ -540,7 +540,7 @@ static void eagl_install_hooks(void) {
         }
         g_debug = getenv("EAGL_SHIM_DEBUG") != NULL; g_debug_frames = g_debug && !strcmp(getenv("EAGL_SHIM_DEBUG"), "2");
         g_dirty_track = !getenv("BGL_SYNC_ALL");
-        g_direct = getenv("BGL_DIRECT") != NULL;
+        g_direct = !getenv("BGL_NODIRECT");
         if (g_dirty_track) {
             // every alias of an entry point is hooked (glBindFramebuffer / glBindFramebufferOES / ...: the render server's slots may use either spelling)
             static const char *const sfx[] = { "", "OES", "EXT", "ARB", "APPLE", "ANGLE" };

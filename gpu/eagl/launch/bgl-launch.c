@@ -78,7 +78,7 @@ static int boot_uuid(char *out, size_t n)
 /* The volatile marker holds "MODE UUID [debug]" (MODE soft|1) and is honoured only when UUID is the boot session UUID of THIS boot
  * (kern.bootsessionuuid): a marker left over from an earlier boot can never act, whatever the clock says (the first live test showed that
  * kern.boottime and file times are unreliable early in boot: the RTC is set only later). Returns 1 and the mode in val. */
-static int g_marker_debug, g_marker_nohook, g_marker_frames, g_marker_dirty, g_marker_syncall, g_marker_direct;
+static int g_marker_debug, g_marker_nohook, g_marker_frames, g_marker_dirty, g_marker_syncall, g_marker_direct, g_marker_nodirect;
 static int marker_mode(char *val, size_t vlen)
 {
 	char line[256], uuid[64] = "", cur[64] = "";
@@ -108,14 +108,15 @@ static int marker_mode(char *val, size_t vlen)
 			else if (!strcmp(w, "frames")) { debug = 1; g_marker_frames = 1; }
 			else if (!strcmp(w, "dirty")) g_marker_dirty = 1;
 			else if (!strcmp(w, "syncall")) g_marker_syncall = 1;
-			else if (!strcmp(w, "direct")) g_marker_direct = 1;
+			else if (!strcmp(w, "direct")) g_marker_direct = 1;   /* default now, accepted */
+			else if (!strcmp(w, "nodirect")) g_marker_nodirect = 1;
 			w = strtok_r(NULL, " \r\n", &save);
 		}
 		dbg = debug ? "debug" : NULL;
 	}
 	snprintf(uuid, sizeof uuid, "%s", u);
 	if (strcmp(uuid, cur) != 0) {   /* a marker of another boot grants nothing */
-		g_marker_nohook = g_marker_frames = g_marker_dirty = g_marker_syncall = g_marker_direct = 0;
+		g_marker_nohook = g_marker_frames = g_marker_dirty = g_marker_syncall = g_marker_direct = g_marker_nodirect = 0;
 		return 0;
 	}
 	g_marker_debug = dbg && !strcmp(dbg, "debug");
@@ -150,10 +151,7 @@ static int guard(void)
 				strikes++;
 			else
 				strikes = 0;
-		} else if (n != 3) {
-			fclose(f);
-			return 0;                   /* a state file that exists but cannot be read back (filesystem errors seen on this root): do not inject */
-		}
+		}                               /* n != 3: a garbage state file (NUL bytes after an unclean shutdown were seen on this root): treated as "no history", then rewritten and read back below */
 		fclose(f);
 	}
 	if (strikes >= 2)                   /* the third start within two minutes of the previous one runs plain; this applies to boot-arg and marker alike */
@@ -163,6 +161,15 @@ static int guard(void)
 		return 0;                       /* cannot record: no guard, no injection */
 	fprintf(f, "%s %ld %ld\n", cur, (long)now, strikes);
 	fclose(f);
+	f = fopen(STATE_PATH, "r");         /* the guard only works if the record can be read back: verify, else run plain */
+	if (!f)
+		return 0;
+	{
+		int n = fscanf(f, "%63s %ld %ld", u2, &l2, &s2);
+		fclose(f);
+		if (n != 3 || strcmp(u2, cur) != 0 || l2 != (long)now || s2 != strikes)
+			return 0;
+	}
 	return 1;
 }
 
@@ -207,7 +214,7 @@ int main(int argc, char **argv)
 			setenv("MESA_DEBUG", "1", 1);   /* GL errors and shader compile/link failures on stderr */
 		}
 		if (g_marker_syncall) setenv("BGL_SYNC_ALL", "1", 1);
-		if (g_marker_direct) setenv("BGL_DIRECT", "1", 1);   /* zero-copy display buffers: render straight into the surface (needs the SURFACE_BO path) */
+		{ char dv[16] = ""; if (g_marker_nodirect || (has_arg(args, "bgldirect", dv, sizeof dv) && !strcmp(dv, "0"))) setenv("BGL_NODIRECT", "1", 1); }   /* direct (zero-copy display buffers) is the default */
 		if (stat(LOG_PATH, &st) == 0 && st.st_size > (1 << 20))
 			unlink(LOG_PATH);
 		int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
