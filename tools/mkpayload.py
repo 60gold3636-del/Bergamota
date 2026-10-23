@@ -136,6 +136,40 @@ def add_ramdisk_to_adt(adt_blob, phys, size):
     return adt.serialize(root)
 
 
+# libimage4 (the Image4 runtime inside cryptexd, MobileStorageMounter, ...) builds its AP "environment" in a
+# dispatch_once and PANICS (brk #1 via _os_crash, SIGTRAP code 0x600000001) when
+# IORegistryEntryFromPath("IODeviceTree:/chosen/manifest-properties") finds nothing: "panic: failed to get
+# manifest properties" (cryptexd[N] crash loop, libimage4+0xe70, caller libimage4+0x654c).  Real iBoot ADTs have the
+# node (an empty child of /chosen whose properties iBoot fills in) and the identifiers the chip instance asks for;
+# only the node is fatal, the properties below are read on demand and fail with ENOENT instead.
+IMG4_CHOSEN_PROPS = (('board-id', 6),       # D22AP BDID, what the iPhone10,3 userland expects
+                     ('chip-epoch', 1),
+                     ('security-domain', 1))
+
+
+def add_img4_nodes(adt_blob):
+    """Return the ADT with /chosen/manifest-properties (empty) and board-id/chip-epoch/security-domain; no-op when present."""
+    root, _ = adt.parse(adt_blob)
+    chosen = next(c for c in root.children if c.name == 'chosen')
+
+    def phandles(n):
+        for k, _, v in n.props:
+            if k == 'AAPL,phandle':
+                yield struct.unpack('<I', v[:4])[0]
+        for c in n.children:
+            yield from phandles(c)
+
+    if not any(c.name == 'manifest-properties' for c in chosen.children):
+        mp = adt.Node()
+        mp.props = [('AAPL,phandle', 0, struct.pack('<I', max(phandles(root), default=0) + 1)),
+                    ('name', 0, b'manifest-properties\0')]
+        chosen.children.append(mp)
+    for k, v in IMG4_CHOSEN_PROPS:
+        if chosen.prop(k) is None:
+            chosen.props.append((k, 0, struct.pack('<I', v)))
+    return adt.serialize(root)
+
+
 def adt_dram(adt_blob):
     """Kernel-managed RAM <base, size> from the ADT's /chosen dram-base/dram-size."""
     root, _ = adt.parse(adt_blob)
@@ -144,7 +178,7 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img4_nodes=True):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -158,6 +192,8 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False):
     kernel_end = (kernel_end + PAGE - 1) & ~(PAGE - 1)
 
     adt_blob = open(adt_path, 'rb').read()
+    if img4_nodes:
+        adt_blob = add_img4_nodes(adt_blob)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -210,8 +246,10 @@ if __name__ == '__main__':
     ap.add_argument('--cmdline', default='debug=0xc serial=3 cpus=1 keepsyms=1')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     ap.add_argument('--compress', action='store_true', help='deflate big segments (payload v2)')
+    ap.add_argument('--no-img4-nodes', action='store_true',
+                    help='do not add /chosen/manifest-properties (cryptexd then traps in libimage4 again)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress, not a.no_img4_nodes)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':
