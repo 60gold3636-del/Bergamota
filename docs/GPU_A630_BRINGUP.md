@@ -1,7 +1,8 @@
 # Adreno 630 bring-up on the Poco F1 (GPU phase 1)
 
 Kernel patch `xnu/patches/0103-beryllium-gpu-a630-bringup.patch` (on top of 0102): `bsd/dev/sweet_a630.c` (stages 1-7), `bsd/dev/sweet_a630_pas.c` (TrustZone PAS zap loader), the hook `sweet_a630_probe()` after `sweet_usb_probe()` in `sweet_ufs.c`, two lines in `bsd/conf/files`, and the 64-bit fix of `pmap_sync_page_attributes_phys` in `osfmk/arm/pmap/pmap.c`.
-Off by default: nothing runs unless the boot-arg `sweetgpu=N` is given (N = 1..7, larger is clamped), and only when the ADT root compatible is `xiaomi,beryllium`. Every log line starts with `SWEET GPU:`. Status: **compiled (Xcode clang, real objects, all undefined symbols are kernel symbols) and `git apply --check` clean against 0001-0102; not run on hardware.**
+Off by default: nothing runs unless the boot-arg `sweetgpu=N` is given (N = 1..7, larger is clamped), and only when the ADT root compatible is `xiaomi,beryllium`. Every log line starts with `SWEET GPU:`. See also `GPU_KERNEL.md` (stage 8: keep-up + IOKit user client, xnu-11215 patches 0180-0182).
+Status: **compiled (Xcode clang, real objects, all undefined symbols are kernel symbols) and `git apply --check` clean against 0001-0102; not run on hardware.**
 
 ## Sources and licences
 

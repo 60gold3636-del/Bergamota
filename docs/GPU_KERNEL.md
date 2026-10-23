@@ -1,0 +1,168 @@
+# GPU kernel half: Adreno 630 keep-alive and the msm-style IOKit interface (Heartwood, xnu-11215)
+
+Status 2026-10-23: **built (CI) and compile-checked, never run on the phone.** Phase C and D of `METAL_ADRENO630.md`
+(kernel GPU user client; A630 bring-up). Everything here is OFF unless the boot-arg `sweetgpu=8` is given; without it the boot
+path is byte-for-byte the one of patch 0103 (no `sweetgpu` => `sweet_a630_probe()` returns at once, no service is published).
+
+Evidence tags: **[V]** read in the code/sources this session, **[I]** inferred, **[U]** untested on hardware.
+
+## 1. What was added
+
+Patches in `xnu/patches-11215/`, applied after 0103/0170 (the stage-1..7 bring-up of `GPU_A630_BRINGUP.md`, unchanged):
+
+| Patch | Files | Content |
+|---|---|---|
+| `0180-beryllium-gpu-a630-firmware-dirs` | `bsd/dev/sweet_a630.c` | Firmware is also looked up in `/usr/local/share/firmware/` (after `/usr/standalone/firmware/sweet/`, then the ADT `/sweet-gpu`). Used by the GMU, SQE and zap loaders. |
+| `0181-beryllium-gpu-a630-keepalive-kernel-api` | `bsd/dev/sweet_a630.c` | `sweetgpu=8`: stage 7 + a second CP self-test (256-byte `CP_MEM_WRITE` fill) and, when both pass, **the GPU is kept up** (GMU keep-alive, OOB_GPU held, zap left authenticated, CP ring live, no slumber, no GMU reset). A page-table pool and a GPU address allocator for client buffers in context bank 1; the C interface `sweet_gpu_*` (map/unmap, submit, fence, params). If the self-test fails, stage 8 shuts down exactly like stage 7 and publishes nothing. |
+| `0182-beryllium-gpu-adreno-iokit-user-client` | `iokit/Kernel/arm/SweetAdreno.cpp`, `SweetAdrenoABI.h`, `iokit/conf/files.arm64` | IOService `SweetAdreno630` (published by `sweet_a630.c` after keep-up) and its user client with the msm ioctls as selectors. |
+
+`xnu/gpu-abi/sweet_adreno_abi.h` is the userland-facing copy of the ABI header (byte-identical to `SweetAdrenoABI.h` of 0182).
+`tools/gpu-fw-push.sh` copies the firmware over SSH.
+
+What already existed and is reused unchanged (0103, `GPU_A630_BRINGUP.md`): CX GDSC + GMU clocks, RSC/PDC microcode, GMU firmware boot, GPU SMMU
+contexts, HFI v1, GX rail through the GMU, SPTPRAC, SQE + ring in a GPU SMMU context, zap shader through TrustZone PAS id 13, `CP_ME_INIT`,
+`CP_SET_SECURE_MODE 0`, NOP/MEM_WRITE/CACHE_FLUSH_TS test. 0103 itself was also never run on hardware: **stage 8 inherits all its unproven steps**
+(see risks). The incremental path is `sweetgpu=1,2,3,...` one stage per boot, as documented there.
+
+## 2. Boot-args
+
+| Arg | Meaning |
+|---|---|
+| `sweetgpu=8` | the whole sequence and keep-up (above). `=1..7` unchanged stages of 0103. Only on the beryllium ADT. |
+| `sweetgpuwait=SECONDS` | how long the worker waits for `a630_gmu.bin` (default 600). |
+| `sweetgpuuc=1` | name the user client class `AGXDeviceUserClient` (the class the real iOS sandbox profiles allow, `GPU_PHASE0_DISCOVERY.md`) instead of `SweetAdrenoUserClient`. The service is not an IOAccelerator, so Metal never opens it. |
+| `sweetaccel=0` | (existing, unrelated) the empty `IOAcceleratorES` stub of 0122 is separate from this service and still published by default. |
+
+Add them with `CMDLINE="$(default) sweetgpu=8 ufslogsecs=1"` to `tools/renegade/mkboot-full.sh`.
+
+## 3. Firmware
+
+| File | Source | Status |
+|---|---|---|
+| `a630_gmu.bin` | linux-firmware `qcom/a630_gmu.bin` (redistributable) | present: `../ios-beryllium/research/gpu-fw/dl/` (32768 bytes) |
+| `a630_sqe.fw` | linux-firmware `qcom/a630_sqe.fw` | present, same directory (34188 bytes, version word 0x016ee207 >= 0x190 [V]) |
+| `a630_zap.mdt` + `a630_zap.b00 .b01 .b02` | **this phone's** Android `/vendor/firmware` (signed per device) | **not available**: not in `backup/*.img` (vendor.img is an ext4 without them; only boot.img/recovery.img mention the name) |
+
+Never commit them. Copy to the phone's iOS root (SSH up, `root@192.168.7.2`):
+
+```
+tools/gpu-fw-push.sh -z /path/to/vendor-firmware     # gmu + sqe from ../ios-beryllium/research/gpu-fw/dl, zap files from -z
+tools/gpu-fw-push.sh                                  # gmu + sqe only: stages 3, 4, 5 can run; 6-8 stop at the zap
+```
+
+They land in `/usr/local/share/firmware/` (mode 644); the kernel reads them with `vnode_lookup`+`vn_rdwr` once `rootvnode` exists. Without the file system
+the same data can be given as ADT `/sweet-gpu` properties (`gmu-firmware`, `sqe-firmware`, `zap-mdt`, `zap-b00..`) with `tools/mkadt.py`.
+Getting the zap: `adb root; adb pull /vendor/firmware/a630_zap.mdt` and `a630_zap.b0*` from a running Android on the phone, or from a LineageOS beryllium vendor image
+(ROM-matched, ideally the stock-signed one the bootloader chain of this phone expects). The mainline `a630_zap.mbn` is a squashed form; split it first
+(`pil-squasher` in reverse), the loader reads mdt + bNN.
+
+**What happens without the zap:** stage 6/7/8 log `a630_zap.mdt missing or invalid`, no CP command beyond `CP_ME_INIT` runs, and stage 8 shuts down like stage 7.
+Why it is mandatory [I]: after reset the CP and the GPU memory path are in secure mode; `CP_SET_SECURE_MODE 0` only works with the zap shader running in the secure world
+(Linux a6xx_hw_init does the same; without a zap it must write `RBBM_SECVID_TRUST_CNTL`, a secure register, which 0103 deliberately never touches: an XPU violation resets the SoC).
+If `SCM PAS INIT_IMAGE` returns non-zero or never returns, see `GPU_A630_BRINGUP.md` risks 2 and 3 (missing crypto/BCM vote is the first suspect).
+
+## 4. Expected live log (UDP 5140, `logs/usb-*.txt`)
+
+Every line starts `SWEET GPU:`. In order for a good run of `sweetgpu=8` (stage lines as in `GPU_A630_BRINGUP.md`, abbreviated):
+
+```
+waiting for a630_gmu.bin ...                         (only until the root is mounted and the files exist)
+Adreno 630 bring-up, stage 8 (GPU 0x5000000, GMU 0x506a000, gpucc 0x5090000, SMMU 0x5040000)
+CX GDSC on: gdscr 0x...  /  GMU RCG 200 MHz ... cfg 0x00000602
+GMU memory at 0x...  /  SMMU CB0: SCTLR 0x00c01067 ...
+CP memory at 0x...: ring VA 0x40000000, SQE VA 0x40010000, scratch VA 0x40020000
+CP memory setup complete: CB1 ASID2 SID0 SMR2
+GMU BOOTED (FW_INIT_RESULT ok) after NN us
+HFI up: ... / HFI start complete (DCVS, BW, TEST acknowledged)
+GX rail on at level 1 (257 MHz) / OOB boot_slumber (boot): acknowledged / SPTPRAC power on: ok / OOB gpu: acknowledged
+CP SQE enabled / CP CP_ME_INIT: ring idle (RPTR=WPTR=9)
+SCM PAS INIT_IMAGE completed=1 status=0 result=0 ... signed zap authenticated and started
+CP CP_SET_SECURE_MODE 0: ring idle
+CP NOP test: CP_MEM_WRITE read back 0x5ee70001 ..., timestamp 0x600d0001 ...
+CP NOP test PASSED: the CP fetched, executed and wrote back through the GPU SMMU
+CP fill test: 0 of 64 words wrong, timestamp 0x600d0002 ...
+CP fill test PASSED
+KEPT UP: GX on (OOB_GPU held, GMU keep-alive), ring 8192 dwords at RPTR=WPTR=NN, client VA 0x80000000-0x100000000, 256 table pages
+stage 8 finished: GPU kept up, publishing SweetAdreno630
+SweetAdreno630 published (user client class SweetAdrenoUserClient)
+```
+
+Failure signatures: `TIMED OUT` (OOB/GMU), `HFI ... no reply`, `SMMU TLB sync timed out`, `ring did NOT drain` (followed by RPTR/WPTR/CP_HW_FAULT/CP_IRQ and the SMMU context fault registers),
+`zap load failed`, `stage 8 self-test did not pass; shutting the GPU down like stage 7`. A phone that freezes with no further UDP lines after a given line was stopped by a bus hang at that access (risks).
+After the interface is up: `SWEET GPU: GPU LOST (no completion)` plus a register dump means a submission never completed (no recovery, reboot).
+A client test then shows `SweetAdreno630` in `ioreg -l`.
+
+## 5. Kernel-internal interface (`bsd/dev/sweet_a630.c`)
+
+All calls are serialized by the caller (the IOKit side holds one `IOLock`); none is callable before `sweet_gpu_ready()`.
+`sweet_gpu_iova_alloc/reserve/free` (first-fit allocator with 1 page unmapped guard, range 0x80000000-0xfffff000), `sweet_gpu_vm_map/unmap` (4 KiB pages, tables from a 1 MiB pool of non-cacheable pages,
+`TLBIALL`+sync after unmap), `sweet_gpu_submit` (ring: 2 CCU invalidate events, one `CP_INDIRECT_BUFFER` per IB, `CP_EVENT_WRITE CACHE_FLUSH_TS` writing the sequence number to
+`SCRATCH_VA+0x200`, as the tail of Linux `a6xx_submit`), `sweet_gpu_fence_done/last`, `sweet_gpu_param`, `sweet_gpu_mark_lost/report`, `sweet_gpu_cache_sync`.
+Static GPU VAs (context bank 1, ASID 2): ring 0x40000000 (32 KiB), SQE 0x40010000 (read-only), scratch 0x40020000. GMU context bank 0 is separate.
+
+## 6. IOKit ABI (`xnu/gpu-abi/sweet_adreno_abi.h`)
+
+Service: `IOServiceMatching("SweetAdreno630")`, `IOServiceOpen(service, mach_task_self(), 0, &conn)`. Properties: `SweetGPUABIVersion` = 1, `SweetGPUChipID` = 0x06030001.
+Calls: `IOConnectCallStructMethod(conn, selector, &in, sizeof(in), &out, &outsize)`; the structure is passed in and, where the table says so, back (out size must be >= sizeof).
+Selector = Linux `DRM_COMMAND_BASE (0x40) + DRM_MSM_*`, structures are the msm uapi ones, so `drmIoctl(fd, DRM_IOCTL_MSM_*, &arg)` in a libdrm stand-in forwards 1:1.
+
+| Selector | msm ioctl | Struct (in/out) | Behaviour |
+|---|---|---|---|
+| 0x40 | GET_PARAM | `msm_param` in/out | `pipe` ignored. GPU_ID 630, GMEM_SIZE 0x100000, CHIP_ID 0x06030001, MAX_FREQ 710000000 (runs at 257 MHz), TIMESTAMP (CP_ALWAYS_ON, 19.2 MHz), GMEM_BASE 0x100000, PRIORITIES 1, PP_PGTABLE 0, FAULTS 0, SUSPENDS 0, VA_START 0x80000000, VA_SIZE 0x80000000. Anything else: `kIOReturnUnsupported` (Mesa then uses defaults: HIGHEST_BANK_BIT, UBWC_*, MACROTILE_MODE, SYSPROF...). |
+| 0x41 | SET_PARAM | - | `kIOReturnUnsupported` |
+| 0x42 | GEM_NEW | `msm_gem_new` in/out | size rounded to 4 KiB, 1 B..256 MiB; flags `SCANOUT`/`GPU_READONLY` kept, cache flags ignored: **every BO is write-combined**; zero-filled; handle >= 1 (4096 per client). The BO is immediately mapped in the GPU address space (always resident). |
+| 0x43 | GEM_INFO | `msm_gem_info` in/out | `GET_OFFSET` -> value = handle (use it as `memoryType` of `IOConnectMapMemory64`); `GET_IOVA` -> GPU address; `GET_FLAGS`; `SET_NAME` accepted and ignored; `SET_IOVA` (softpin) moves the BO to a free, 4 KiB-aligned range inside [VA_START, VA_START+VA_SIZE) if it was never submitted. |
+| 0x44 / 0x45 | GEM_CPU_PREP / FINI | `msm_gem_cpu_prep` / `msm_gem_cpu_fini` | PREP waits for the last submission that wrote (READ) or used (WRITE) the BO unless `NOSYNC` (then `kIOReturnBusy` if not done). **timeout is relative** `{sec,nsec}`, {0,0} polls (`kIOReturnTimeout`). FINI is a `dsb sy`. |
+| 0x46 | GEM_SUBMIT | `msm_gem_submit` in/out | bos/cmds/relocs are user pointers (read in the caller's task). `flags` must be 0 (`NO_IMPLICIT` tolerated); fence fds and syncobjs are not supported (`kIOReturnUnsupported`). cmd types BUF and CTX_RESTORE_BUF run as indirect buffers; PRIMARY unsupported. `submit_offset`/`size` multiples of 4 inside the BO. Relocations are applied to the cmd BO through its kernel alias (`(iova + reloc_offset) shifted, | or`, low 32 bits). Out: `fence` (> 0), `fence_fd = -1`. `presumed` is ignored. Up to 4096 bos, 128 cmds. In-order single ring: no preemption, no priorities. |
+| 0x47 | WAIT_FENCE | `msm_wait_fence` | **relative** timeout; `kIOReturnTimeout` when not done; `kIOReturnBadArgument` for a fence never submitted. A wait that asks for 5 s or more (e.g. "infinite") and is still not done after 5 s declares the GPU lost (shorter waits just time out). |
+| 0x48 | GEM_MADVISE | `msm_gem_madvise` in/out | `retained` = 1 |
+| 0x09 | GEM_CLOSE | `drm_gem_close` | unmaps and frees (waits up to 2 s for the last submission that used it; if the GPU did not finish, the BO is **leaked** on purpose) |
+| 0x4a / 0x4b | SUBMITQUEUE_NEW / CLOSE | `msm_submitqueue` / `uint32_t id` | ids 1..63, prio 0 only; queue id is validated, there is one ring and one global fence sequence |
+| 0x4c | SUBMITQUEUE_QUERY | - | `kIOReturnUnsupported` |
+| 0x70 | (ours) INFO | `sweet_gpu_info` out | abi version, flags (bit0 ready, bit1 lost), ids, VA range, last fence. Works also when the GPU is lost. |
+| 0x71 | (ours) SURFACE_BO | `sweet_gpu_surface_bo` in/out | enters the pages of an IOSurface (`IOSurfaceGetID`) into the GPU address space and returns a handle + iova + geometry; `handle = 0xffffffff` on input only describes it. Wrapped (client) surfaces are refused. The memory keeps the CPU cache attributes of the surface (the pool of `sweetfb_zc` is cacheable): use `BO_SYNC` after GPU writes before the CPU reads and before the GPU reads CPU-written pixels. |
+| 0x72 | (ours) BO_SYNC | `sweet_gpu_bo_sync` | `dc civac` over the kernel alias of a range of the BO. |
+
+Mapping a BO: `IOConnectMapMemory64(conn, handle, mach_task_self(), &addr, &size, kIOMapAnywhere | kIOMapWriteCombineCache)`; unmap with `IOConnectUnmapMemory64`. Always pass `kIOMapWriteCombineCache`: the BO's other aliases
+(kernel, GPU PTE `MAIR attr 0` non-cacheable) are non-cacheable, a cacheable client mapping would be incoherent. Error codes are `IOReturn`s: map `kIOReturnNoMemory/NoSpace/NoResources` to `-ENOMEM`,
+`kIOReturnBadArgument` to `-EINVAL`, `kIOReturnTimeout` to `-ETIMEDOUT`, `kIOReturnBusy` to `-EBUSY`, `kIOReturnNotReady` to `-ENODEV`, `kIOReturnUnsupported` to `-ENOSYS`.
+
+### Typical winsys sequence (freedreno through a libdrm stand-in)
+
+1. open service, `INFO` (check `abi_version == 1` and `flags & 1`), `GET_PARAM` GPU_ID/CHIP_ID/GMEM_SIZE/MAX_FREQ (and VA_START/VA_SIZE to enable softpin).
+2. per buffer: `GEM_NEW` -> `GEM_INFO(GET_IOVA)` (once) -> `GEM_INFO(GET_OFFSET)` + `IOConnectMapMemory64` when the CPU needs it. Softpin (`VA_START` answered): allocate GPU addresses yourself in [VA_START, +VA_SIZE), `SET_IOVA` before the first submit (or simply use the kernel's `GET_IOVA` address; do not mix).
+3. submit: `GEM_SUBMIT` with all BOs referenced (every BO stays mapped, so the bos list only drives fence bookkeeping and relocs), `WAIT_FENCE(fence)`; `CPU_PREP` before touching a BO the GPU wrote.
+4. render targets: `SURFACE_BO` for the IOSurface behind a CALayer/EAGL drawable, then `BO_SYNC`.
+
+### Differences from Linux msm (userland must know)
+
+* Timeouts are relative durations, not absolute `CLOCK_MONOTONIC`; convert in the stand-in.
+* No fence fds, syncobjs, `MSM_SUBMIT_SUDO`, primary command buffers, `SUBMITQUEUE_QUERY`, per-process page tables (PP_PGTABLE 0, one address space for all clients), `MADVISE` is a stub, no GEM_CLOSE-on-fd-close semantics other than user-client close (all BOs of a closed connection are freed).
+* No DMA-BUF/PRIME. Sharing between processes goes through IOSurface (`SURFACE_BO`).
+* BOs are always write-combined and always GPU-resident; the cache flags are advisory-ignored.
+* GPU address space is 32 bit (0x80000000-0xfffff000 for clients); the CP's own buffers live below it.
+* Interrupts are not used: waiting polls (spin 2 ms, then 1 ms sleeps).
+
+## 7. Risks and open items
+
+1. **Bus hangs / SoC resets (freeze, no panic).** Any access to a gated GPU/GMU block hangs the bus; the 0103 policy (read GPU registers only with GX on and inside an OOB window) is kept, and stage 8 holds OOB_GPU forever so registers stay accessible.
+   A wrong value in the GMU/PDC/RSC setup, an SMMU fault during a GMU DMA, a secure-register access (not done) or an XPU violation resets the phone. Test one stage per boot (`sweetgpu=3`, `4`, `5`, `6`, `7`, `8`) and read `logs/usb-*.txt` after each; the last UDP line before a freeze tells where it stopped.
+2. **Nothing of 0103 has run on hardware.** The likeliest walls, in order: no zap shader file; `SCM PAS INIT_IMAGE` (crypto vote); CP fetching the SQE through the SMMU (stream ID 0 / read-only mapping); secure mode not left; UCHE/GBIF config too minimal for real draws (stage 8 only proves CP writes through the SMMU, not the 3D pipeline: HWCG, CP_PROTECT, UBWC config and `RBBM_SECVID_*` are not programmed).
+3. **Single tenant, no isolation.** All clients share one GPU address space and one ring; the CP is not protected: an IB can write GPU registers (`CP_REG_WR`), any mapped memory, and could ask for secure mode (a secure access = XPU violation = reset). Only trusted processes (the EAGL bridge, test tools) may get the sandbox right to open the service. The stand-in sandbox must allow `iokit-open` for `SweetAdreno630` (and the user client class `SweetAdrenoUserClient`/`AGXDeviceUserClient`).
+4. **GPU hang = reboot.** No hang detection interrupt, no recovery (`GPU LOST`, all further calls fail). BOs referenced by an incomplete submission are leaked, never freed under the GPU.
+5. **Frequency.** The GMU runs at the boot level (257 MHz, LOW_SVS); `H2F_MSG_GX_BW_PERF_VOTE` (Linux `a6xx_hfi_set_freq`) is not implemented. `MAX_FREQ` reports the hardware maximum (710 MHz). No bandwidth vote beyond the boot table, no idle slumber: the GPU stays on (power/heat) until reboot.
+6. **Cache coherence of BOs** relies on three aliases (kernel, client, GPU) all being non-cacheable and the zeroing being cleaned (`dc civac`) before first use. IOSurface BOs keep the surface's CPU attributes: explicit `BO_SYNC` is required there.
+7. **Table pool**: 1 MiB (254 L3 tables of 2 MiB each) bounds how sparse the address space may be; `kIOReturnNoMemory` on map failure. The iova free list holds 512 ranges (a pathological fragmentation loses address space, never corrupts).
+8. **HFI message queue is not drained** after start-up: unsolicited GMU messages (errors, debug) would accumulate in the 1024-dword queue; none are expected while idle, but a long run could fill it (the GMU then blocks on its side).
+9. **ABI stability**: version 1; the winsys must check `INFO.abi_version`.
+10. xnu-11215 API assumptions (`IOBufferMemoryDescriptor` with `kIOMapWriteCombineCache | kIOMemoryKernelUserShared`, `getPhysicalSegment(..., kIOMemoryMapperNone)`, `IOMallocData`) are the ones hackios-xnu-kernel-ext used on 8796 on real hardware and compile on 11215; behaviour on 11215 is untested.
+
+## 8. Images and CI
+
+CI run 39981343180 (branch `gpu-kernel`, artifact `xnu-kernel`, sha256 e9c73847...fedb) built 0180-0182. Boot images (kernel above, ADT `beryllium-hi-3x.adt`, the `tools/renegade/mkboot-full.sh` default cmdline + `ufslogsecs=1`) are in `../ios-beryllium/shim/out/`: `shim-boot-gpu-3.img` (`sweetgpu=3`: GMU boots), `shim-boot-gpu-5.img` (`sweetgpu=5`: HFI, GX rail, first GPU registers; needs only gmu.bin), `shim-boot-gpu-8.img` (`sweetgpu=8`: needs the zap too). Run them in this order, one per boot, with `tools/gpu-fw-push.sh` done first.
+
+## 9. Provenance and licences
+
+* Sequences and register numbers: Linux `drivers/gpu/drm/msm/adreno/{a6xx_gpu.c,a6xx_gmu.c,a6xx_hfi.c}` and generated headers (GPL-2.0): facts only, nothing copied (see `GPU_A630_BRINGUP.md`). `msm_drm.h` structure layouts are the Linux uapi ABI (the UAPI header carries the Linux-syscall-note exception); they are re-declared here with `sweet_` names.
+* Interface shape: `hackios-xnu-kernel-ext` (`bsd/dev/redwood_adreno.c`, `iokit/Kernel/RedwoodGPU.cpp`, APSL-2.0, third-party data) read for the design (selectors = msm request numbers, polling, WC buffers, the kernel as the address allocator, gpu-lost handling); no code copied, all of it is rewritten for SDM845/xnu-11215.
+* Firmware is Qualcomm proprietary and never committed.
