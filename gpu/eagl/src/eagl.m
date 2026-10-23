@@ -166,6 +166,7 @@ static BOOL mapping_writable(const void *p, size_t len) {
         if (!(info.protection & VM_PROT_WRITE)) {
             // read-only now, but the mapping may allow write (max protection): raise it. Client-memory surfaces of other processes (the Control
             // Center modules' render targets) arrive this way; skipping their sync left them black.
+            static int logged; if (g_debug && logged++ < 8) fprintf(stderr, "EAGL(shim): read-only mapping %p+%zx prot %d max %d\n", (void *)cur, (size_t)size, info.protection, info.max_protection);
             if (!(info.max_protection & VM_PROT_WRITE) || vm_protect(mach_task_self(), addr > cur ? addr : cur, size - (cur - addr), FALSE, info.protection | VM_PROT_WRITE) != KERN_SUCCESS) return NO;
         }
         cur = addr + size;
@@ -336,6 +337,31 @@ static void pipe_stats_report(void) {
 }
 
 // Flush every attachImage: association of this context into its IOSurface.
+static void sync_att(EAGLContext *c, int i) {
+    struct _EAGLContextPrivate *p = c->_private;
+    Attach *a = &p->att[i];
+        a->dirty = 0;
+        if (a->direct) { double td = g_debug ? now_ms() : 0; osm_sweet_direct_sync(IOSurfaceGetID(a->surf)); if (g_debug) { g_ps_direct_ms += now_ms() - td; g_ps_direct_n++; } return; }
+        BOOL isTex = a->kind ? (a->kind == 1) : (glIsTexture(a->name) && !glIsRenderbuffer(a->name));
+        // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
+        double t_start = g_debug ? now_ms() : 0;
+        BOOL flip = a->kind ? a->inverted : !a->inverted;      // target-form attach (the render server): YES = rows flipped, NO = as GL has them (seen on the phone: NO + flip drew the UI upside down)
+        if (osm_sweet_active() && osm_sweet_blit(a->name, isTex, IOSurfaceGetID(a->surf), flip, NO)) {
+            if (g_debug) { frame_stats(a, t_start, now_ms(), 1); maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), YES); }
+            return;
+        }
+        uint32_t w, h;
+        double t_cpu0 = g_debug ? now_ms() : 0;
+        uint8_t *buf = read_image(c, a->name, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), &w, &h);
+        if (buf) {
+            // GL rows are bottom-up; a "normal" surface is top-down. invertedRender means CA already drew it flipped.
+            rgba_to_surface(buf, w, h, a->surf, flip, NO);
+            free(buf);
+        }
+        if (g_debug) { g_ps_cpu_ms += now_ms() - t_cpu0; g_ps_cpu_n++; }
+        if (g_debug) { frame_stats(a, t_start, now_ms(), 0); maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), NO); }
+}
+
 static void sync_attached(EAGLContext *c) {
     struct _EAGLContextPrivate *p = c->_private;
     // Safety net: GL work happened but nothing was attributed to an attachment (a render path the tracking does not see): copy everything this flush.
@@ -348,26 +374,7 @@ static void sync_attached(EAGLContext *c) {
     for (int i = 0; i < p->natt; i++) {
         Attach *a = &p->att[i];
         if (g_dirty_track && !force_all && !a->dirty && IOSurfaceGetWidth(a->surf) * IOSurfaceGetHeight(a->surf) >= 1000000) { g_ps_skipped++; continue; }   // display buffer nobody drew into
-        a->dirty = 0;
-        if (a->direct) { double td = g_debug ? now_ms() : 0; osm_sweet_direct_sync(IOSurfaceGetID(a->surf)); if (g_debug) { g_ps_direct_ms += now_ms() - td; g_ps_direct_n++; } continue; }
-        BOOL isTex = a->kind ? (a->kind == 1) : (glIsTexture(a->name) && !glIsRenderbuffer(a->name));
-        // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
-        double t_start = g_debug ? now_ms() : 0;
-        BOOL flip = a->kind ? a->inverted : !a->inverted;      // target-form attach (the render server): YES = rows flipped, NO = as GL has them (seen on the phone: NO + flip drew the UI upside down)
-        if (osm_sweet_active() && osm_sweet_blit(a->name, isTex, IOSurfaceGetID(a->surf), flip, NO)) {
-            if (g_debug) { frame_stats(a, t_start, now_ms(), 1); maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), YES); }
-            continue;
-        }
-        uint32_t w, h;
-        double t_cpu0 = g_debug ? now_ms() : 0;
-        uint8_t *buf = read_image(c, a->name, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), &w, &h);
-        if (buf) {
-            // GL rows are bottom-up; a "normal" surface is top-down. invertedRender means CA already drew it flipped.
-            rgba_to_surface(buf, w, h, a->surf, flip, NO);
-            free(buf);
-        }
-        if (g_debug) { g_ps_cpu_ms += now_ms() - t_cpu0; g_ps_cpu_n++; }
-        if (g_debug) { frame_stats(a, t_start, now_ms(), 0); maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), NO); }
+        sync_att(c, i);
     }
 }
 
@@ -435,7 +442,14 @@ static void (*o_TexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GL
 static void h_TexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const void *i) { o_TexSubImage2D(a, b, c, d, e, f, g, h, i); mark_bound_texture_dirty(); }
 static void (*o_DeleteTextures)(GLsizei, const GLuint *);
 static void h_DeleteTextures(GLsizei n, const GLuint *t) {
-    if (g_debug) { EAGLContext *c = cur_ctx(); if (c) for (GLsizei i = 0; i < n; i++) for (int k = 0; k < c->_private->natt; k++) if (c->_private->att[k].name == t[i] && att_is_tex(&c->_private->att[k])) fprintf(stderr, "EAGL(shim): [ctx %p] glDeleteTextures(%u) deletes a display attachment (surface %u)\n", c, t[i], IOSurfaceGetID(c->_private->att[k].surf)); }
+    // A display texture that was drawn into but not yet copied (CoreAnimation recreates them) would lose its pixels: copy it out before it goes.
+    EAGLContext *c = cur_ctx();
+    if (c) for (GLsizei i = 0; i < n; i++) for (int k = 0; k < c->_private->natt; k++) {
+        Attach *a = &c->_private->att[k];
+        if (a->name != t[i] || a->kind == 2 || !att_is_tex(a)) continue;
+        if (g_debug) fprintf(stderr, "EAGL(shim): [ctx %p] glDeleteTextures(%u) deletes a display attachment (surface %u, dirty %d)\n", c, t[i], IOSurfaceGetID(a->surf), a->dirty);
+        if (g_dirty_track && a->dirty && IOSurfaceGetWidth(a->surf) * IOSurfaceGetHeight(a->surf) >= 1000000) sync_att(c, k);
+    }
     o_DeleteTextures(n, t);
 }
 static void (*o_BindFramebuffer)(GLenum, GLuint);
@@ -738,6 +752,12 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
         p->att[j] = p->att[--p->natt];
     }
     update_cur_target(self);
+    if (g_debug && IOSurfaceGetWidth(surface) * IOSurfaceGetHeight(surface) >= 1000000 && IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL) == KERN_SUCCESS) {
+        const uint8_t *sp = IOSurfaceGetBaseAddress(surface); size_t bpr = IOSurfaceGetBytesPerRow(surface), sh2 = IOSurfaceGetHeight(surface), sw2 = IOSurfaceGetWidth(surface);
+        if (sp) fprintf(stderr, "EAGL(shim): attach: surface %u holds first %02x%02x%02x%02x centre %02x%02x%02x%02x (direct %d)\n", IOSurfaceGetID(surface), sp[0], sp[1], sp[2], sp[3],
+                        sp[(sh2 / 2) * bpr + (sw2 / 2) * 4], sp[(sh2 / 2) * bpr + (sw2 / 2) * 4 + 1], sp[(sh2 / 2) * bpr + (sw2 / 2) * 4 + 2], sp[(sh2 / 2) * bpr + (sw2 / 2) * 4 + 3], direct);
+        IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
+    }
     EAGL_DEBUG("[ctx %p] attachImage %lu -> %s %u, IOSurface %u (%zux%zu) inverted=%d\n", self, (unsigned long)image, kind == 2 ? "renderbuffer" : kind == 1 ? "texture" : "object", name,
                IOSurfaceGetID(surface), IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), inverted);
     return YES;
