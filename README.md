@@ -24,7 +24,7 @@ The Poco F1 boots the **unmodified iOS 18.7.8 userland of the iPhone XR** (`iPho
 | --- | --- | --- | --- |
 | 🍋 | **Bergamota** | The macOS control plane. It shows phone status and the live kernel log, builds boot images, and runs the boot and flash queue. A second-screen Control Plane view also handles sideloading and media upload. | [`apps/Bergamota`](apps/Bergamota) |
 | 🌿 | **Enxerto** | The bootloader ("graft"). Qualcomm ABL starts it from the `boot` partition. It inflates the kernel with the MMU on, hands it a device tree and boots it. It also has its own fastboot and an off-mode charging screen. | [`enxerto/`](enxerto) |
-| 🪵 | **Heartwood** | The kernel: Apple's open-source XNU plus 160 patches for the Snapdragon 845 hardware and for the iOS 18 kernel API. It is built by GitHub Actions. | [`xnu/patches`](xnu/patches) |
+| 🪵 | **Heartwood** | The kernel: Apple's open-source XNU (xnu-11215, the iOS 18 generation) plus our patches for the Snapdragon 845 hardware. It is built by GitHub Actions. | [`xnu/patches-11215`](xnu/patches-11215) |
 | 🏴 | **Renegade** | The patcher. It rewrites every arm64e Mach-O and the whole dyld shared cache so they run on a CPU without pointer authentication. It then builds the flashable iOS root image. | [`tools/renegade`](tools/renegade) |
 
 > [!WARNING]
@@ -57,7 +57,8 @@ Qualcomm ABL (stock, unlocked)
 | Touch / buttons | Novatek NT36672A (bit-banged I²C), power and volume keys over SPMI |
 | USB | CDC-ECM Ethernet: SSH at `root@192.168.7.2`, live kernel log on UDP 5140, internet shared from the Mac |
 | Battery | Real fuel gauge and charger state; the off-mode charging screen lives in Enxerto |
-| Working on | Moving Heartwood to xnu-11215 (the iOS 18 generation), Metal on the Adreno 630 |
+| Kernel | Heartwood on **xnu-11215.81.4** since 2026-10-23 (it was xnu-8796, the iOS 16 generation, before that) |
+| Working on | GPU acceleration on the Adreno 630 (OpenGL ES over Mesa freedreno, then Metal) |
 | Not working | Wi-Fi, cellular, Bluetooth, audio, camera, sensors, SEP / Face ID, GPU acceleration |
 
 ## Getting started
@@ -117,7 +118,7 @@ It does this for every Mach-O in the root and for all of the dyld shared cache. 
 | --- | --- |
 | `apps/Bergamota/` | Bergamota, the SwiftUI control plane, plus its CLI (`scripts/bergamota`) |
 | `enxerto/` | Enxerto, the bare-metal bootloader (C + asm): loader, inflate, UFS, USB/DWC3, fastboot, PMIC, boot UI |
-| `xnu/patches/` | Heartwood, the XNU patch series, applied in order by `.github/workflows/xnu.yml` |
+| `xnu/patches-11215/` | Heartwood, the XNU patch series (xnu-11215), applied in order by `.github/workflows/xnu.yml`; `xnu/patches/` is the older xnu-8796 series |
 | `tools/renegade/` | Renegade: `pacstrip*`, `fips_rehmac`, root build, HFS+ and sparse-image tools, `dsctools` (shared-cache symbolication) |
 | `tools/mkadt.py`, `mkpayload.py` | Apple Device Tree generator; kernel + ADT + boot-args payload packer |
 | `tools/sweetnet/` | Small on-device tools (`sweetps`, `sweetprefs`, `sweetuicache`, …) |

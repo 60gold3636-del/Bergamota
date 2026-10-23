@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Re-run xnu compile commands from a CI log locally (syntax check only).
 
-  xnu-cc.py LOG BUILDTREE [FILTER ...]
+  xnu-cc.py LOG BUILDTREE [FILTER ...] [--per-file]
 
-LOG        `gh run view --log` output of an xnu.yml run (VERBOSE=YES make)
+LOG        `gh run view --log` output of an xnu.yml run (VERBOSE=YES make); works for the
+           xnu-8796 build (absolute paths) and the xnu-11215 build (ccache-prefixed
+           commands with -MJ, runner paths of this repository)
 BUILDTREE  extracted xnu-buildtree artifact (build/xnu.obj, xnu/, fakeroot/, ...)
 FILTER     only compile sources whose path contains one of these strings
            a full path relative to xnu/ also compiles newly added sources
@@ -11,7 +13,11 @@ FILTER     only compile sources whose path contains one of these strings
 Edit the sources under BUILDTREE/xnu, re-run, and turn the result into
 patches with `git diff` there. Uses the local Apple-fork clang (swiftlang).
 
-Env: XNU_CC_EXTRA   extra flags (e.g. "-DKPERF -DKPC" for config changes)
+Env: XNU_CLANG      clang to use (default: ~/swift/usr/bin/clang if present, else `xcrun -f clang`)
+     XNU_CC_TARGET  -target triple (default arm64-apple-macos15.0)
+     XNU_CC_DXB     the runner's dxb directory as written in the log (default: autodetected,
+                    e.g. /Users/runner/work/ios-beryllium/ios-beryllium/dxb)
+     XNU_CC_EXTRA   extra flags (e.g. "-DKPERF -DKPC" for config changes)
      XNU_CC_POST    flags appended after the original ones (like a per-object
                     _CFLAGS_ADD in the xnu Makefiles: -U/-include after -D)
      XNU_CC_OBJDIR  emit real objects there instead of a syntax-only check
@@ -20,11 +26,34 @@ Env: XNU_CC_EXTRA   extra flags (e.g. "-DKPERF -DKPC" for config changes)
 import concurrent.futures as cf, os, re, shlex, subprocess, sys
 from collections import Counter
 
-CI_DXB = '/Users/runner/work/ios-sweet/ios-sweet/dxb'
+CI_DXB = os.environ.get('XNU_CC_DXB', '')
+
+
+def detect_dxb(log):
+    """The runner's dxb directory, from the first xnu source path in the log."""
+    global CI_DXB
+    if CI_DXB:
+        return
+    for line in open(log, errors='replace'):
+        m = re.search(r'(/Users/runner/work/[^/\s]+/[^/\s]+/dxb)/xnu/', line)
+        if m:
+            CI_DXB = m.group(1)
+            return
+    raise SystemExit('cannot detect the runner dxb directory from the log; set XNU_CC_DXB')
+
+
 CI_SDK_PLATFORM = re.compile(r'/Applications/Xcode[^ ]*?\.sdk/+System/Library/Frameworks/Kernel\.framework/Versions/A/PrivateHeaders/platform')
-CLANG = os.environ.get('XNU_CLANG') or os.path.expanduser('~/swift/usr/bin/clang')
-DROP = {'-c', '-g', '-MD', '-MMD'}
-DROP_WITH_ARG = {'-MF', '-MT', '-o', '-arch'}
+def _default_clang():
+    local = os.path.expanduser('~/swift/usr/bin/clang')
+    if os.path.exists(local):
+        return local
+    return subprocess.run(['xcrun', '-f', 'clang'], capture_output=True, text=True).stdout.strip() or 'clang'
+
+
+CLANG = os.environ.get('XNU_CLANG') or _default_clang()
+TARGET = os.environ.get('XNU_CC_TARGET', 'arm64-apple-macos15.0')
+DROP = {'-c', '-g', '-MD', '-MMD', '-MP'}
+DROP_WITH_ARG = {'-MF', '-MT', '-MJ', '-o', '-arch'}
 COMPONENTS = ('osfmk', 'bsd', 'iokit', 'libkern', 'pexpert', 'security', 'san', 'libsa')
 
 
@@ -93,7 +122,7 @@ def run(item, bt, cdirs):
     src, (kind, args) = item
     objdir = os.environ.get('XNU_CC_OBJDIR')
     mode = ['-c', '-o', os.path.join(objdir, src.replace(CI_DXB + '/xnu/', '').replace('/', '__') + '.o')] if objdir else ['-fsyntax-only']
-    new = [CLANG if kind == 'clang' else CLANG + '++', '-target', 'arm64-apple-macos14.0', *mode,
+    new = [CLANG if kind == 'clang' else CLANG + '++', '-target', TARGET, *mode,
            # Apple clang-only builtins (kalloc_type); values only matter for codegen
            '-D__builtin_xnu_type_signature(...)=""', '-D__builtin_xnu_type_summary(...)=0',
            '-D__builtin_xnu_types_compatible(...)=1'] + os.environ.get('XNU_CC_EXTRA', '').split()
@@ -123,6 +152,7 @@ def main():
     log, bt = sys.argv[1], os.path.abspath(sys.argv[2])
     per_file = '--per-file' in sys.argv
     filters = [a for a in sys.argv[3:] if a != '--per-file']
+    detect_dxb(log)
     cmds = commands(log)
     synth = 0
     for src in makefile_sources(bt):

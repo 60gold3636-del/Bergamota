@@ -4,8 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       macos_version:
-        description: macOS release whose xnu to build (13.5 = xnu-8796, iOS 16 era)
-        default: "13.5"
+        description: macOS release whose xnu to build (13.5 = xnu-8796 / iOS 16 era; 15.3 = xnu-11215.81.4 / iOS 18.3 era)
+        default: "15.3"
+      xcode_version:
+        description: Xcode on the runner (empty = oldest installed for 13.x/14.x, 16.2 for 15.x)
+        default: ""
       kernel_config:
         description: RELEASE / DEVELOPMENT / DEBUG
         default: DEVELOPMENT
@@ -16,9 +19,10 @@ on:
         description: make -k (collect all compile errors in one run)
         default: "true"
   push:
-    branches: [main]
+    branches: [main, develop, xnu11215]
     paths:
       - "xnu/patches/**"
+      - "xnu/patches-11215/**"
       - ".github/workflows/xnu.yml"
 
 concurrency:
@@ -28,7 +32,7 @@ concurrency:
 env:
   DXB_REPO: https://github.com/blacktop/darwin-xnu-build
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
-  MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
+  MACOS_VERSION: ${{ inputs.macos_version || (github.ref_name == 'main' && '13.5' || '15.3') }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
   # Bump to throw away every cache (host tools + ccache) at once. See docs/CI_CACHE.md.
@@ -48,9 +52,10 @@ env:
 
 jobs:
   build:
-    # macos-14 still ships Xcode 15.x: its iig matches the xnu-8796 IORPC ABI
-    # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks)
-    runs-on: macos-14
+    # 13.x/14.x sources: macos-14 still ships Xcode 15.x, whose iig matches the xnu-8796 IORPC ABI
+    # (Xcode 16's iig emits IORPC.kernelContent, which that xnu lacks).
+    # 15.x sources (xnu-11215): macos-15 with Xcode 16.2 (the macOS 15.2/15.3 era toolchain).
+    runs-on: ${{ startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || '15.3'), '15.') && 'macos-15' || 'macos-14' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -60,12 +65,34 @@ jobs:
           git init -q dxb
           git -C dxb fetch -q --depth 1 "$DXB_REPO" "$DXB_SHA"
           git -C dxb checkout -q FETCH_HEAD
-          # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
-          cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
+          if [[ "$MACOS_VERSION" == 15.* ]]; then
+            # xnu-11215 series (docs/XNU11215_MIGRATION.md). dxb applies patches/15.0/*.sh, then
+            # patches/15.0/*.patch in name order: its own fixes (disable_bti, entitlements, iokit,
+            # link_kdk, skywalk, ...) come first and ours ("sweet-" prefix) after them.
+            for f in xnu/patches-11215/*.patch xnu/patches-11215/*.sh; do
+              [ -e "$f" ] || continue
+              cp "$f" "dxb/patches/15.0/sweet-$(basename "$f")"
+            done
+            PDIR=dxb/patches/15.0
+          else
+            # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
+            cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
+            PDIR=dxb/patches
+          fi
           # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
-          ls dxb/patches
+          # dxb only warns and carries on when a patch does not apply; for ours that would silently
+          # produce a kernel without it, so make it fatal.
+          python3 - <<'PY'
+          p = 'dxb/build.sh'
+          s = open(p).read()
+          needle = '                warning "Skipping patch ${PATCH} (already upstream, previously applied, or malformed): ${APPLY_CHECK}"\n'
+          assert needle in s, 'build.sh patches() layout changed; update the fatal-patch hook'
+          s = s.replace(needle, needle + '                case "$(basename "${PATCH}")" in [0-9]*|sweet-*) error "our patch does not apply: ${PATCH}"; exit 1 ;; esac\n')
+          open(p, 'w').write(s)
+          PY
+          ls "$PDIR"
 
       - name: Deps
         run: |
@@ -75,7 +102,14 @@ jobs:
           sudo chmod +x /usr/local/bin/xcodes
           sw_vers
           ls -d /Applications/Xcode*.app
-          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          if [ -n "${{ inputs.xcode_version }}" ]; then
+            XC=$(ls -d /Applications/Xcode_${{ inputs.xcode_version }}*.app | sort -V | tail -1)
+          elif [[ "$MACOS_VERSION" == 15.* ]]; then
+            XC=$(ls -d /Applications/Xcode_16.2*.app 2>/dev/null | sort -V | tail -1)
+            [ -n "$XC" ] || XC=$(ls -d /Applications/Xcode_16.*.app | sort -V | head -1)
+          else
+            XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          fi
           echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
           sudo xcode-select -s "$XC"
           xcodebuild -version
