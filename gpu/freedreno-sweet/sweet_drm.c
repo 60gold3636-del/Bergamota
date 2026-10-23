@@ -1,0 +1,359 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * libdrm stand-in for Mesa's freedreno "msm" backend on Heartwood (Poco F1, Adreno 630).
+ *
+ * Mesa's src/freedreno/drm/msm backend talks to /dev/dri/renderD* through libdrm (drmCommandWriteRead,
+ * drmIoctl, drmGetVersion) and mmap()s buffers at the offset GEM_INFO(GET_OFFSET) returns. On Heartwood the
+ * same requests are selectors of the IOKit user client "SweetAdreno630" (xnu/gpu-abi/sweet_adreno_abi.h,
+ * docs/GPU_KERNEL.md), so this file provides, under the libdrm names, exactly what the backend calls and
+ * forwards each request to IOConnectCallStructMethod. No Mesa source change is needed:
+ *
+ *   - "device fds" are dups of /dev/null (so os_dupfd_cloexec, close and fstat keep working); every such
+ *     fd means THE connection (one GPU, one connection per process);
+ *   - mmap()/munmap() of such an fd are interposed (dyld __interpose) and turned into
+ *     IOConnectMapMemory64 / IOConnectUnmapMemory64 with the BO handle as memoryType (msm "offset" = handle);
+ *   - absolute CLOCK_MONOTONIC timeouts of WAIT_FENCE / GEM_CPU_PREP become relative ones (the kernel ABI);
+ *   - the reported DRM version is msm 1.3: no softpin, no robustness params, relocations + kernel-assigned
+ *     iovas (GET_IOVA), submit queues, GMEM_BASE. Newer versions would make Mesa assign GPU addresses itself.
+ *
+ * Build: gpu/freedreno-sweet/build.sh (arm64e dylib, install name libdrm.2.dylib so a Mesa linked against a
+ * libdrm of the same name uses it; also libdrm_freedreno-free: Mesa's freedreno does not use libdrm_freedreno).
+ * Status: compiles; never run. Mesa configuration: gpu/freedreno-sweet/README.md.
+ */
+#include <IOKit/IOKitLib.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <mach/mach.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#include "../../xnu/gpu-abi/sweet_adreno_abi.h"
+
+#define EXPORT __attribute__((visibility("default")))
+#define DRM_COMMAND_BASE 0x40
+#define DRM_IOCTL_GEM_CLOSE_NR 0x09
+
+typedef struct _drmVersion {
+	int   version_major, version_minor, version_patchlevel;
+	int   name_len;
+	char *name;
+	int   date_len;
+	char *date;
+	int   desc_len;
+	char *desc;
+} drmVersion, *drmVersionPtr;
+
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static io_connect_t g_conn;
+static dev_t g_null_rdev;
+static int g_trace;
+
+static struct {
+	void    *addr;
+	uint32_t handle;
+	size_t   len;
+} g_maps[16384];
+static unsigned g_nmaps;
+
+static int
+io_errno(kern_return_t kr)
+{
+	switch (kr) {
+	case kIOReturnSuccess: return 0;
+	case kIOReturnNoMemory: case kIOReturnNoSpace: case kIOReturnNoResources: return ENOMEM;
+	case kIOReturnBadArgument: return EINVAL;
+	case kIOReturnTimeout: return ETIMEDOUT;
+	case kIOReturnBusy: return EBUSY;
+	case kIOReturnNotReady: case kIOReturnNotFound: return ENODEV;
+	case kIOReturnUnsupported: return ENOSYS;
+	case kIOReturnNotPermitted: return EPERM;
+	default: return EIO;
+	}
+}
+
+static int
+connect_once(void)
+{
+	int ok = 0;
+
+	pthread_mutex_lock(&g_lock);
+	if (g_conn == IO_OBJECT_NULL) {
+		struct stat st;
+		if (stat("/dev/null", &st) == 0) {
+			g_null_rdev = st.st_rdev;
+		}
+		g_trace = getenv("SWEET_DRM_TRACE") != NULL;
+		io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(SWEET_GPU_SERVICE_NAME));
+		if (svc != IO_OBJECT_NULL) {
+			if (IOServiceOpen(svc, mach_task_self(), 0, &g_conn) != KERN_SUCCESS) {
+				g_conn = IO_OBJECT_NULL;
+			}
+			IOObjectRelease(svc);
+		}
+	}
+	ok = g_conn != IO_OBJECT_NULL;
+	pthread_mutex_unlock(&g_lock);
+	return ok;
+}
+
+static int
+is_ours(int fd)
+{
+	struct stat st;
+
+	if (g_conn == IO_OBJECT_NULL || fd < 0 || fstat(fd, &st) != 0) {
+		return 0;
+	}
+	return S_ISCHR(st.st_mode) && st.st_rdev == g_null_rdev;
+}
+
+/* Sizes of the kernel structures (what the user client requires at least). */
+static size_t
+sel_size(uint32_t sel)
+{
+	switch (sel) {
+	case SWEET_GPU_SEL_GEM_CLOSE: return sizeof(struct sweet_gem_close);
+	case SWEET_GPU_SEL_GET_PARAM: return sizeof(struct sweet_msm_param);
+	case SWEET_GPU_SEL_GEM_NEW: return sizeof(struct sweet_msm_gem_new);
+	case SWEET_GPU_SEL_GEM_INFO: return sizeof(struct sweet_msm_gem_info);
+	case SWEET_GPU_SEL_GEM_CPU_PREP: return sizeof(struct sweet_msm_gem_cpu_prep);
+	case SWEET_GPU_SEL_GEM_CPU_FINI: return sizeof(struct sweet_msm_gem_cpu_fini);
+	case SWEET_GPU_SEL_GEM_SUBMIT: return sizeof(struct sweet_msm_gem_submit);
+	case SWEET_GPU_SEL_WAIT_FENCE: return sizeof(struct sweet_msm_wait_fence);
+	case SWEET_GPU_SEL_GEM_MADVISE: return sizeof(struct sweet_msm_gem_madvise);
+	case SWEET_GPU_SEL_SUBMITQUEUE_NEW: return sizeof(struct sweet_msm_submitqueue);
+	case SWEET_GPU_SEL_SUBMITQUEUE_CLOSE: return sizeof(uint32_t);
+	default: return 0;
+	}
+}
+
+static int64_t
+abs_to_rel_ns(const struct sweet_msm_timespec *t)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	int64_t d = (t->tv_sec - now.tv_sec) * 1000000000ll + (t->tv_nsec - now.tv_nsec);
+	return d < 0 ? 0 : d;
+}
+
+static void
+rel_timeout(struct sweet_msm_timespec *t)
+{
+	int64_t ns = abs_to_rel_ns(t);
+	t->tv_sec = ns / 1000000000ll;
+	t->tv_nsec = ns % 1000000000ll;
+}
+
+/* One request: returns 0 or -errno. */
+static int
+sweet_call(uint32_t sel, void *data, size_t size)
+{
+	uint8_t in[256], out[256];
+	size_t want = sel_size(sel), outsz = sizeof(out);
+
+	if (!connect_once()) {
+		return -ENODEV;
+	}
+	if (want == 0 || want > sizeof(in)) {
+		return -ENOSYS;
+	}
+	memset(in, 0, sizeof(in));
+	memcpy(in, data, size < want ? size : want);
+	if (sel == SWEET_GPU_SEL_WAIT_FENCE) {
+		rel_timeout(&((struct sweet_msm_wait_fence *)in)->timeout);
+	} else if (sel == SWEET_GPU_SEL_GEM_CPU_PREP) {
+		rel_timeout(&((struct sweet_msm_gem_cpu_prep *)in)->timeout);
+	}
+	kern_return_t kr = IOConnectCallStructMethod(g_conn, sel, in, want, out, &outsz);
+	if (g_trace && kr != KERN_SUCCESS && sel != SWEET_GPU_SEL_WAIT_FENCE) {
+		fprintf(stderr, "sweet_drm: selector %#x -> %#x\n", sel, kr);
+	}
+	if (kr == KERN_SUCCESS && outsz) {
+		memcpy(data, out, outsz < size ? outsz : size);
+	}
+	return -io_errno(kr);
+}
+
+/* ---- libdrm API used by Mesa's freedreno msm backend ---- */
+
+EXPORT int
+drmCommandWriteRead(int fd, unsigned long idx, void *data, unsigned long size)
+{
+	(void)fd;
+	return sweet_call((uint32_t)(DRM_COMMAND_BASE + idx), data, size);
+}
+
+EXPORT int
+drmCommandWrite(int fd, unsigned long idx, void *data, unsigned long size)
+{
+	return drmCommandWriteRead(fd, idx, data, size);
+}
+
+EXPORT int
+drmCommandRead(int fd, unsigned long idx, void *data, unsigned long size)
+{
+	return drmCommandWriteRead(fd, idx, data, size);
+}
+
+EXPORT int
+drmIoctl(int fd, unsigned long request, void *arg)
+{
+	unsigned nr = (unsigned)(request & 0xff);
+	size_t size = (request >> 16) & 0x3fff;
+	int r;
+
+	(void)fd;
+	if (nr != DRM_IOCTL_GEM_CLOSE_NR && nr < DRM_COMMAND_BASE) {
+		errno = ENOSYS;
+		return -1;
+	}
+	r = sweet_call(nr, arg, size ? size : sel_size(nr));
+	if (r) {
+		errno = -r;
+		return -1;
+	}
+	return 0;
+}
+
+EXPORT drmVersionPtr
+drmGetVersion(int fd)
+{
+	drmVersionPtr v;
+
+	if (!is_ours(fd) && !connect_once()) {
+		errno = ENODEV;
+		return NULL;
+	}
+	v = calloc(1, sizeof(*v));
+	if (!v) {
+		return NULL;
+	}
+	v->version_major = 1;
+	v->version_minor = 3;   /* FD_VERSION_SUBMIT_QUEUES/GMEM_BASE/BO_IOVA; < SOFTPIN on purpose (see above) */
+	v->name = strdup("msm");
+	v->name_len = 3;
+	v->date = strdup("20261023");
+	v->date_len = 8;
+	v->desc = strdup("Heartwood SweetAdreno630");
+	v->desc_len = (int)strlen(v->desc);
+	return v;
+}
+
+EXPORT void
+drmFreeVersion(drmVersionPtr v)
+{
+	if (v) {
+		free(v->name);
+		free(v->date);
+		free(v->desc);
+		free(v);
+	}
+}
+
+/* "msm" (or any name) opens the one GPU connection; the fd is a dup of /dev/null. */
+EXPORT int
+drmOpenWithType(const char *name, const char *busid, int type)
+{
+	(void)name; (void)busid; (void)type;
+	if (!connect_once()) {
+		errno = ENODEV;
+		return -1;
+	}
+	return open("/dev/null", O_RDWR | O_CLOEXEC);
+}
+
+EXPORT int
+drmGetCap(int fd, uint64_t cap, uint64_t *value)
+{
+	(void)fd; (void)cap;
+	*value = 0;             /* no syncobj, no prime */
+	return 0;
+}
+
+EXPORT int
+drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
+{
+	(void)fd; (void)prime_fd; (void)handle;
+	errno = ENOSYS;
+	return -1;
+}
+
+EXPORT int
+drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
+{
+	(void)fd; (void)handle; (void)flags; (void)prime_fd;
+	errno = ENOSYS;
+	return -1;
+}
+
+EXPORT int drmSyncobjCreate(int fd, uint32_t flags, uint32_t *handle) { (void)fd; (void)flags; (void)handle; return -ENOSYS; }
+EXPORT int drmSyncobjDestroy(int fd, uint32_t handle) { (void)fd; (void)handle; return -ENOSYS; }
+EXPORT int drmSyncobjWait(int fd, uint32_t *h, unsigned n, int64_t t, unsigned f, uint32_t *first) { (void)fd; (void)h; (void)n; (void)t; (void)f; (void)first; return -ENOSYS; }
+EXPORT int drmSyncobjSignal(int fd, const uint32_t *h, uint32_t n) { (void)fd; (void)h; (void)n; return -ENOSYS; }
+EXPORT int drmSyncobjReset(int fd, const uint32_t *h, uint32_t n) { (void)fd; (void)h; (void)n; return -ENOSYS; }
+
+/* ---- mmap of a BO: offset = BO handle (GEM_INFO GET_OFFSET) ---- */
+
+static void *
+sweet_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)
+{
+	mach_vm_address_t a = 0;
+	mach_vm_size_t s = 0;
+
+	if (!is_ours(fd)) {
+		return mmap(addr, len, prot, flags, fd, off);
+	}
+	kern_return_t kr = IOConnectMapMemory64(g_conn, (uint32_t)off, mach_task_self(), &a, &s,
+	    kIOMapAnywhere | kIOMapWriteCombineCache);
+	if (kr != KERN_SUCCESS || s < len) {
+		if (kr == KERN_SUCCESS) {
+			IOConnectUnmapMemory64(g_conn, (uint32_t)off, mach_task_self(), a);
+		}
+		errno = kr == KERN_SUCCESS ? EINVAL : io_errno(kr);
+		return MAP_FAILED;
+	}
+	pthread_mutex_lock(&g_lock);
+	if (g_nmaps < sizeof(g_maps) / sizeof(g_maps[0])) {
+		g_maps[g_nmaps].addr = (void *)(uintptr_t)a;
+		g_maps[g_nmaps].handle = (uint32_t)off;
+		g_maps[g_nmaps].len = len;
+		g_nmaps++;
+	}
+	pthread_mutex_unlock(&g_lock);
+	return (void *)(uintptr_t)a;
+}
+
+static int
+sweet_munmap(void *addr, size_t len)
+{
+	int found = 0;
+	uint32_t handle = 0;
+
+	pthread_mutex_lock(&g_lock);
+	for (unsigned i = 0; i < g_nmaps; i++) {
+		if (g_maps[i].addr == addr) {
+			handle = g_maps[i].handle;
+			g_maps[i] = g_maps[--g_nmaps];
+			found = 1;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g_lock);
+	if (found) {
+		return IOConnectUnmapMemory64(g_conn, handle, mach_task_self(), (mach_vm_address_t)(uintptr_t)addr) == KERN_SUCCESS ? 0 : -1;
+	}
+	return munmap(addr, len);
+}
+
+struct interpose_tuple { const void *replacement, *replacee; };
+__attribute__((used)) static const struct interpose_tuple interpose_mmap
+    __attribute__((section("__DATA,__interpose"))) = { (const void *)sweet_mmap, (const void *)mmap };
+__attribute__((used)) static const struct interpose_tuple interpose_munmap
+    __attribute__((section("__DATA,__interpose"))) = { (const void *)sweet_munmap, (const void *)munmap };

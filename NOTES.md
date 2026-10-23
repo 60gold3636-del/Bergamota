@@ -2,6 +2,9 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Branch `gpu-kernel` (2026-10-23): A630 keep-alive + msm-style IOKit client, built, NOT run on the phone <<<
+`docs/GPU_KERNEL.md`: patches 0180-0182 (xnu-11215 series): boot-arg `sweetgpu=8` = stage 7 + CP fill self-test + GPU kept up (GMU keep-alive, OOB_GPU held, zap left running) + IOService `SweetAdreno630` whose user client exposes the Linux msm ioctls (GET_PARAM, GEM_NEW/INFO/CPU_PREP/FINI, SUBMIT, WAIT_FENCE, SUBMITQUEUE_NEW/CLOSE, GEM_CLOSE + our SURFACE_BO/BO_SYNC/INFO) as selectors for the Mesa winsys (`xnu/gpu-abi/sweet_adreno_abi.h`). Firmware: gmu+sqe exist in `../ios-beryllium/research/gpu-fw/dl`, the zap (`a630_zap.*`) is NOT in any backup (needs the phone's Android /vendor/firmware); `tools/gpu-fw-push.sh` copies to `/usr/local/share/firmware/`. Off unless `sweetgpu=8`. Test one stage per boot (`sweetgpu=3..8`).
+
 ### >>> Branch `ios18` (2026-10-20): iOS 18 port, stage 1 prepared, NOT run on the phone <<<
 `docs/IOS18_PORT.md`: pacstrip rewriter (`tools/renegade/`), iOS 18 restore-ramdisk bundle (real dyld + flat libSystem dylibs, no cache), kernel patch 0131 (`sweetarm64e=1`: arm64e exec grading, AMFI dyld policy 0x5a, `ptrauth_disabled=1`), `tools/renegade/run-poc.sh`. Unverified on hardware; see the doc for how to read failures and the stage 2 plan (rewritten cache + slide v5).
 
