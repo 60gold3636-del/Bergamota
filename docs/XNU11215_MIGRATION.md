@@ -89,6 +89,8 @@ diagnostics kept in the same pass, **B** device drivers (display, touch, keys, b
 | 0143 | `kern.exclaves_status/boot_stage`, osenvironment | C | native (non-exclaves path returns NOT_SUPPORTED) |
 | 0154 | watchport count 128 | C | native (`TASK_MAX_WATCHPORT_COUNT 128`) |
 | 0137, 0140 | from main: `kern.sweet_reboot_mode` / boot-arg `sweetreboot` (PS_HOLD reset, PON reason, IMEM restart_reason -> fastboot/recovery), Bergamota variant | B | ported (not in the full2/full3 images) |
+| 0136b | `beryllium-bt-hci-kctl` (main): Bluetooth HCI control socket for bluetoothd | B | ported (`0136-beryllium-bt-hci-kctl`) |
+| 0172 | new: xnu-11215 `console_write()`/`console_write_unbuffered()` return early when `disableConsoleOutput` (8796 checked only in `_cnputs`), so once the graphics console took over printf/IOLog never reached our persistent-log ring (0047) or the UDP live log (0077); both now tee before the early return, and `kprintf()` (`serial_putc_crlf`) is teed too | A-diag | new |
 | 0171 | new: SweetCPU for 11215: `processor_start` from a kext is a no-op returning KERN_FAILURE (hardware boot 1 panicked `processor_start failed: 5`); `ml_processor_register()` now calls `processor_boot()` itself, so secondaries are registered only after the boot CPU, startAll just waits, boot-CPU `initCPU` waits for its self-IPI and calls `ml_cpu_up()` like AppleARMSMP | A | new |
 | 0170 | new: `vm_kern_xnu.h` / `vm_map_internal.h` includes for driver files | - | new |
 

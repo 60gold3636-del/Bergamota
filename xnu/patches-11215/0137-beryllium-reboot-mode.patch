@@ -1,5 +1,5 @@
 diff --git a/bsd/conf/files b/bsd/conf/files
-index d17823274826556af172c7810427df344203ab6f..55126d48d2fdcdd705a5dda99bef8d1d5b4bff05 100644
+index c94ccc8bf3cb499b8178854dbeb953c178f674d8..050ff12200c21acd20c36bbbfb175dd1f6bc311a 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
 @@ -111,6 +111,7 @@ bsd/dev/sweet_keys.c			standard
