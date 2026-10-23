@@ -55,6 +55,11 @@ if [ "${IOS18:-1}" = 1 ]; then
 		codesign -s - -f --entitlements "$here/$ents" "$out18/$n"
 		python3 -I "$pacstrip" --sign "$out18/$n"
 	}
+	# sweetmetrics: Bergamota live metrics (docs/BERGAMOTA_METRICS.md), plain C, root_tweaks18.sweetmetrics
+	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall -framework CoreFoundation -framework IOKit \
+		"$here/sweetmetrics.c" -o "$out18/sweetmetrics"
+	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetmetrics"
+	python3 -I "$pacstrip" --sign "$out18/sweetmetrics"
 	b18 sweetposterset sweetposterset.m posterset.entitlements
 	b18 sweeticonstyle sweeticonstyle.m iconstyle.entitlements -framework UIKit
 	b18 sweetopen sweetopen.m uicache.entitlements

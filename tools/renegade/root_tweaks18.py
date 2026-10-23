@@ -399,6 +399,21 @@ def sweetreboot(root):
     print('sweetreboot: /usr/local/bin/sweetreboot')
 
 
+def sweetmetrics(root):
+    """/usr/local/bin/sweetmetrics: the live-metrics JSON Bergamota polls over SSH (docs/BERGAMOTA_METRICS.md,
+    tools/sweetnet/sweetmetrics.c, arm64e + pacstrip --sign, tools/sweetnet/build.sh). Read-only tool, no job. Skipped
+    with a message when it is not built; RENEGADE_NO_METRICS=1 skips it."""
+    if os.environ.get('RENEGADE_NO_METRICS') == '1':
+        print('sweetmetrics: skipped (RENEGADE_NO_METRICS=1)')
+        return
+    src = find_sweetnet('ios18/sweetmetrics')
+    if not src:
+        print('sweetmetrics: not built (tools/sweetnet/build.sh): skipped')
+        return
+    install_file(src, os.path.join(root, 'usr/local/bin/sweetmetrics'))
+    print('sweetmetrics: /usr/local/bin/sweetmetrics')
+
+
 def find_container(root, kind, identifier):
     for meta in glob.glob(os.path.join(root, 'private/var/containers', kind, '*',
                                        '.com.apple.mobile_container_manager.metadata.plist')):
@@ -971,6 +986,7 @@ def main():
     usbnet(root)
     netcfg(root)
     sweetreboot(root)
+    sweetmetrics(root)
     ssh(root)
     auto(root)        # staged apps, bluetooth, PosterBoard, first-boot job (opt-outs: RENEGADE_NO_*)
     activation(root)

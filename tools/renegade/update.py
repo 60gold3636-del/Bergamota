@@ -296,6 +296,7 @@ def main():
         rec.install()
         jb_owners = os.path.join(tempfile.gettempdir(), f'renegade-update-jb-{os.getpid()}.tsv')
         rt.staged_apps(mnt)
+        rt.sweetmetrics(mnt)
         if feats['bluetooth']:
             rt.bluetooth(mnt)
         if feats['posterboard']:
