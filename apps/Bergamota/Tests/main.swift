@@ -43,6 +43,12 @@ check(b.gpu.state == "absent" && !b.gpu.present, "bare: no GPU service")
 check(!b.battery.present && b.battery.percent == nil && b.battery.currentMa == nil, "bare: no battery")
 check(b.errors.count == 2, "bare: errors carried")
 
+// recorded on the phone (xnu-11215, 2026-10-23, no cpufreq/GPU DCVS in that kernel, backboardd with a live GPU client)
+let p = PhoneMetrics.parse(sample("phone-live.json"))!
+check(p.cpuLoad.count == 8 && p.clusters[0].loadPct == 69 && p.clusters[0].curKhz == nil && !p.freqKnown, "phone-live: load known, frequency unknown")
+check(p.renderer.mode == "fd630" && p.renderer.backboarddPid == 745, "phone-live: FD630 from the real GPU client") 
+check(p.battery.percent == 10 && p.battery.currentMa == -140 && p.battery.voltageMv == 3552, "phone-live: battery")
+
 // SSH noise in front of the JSON, and failure output
 check(PhoneMetrics.parse(sample("noisy.txt"))?.battery.percent == 87, "noisy: banner lines before the JSON are skipped")
 check(PhoneMetrics.parse(sample("missing.txt")) == nil, "missing tool output: no JSON")
