@@ -1,13 +1,13 @@
-# Bergamota fastboot (the shim speaks fastboot itself)
+# Bergamota fastboot (Enxerto speaks fastboot itself)
 
-Files: `shim/usb_power.c` (cold-boot power-up), `shim/usb_dwc3.c` (polled DWC3 device driver), `shim/fastboot.c` (protocol core, host-testable),
-`shim/bergamota.c` (glue: screen, buffer, boot, reset), `shim/fastboot_test.c` (host test, runs from `build.sh`).
-Hooks: `shim.c` (usb_power_up + entry), `loader.c` (`loader_check`, `loader_boot_payload`, `loader_has_payload`), `fdt.c` (`fdt_chosen_prop`), `build.sh`.
+Files: `enxerto/usb_power.c` (cold-boot power-up), `enxerto/usb_dwc3.c` (polled DWC3 device driver), `enxerto/fastboot.c` (protocol core, host-testable),
+`enxerto/bergamota.c` (glue: screen, buffer, boot, reset), `enxerto/fastboot_test.c` (host test, runs from `build.sh`).
+Hooks: `enxerto.c` (usb_power_up + entry), `loader.c` (`loader_check`, `loader_boot_payload`, `loader_has_payload`), `fdt.c` (`fdt_chosen_prop`), `build.sh`.
 Status: compiles and the protocol test passes; **nothing here has run on hardware.**
 
 ## Entry
 `usb_power_up()` runs on every boot (no-op when GDSC + clocks are on). Then fastboot starts when
-- the boot.img cmdline has `bergamota.fastboot=1` (`BERGAMOTA=1 shim/build.sh` adds it), or
+- the boot.img cmdline has `bergamota.fastboot=1` (`BERGAMOTA=1 enxerto/build.sh` adds it), or
 - the flag is absent and the ABL ramdisk holds no SWEETXNU payload (plain `build.sh`).
 
 `bergamota.fastboot=0` (`BERGAMOTA=0`) keeps the old loader/diagnostics path. If fastboot cannot start (USB init error, no buffer) the reason is
@@ -31,13 +31,13 @@ bulk IN 0x81 and OUT 0x01, 512 B (high speed), strings "Bergamota" / "Bergamota 
 Bus reset/disconnect ends all transfers, returns ep0 to SETUP and tells the protocol layer (`FB_LINK_LOST`, which forgets any download).
 
 ## DMA, memory and caches
-- TRBs, event buffer, setup/command/response buffers: static arrays in the shim image, aligned to 4 KiB at run time (the image is linked at 0). Same memory xnu's
+- TRBs, event buffer, setup/command/response buffers: static arrays in the Enxerto image, aligned to 4 KiB at run time (the image is linked at 0). Same memory xnu's
   DMA used (kernel DRAM, inside the SMMU identity map), far from the kernel destination.
 - Fastboot phase is MMU-off, so CPU accesses are Device and coherent with DMA. The one hazard is dirty lines ABL may have left in memory we DMA into:
   before every download slice the target range is cleaned+invalidated (`dc civac`), after it invalidated (`dc ivac`).
 - The cached MMU only comes up inside `loader_boot_payload` (via `mmu_enable_ranges`, which invalidates the payload range again), after `usb_dwc3_stop()` has halted
   the core, zeroed GEVNTADR/emptied the event buffer (nothing may DMA into the image later), restored QSCRATCH and the SMMU entries.
-- **Download buffer: 0xb8000000, 1 GiB (to 0xf8000000)**, trimmed at run time around the shim image, the DTB and the ABL initrd.
+- **Download buffer: 0xb8000000, 1 GiB (to 0xf8000000)**, trimmed at run time around the Enxerto image, the DTB and the ABL initrd.
   Derivation: live DT `memory` = 0x80000000..0x1fd4a0000; every fixed reserved region ends below 0xb0400000 (ramoops 0xb0000000+4 MiB, ramdump_fb 0xaf000000);
   mkadt.py validates its pools inside 0x9f800000..0xfd000000; the real payloads use phys_base 0x100000000, mem_size 0xfcc00000 (the whole upper bank), so the buffer must be
   in the low bank (loader refuses a payload overlapping `[phys_base, +mem_size)`); ABL's own USB event buffer sat at 0xfdfc8000, so stay below 0xfd000000.

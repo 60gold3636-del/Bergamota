@@ -14,6 +14,9 @@ final class RemoteControl {
     static var statusURL: URL { baseURL.appendingPathComponent("status.json") }
 
     var lastRequest: String?
+    /// Set by AppModel after init.
+    @ObservationIgnored var tools: PhoneTools?
+    @ObservationIgnored var bannerProvider: (() -> ActivityBanner)?
 
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let monitor: PhoneMonitor
@@ -102,21 +105,79 @@ final class RemoteControl {
         switch kind {
         case "enqueue":
             guard let image = req["image"] as? String, !image.isEmpty else { throw RemoteError("missing \"image\"") }
-            let path = try resolve(image, under: "shim/out", suffix: ".img")
+            let path = try resolveBoot(image, suffix: ".img")
             queue.add(path, label: (req["label"] as? String) ?? "")
-            return "queued \((path as NSString).lastPathComponent)" + armNote(req)
+            return "queued \((path as NSString).lastPathComponent)" + largeNote(path) + armNote(req)
         case "build":
             return try await handleBuild(req)
+        case "flash_userdata":
+            // The app's one flash exception. Requires "confirm":"userdata"; only enqueues (the flash runs in fastboot, armed queue).
+            // "partition" defaults to userdata; boot and logo are the only others (UserdataFlash.partitions).
+            let part = (req["partition"] as? String) ?? "userdata"
+            guard UserdataFlash.partitions.contains(part) else { throw RemoteError("flash rejected: partition \(part) is not allowed") }
+            guard (req["confirm"] as? String) == part else {
+                throw RemoteError("flash rejected: needs \"confirm\":\"\(part)\"")
+            }
+            guard let p = req["path"] as? String, !p.isEmpty else { throw RemoteError("missing \"path\"") }
+            let info: UserdataFlash.Info
+            // Root images live in the repo or in the sibling ios18 worktree's research/ios18/ (the iOS 18 full root).
+            let resolved: String
+            if let r = try? resolve(p, under: "", suffix: nil) { resolved = r }
+            else { resolved = try resolve(p, under: "../ios-beryllium-ios18/research/ios18", suffix: nil) }
+            switch UserdataFlash.validate(resolved, partition: part) {
+            case .success(let i): info = i
+            case .failure(let e): throw RemoteError(e.message)
+            }
+            var boot = ""
+            if let b = req["then_boot"] as? String, !b.isEmpty { boot = try resolveBoot(b, suffix: ".img") }
+            queue.addFlash(userdata: info, bootPath: boot, label: (req["label"] as? String) ?? "")
+            return "queued flash \(info.partition) \(info.name)" + (boot.isEmpty ? "" : ", then boot \((boot as NSString).lastPathComponent)") + largeNote(boot) + armNote(req)
         case "orangefox_reboot":
             guard let en = req["enabled"] as? Bool else { throw RemoteError("missing boolean \"enabled\"") }
             settings.rebootFromRecovery = en
             return "orangefox reboot to bootloader \(en ? "enabled" : "disabled")"
+        case "send_now":
+            guard settings.allowRemoteStart else { throw RemoteError("remote start is disabled in Settings") }
+            guard monitor.state.isFastboot else { throw RemoteError("phone is not in fastboot (state: \(monitor.state.rawValue))") }
+            let r = await queue.sendNow()
+            if r.hasPrefix("FAILED") || r == "not sent" || r.hasPrefix("a send") || r.hasPrefix("queue") { throw RemoteError(r) }
+            return r
+        case "install_ipa":
+            guard let tools else { throw RemoteError("tools unavailable") }
+            guard let path = req["path"] as? String, !path.isEmpty else { throw RemoteError("missing \"path\"") }
+            let r = await tools.installIPA(path)
+            if !r.0 { throw RemoteError(r.1) }
+            return r.1
+        case "upload":
+            guard let tools else { throw RemoteError("tools unavailable") }
+            guard let paths = req["paths"] as? [String], !paths.isEmpty else { throw RemoteError("missing \"paths\" array") }
+            let r = await tools.upload(paths, dest: (req["dest"] as? String) ?? "photos")
+            if !r.0 { throw RemoteError(r.1) }
+            return r.1
+        case "reboot":
+            // {"kind":"reboot","to":"fastboot|bergamota|recovery"}: iOS -> ABL fastboot / Bergamota fastboot / recovery via SSH sweetreboot
+            guard let to = req["to"] as? String, to == "fastboot" || to == "recovery" || to == "bergamota" else { throw RemoteError("\"to\" must be \"fastboot\", \"bergamota\" or \"recovery\"") }
+            guard monitor.state == .ios else { throw RemoteError("iOS is not up (state: \(monitor.state.rawValue))") }
+            guard let tools else { throw RemoteError("tools unavailable") }
+            let (ok, msg) = await tools.rebootIOS(to: to)
+            if !ok { throw RemoteError(msg) }
+            return msg
+        case "enter_bergamota":
+            // {"kind":"enter_bergamota"}: ABL fastboot -> Bergamota fastboot (`fastboot boot bergamota-fastboot.img`)
+            guard let tools else { throw RemoteError("tools unavailable") }
+            let (ok, msg) = await tools.enterBergamota()
+            if !ok { throw RemoteError(msg) }
+            return msg
         case "stop":
             queue.disarm()
             return "queue disarmed"
         default:
             throw RemoteError("unknown kind \"\(kind)\"")
         }
+    }
+
+    private func largeNote(_ path: String) -> String {
+        queue.largeWarns(BootQueue.fileSize(path)) ? " (WARNING: \(BootQueue.largeWarning))" : ""
     }
 
     private func armNote(_ req: [String: Any]) -> String {
@@ -132,7 +193,7 @@ final class RemoteControl {
         guard let k = req["kernel"] as? String else { throw RemoteError("missing \"kernel\"") }
         guard let a = req["adt"] as? String else { throw RemoteError("missing \"adt\"") }
         let kernel = try resolve(k, under: "xnu", suffix: nil)
-        let adt = try resolve(a, under: "shim/out", suffix: ".adt")
+        let adt = try resolveBoot(a, suffix: ".adt")
         var cmdline = ""
         if let c = req["cmdline"] as? String, !c.trimmingCharacters(in: .whitespaces).isEmpty { cmdline = c }
         else if let pn = req["preset"] as? String {
@@ -146,13 +207,23 @@ final class RemoteControl {
         var msg = "built \((img as NSString).lastPathComponent)"
         if (req["enqueue"] as? Bool) ?? true {
             queue.add(img, label: (req["label"] as? String) ?? name)
-            msg += ", queued" + armNote(req)
+            msg += ", queued" + largeNote(img) + armNote(req)
         }
         return msg
     }
 
     /// Absolute or repo-relative path that must exist inside `repo/<under>` (symlinks resolved).
+    /// A boot image or ADT under Enxerto's out/ (or the pre-rebrand shim/out/).
+    private func resolveBoot(_ input: String, suffix: String) throws -> String {
+        var last: Error?
+        for dir in settings.bootOutDirs {
+            do { return try resolve(input, under: dir, suffix: suffix) } catch { last = error }
+        }
+        throw last ?? RemoteError("\(input) is not inside \(settings.bootDir)/out/")
+    }
+
     private func resolve(_ input: String, under: String, suffix: String?) throws -> String {
+        let under = under.isEmpty ? "." : under
         let expanded = (input as NSString).expandingTildeInPath
         let full = expanded.hasPrefix("/") ? expanded : settings.repoFile(expanded)
         let url = URL(fileURLWithPath: full).standardizedFileURL.resolvingSymlinksInPath()
@@ -170,9 +241,12 @@ final class RemoteControl {
 
     private func snapshot() -> [String: Any] {
         let m = monitor
-        var phone: [String: Any] = ["state": m.state.rawValue == "iosBooting" ? "ios-booting" : m.state.rawValue,
+        var phone: [String: Any] = ["state": m.state.rawValue == "iosBooting" ? "ios-booting" : (m.state == .bergamotaFastboot ? "bergamota-fastboot" : m.state.rawValue),
                                     "since": iso(m.stateSince)]
         if let s = m.fastbootSerial { phone["fastbootSerial"] = s }
+        if m.state.isFastboot { phone["fastbootKind"] = m.state == .bergamotaFastboot ? "bergamota" : "abl" }
+        if let v = m.fastbootVersion, !v.isEmpty, m.state.isFastboot { phone["fastbootVersion"] = v }
+        if let b = m.sweetrebootBergamota { phone["sweetrebootBergamota"] = b }
         if let s = m.adbSerial { phone["adbSerial"] = s }
         if m.state == .ios, let i = m.info {
             var ios: [String: Any] = ["kernel": i.uname]
@@ -190,17 +264,29 @@ final class RemoteControl {
             case .sent: st = "sent"
             case .failed: st = "failed"
             }
-            return ["id": it.id.uuidString, "label": it.label.isEmpty ? it.fileName : it.label, "image": it.imagePath,
-                    "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400))]
+            var d: [String: Any] = ["id": it.id.uuidString, "label": it.label.isEmpty ? it.fileName : it.label, "image": it.imagePath,
+                    "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400)),
+                    "sizeBytes": it.size, "warning": queue.largeWarns(it) ? BootQueue.largeWarning : "",
+                    "needsManualFastboot": it.needsManualFastboot, "autoRebootTried": it.autoRebootTried]
+            if let u = it.userdataImage { d["flashUserdata"] = u; d["flashUserdataBytes"] = it.userdataSize; d["flashPartition"] = it.flashTarget }
+            return d
         }
+        let f = queue.flasher
+        var flash: [String: Any] = ["active": f.active, "file": f.fileName, "current": f.current, "total": f.total,
+                                    "progress": f.active ? f.progressText : ""]
+        if let l = f.last { flash["last"] = ["result": l.ok ? "FLASHED" : "FAILED", "at": iso(l.at), "message": l.message] }
+        else { flash["last"] = NSNull() }
         return [
             "phone": phone,
             "queue": ["armed": queue.armed, "status": queue.statusText, "items": items,
-                      "orangefoxReboot": settings.rebootFromRecovery, "remoteStartAllowed": settings.allowRemoteStart],
+                      "orangefoxReboot": settings.rebootFromRecovery, "remoteStartAllowed": settings.allowRemoteStart,
+                      "autoRebootToFastboot": settings.autoRebootToFastboot, "preferBergamotaFastboot": settings.preferBergamotaFastboot, "autoRebootStatus": (queue.autoStatusText as Any?) ?? NSNull()],
+            "flash": flash,
             "liveLog": ["listening": logs.listening, "savingTo": logs.recording ? ((logs.recordPath as Any?) ?? NSNull()) : NSNull(),
                         "linesPerSecond": logs.linesPerSecond, "totalReceived": logs.totalReceived],
             "build": ["building": build.building, "last": (build.lastResult as Any?) ?? NSNull()],
             "lastRequest": (lastRequest as Any?) ?? NSNull(),
+            "activity": bannerProvider.map { ["title": $0().title, "subtitle": $0().subtitle] } ?? [:],
         ]
     }
 

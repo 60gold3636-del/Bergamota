@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Pack an xnu kernel Mach-O + ADT into the payload the sweet shim boots.
+"""Pack an xnu kernel Mach-O + ADT into the payload Enxerto (the bootloader, enxerto/) boots.
 
   mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE] [--compress]
 
 The kernel is linked as a PIE with LC_DYLD_CHAINED_FIXUPS. Nobody else
 (no kmutil, no iBoot) resolves those for us, and xnu only rebases static
 kernelcaches itself, so the chains are walked here and every pointer is
-rewritten to its unslid target. The shim then only copies flat segments.
+rewritten to its unslid target. Enxerto then only copies flat segments.
 
 Payload layout (little endian, all offsets from payload start):
   0x000  char  magic[8] = "SWEETXNU"
@@ -20,12 +20,12 @@ Payload layout (little endian, all offsets from payload start):
   0x048  char  cmdline[608]
   0x2a8  seg[nsegs] { u64 vmaddr, vmsize, file_off(in payload), file_size }
 
---compress (payload version 2, needs the shim with inflate.c): every segment/ramdisk piece of 1 MiB or more is stored
-as raw DEFLATE and the shim inflates it into place. The segment table then has 5 u64 per entry (raw_size last).
+--compress (payload version 2, needs Enxerto with inflate.c): every segment/ramdisk piece of 1 MiB or more is stored
+as raw DEFLATE and Enxerto inflates it into place. The segment table then has 5 u64 per entry (raw_size last).
 ABL places the boot.img ramdisk just below 0x85600000 (docs/IOS18_PORT.md section 11): a 200 MB payload does not fit.
 
 --ramdisk appends IMAGE as one more segment right after the kernel and moves
-kernel_end past it, so the shim needs no changes: the image lands below the
+kernel_end past it, so Enxerto needs no changes: the image lands below the
 ADT and boot_args, inside topOfKernelData (never handed to the VM), and the
 ADT gets /chosen/memory-map "RAMDisk" = <phys, size> for IOFindBSDRoot to
 turn into md0 (boot with rd=md0).

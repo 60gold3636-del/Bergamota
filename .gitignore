@@ -4,6 +4,7 @@ dtb/
 recovery/
 # third-party/Apple sources fetched for reading
 research/
+enxerto/out/
 shim/out/
 xnu/out/
 xnu/out-*/

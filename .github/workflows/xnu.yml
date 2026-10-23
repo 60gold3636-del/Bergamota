@@ -1,4 +1,4 @@
-name: xnu
+name: Heartwood kernel (xnu)
 
 on:
   workflow_dispatch:

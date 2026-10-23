@@ -29,16 +29,16 @@ arm64e Foundation protects `_NSThreadData` with a PACGA chain (a 3-step keyed MA
     check: pacga x10,x10,x9 ; pacga x10,x16,x10 ; pacga x10,x11,x10 ; ldar x11,[obj+0x20] ; cmp ; b.ne poisoned
     store: pacga x8,x1,x9   ; pacga x8,x16,x8   ; pacga x8,x9,x8   ; stlr x8,[obj+0x20]
 
-`tools/ios18/pacstrip.py` rewrites each PACGA to `eor Xd,Xn,Xm,ror #k` with `k = 7 + (rd*5 + rn*3 + rm) % 50`, i.e. **k depends on the register numbers of the site**. The check site became `ror #46,#15,#50` and the store site `ror #9,#53,#32`, so the value stored by `-[NSThread init]` can never equal the value recomputed in `setTarget:`: every `_NSThreadData` is "poisoned" on first use. (The feasibility doc said "any deterministic function keeps (b) correct": true only if the function is the same at every site.) Same hazard in the other 326 Foundation + 99 CoreFoundation + 70 JavaScriptCore integrity sites.
+`tools/renegade/pacstrip.py` rewrites each PACGA to `eor Xd,Xn,Xm,ror #k` with `k = 7 + (rd*5 + rn*3 + rm) % 50`, i.e. **k depends on the register numbers of the site**. The check site became `ror #46,#15,#50` and the store site `ror #9,#53,#32`, so the value stored by `-[NSThread init]` can never equal the value recomputed in `setTarget:`: every `_NSThreadData` is "poisoned" on first use. (The feasibility doc said "any deterministic function keeps (b) correct": true only if the function is the same at every site.) Same hazard in the other 326 Foundation + 99 CoreFoundation + 70 JavaScriptCore integrity sites.
 
 ## Fix (rootfs side, no kernel change needed)
-Make the PACGA replacement independent of the registers. In `tools/ios18/pacstrip.py` (not edited here: another agent owns that file):
+Make the PACGA replacement independent of the registers. In `tools/renegade/pacstrip.py` (not edited here: another agent owns that file):
 
     -            k = 7 + (rd * 5 + rn * 3 + rm) % 50
     +            k = 13          # constant: MAC check and MAC store sites use different registers
     (the rm == 31 / MOV case: unchanged; no Foundation integrity site uses an SP modifier)
 
-Verified on a scratch copy: patched pacstrip run on Foundation gives `eor ... ror #13` at all six sites of `setTarget:` (0x23028..0x23080), so check == store. Then rebuild the root (`tools/ios18/mkramdisk-root.sh`) and re-run.
+Verified on a scratch copy: patched pacstrip run on Foundation gives `eor ... ror #13` at all six sites of `setTarget:` (0x23028..0x23080), so check == store. Then rebuild the root (`tools/renegade/mkramdisk-root.sh`) and re-run.
 
 Caveats: with constant k the replacement is `n ^ ror(m,13)`, which is order-insensitive, so the 7 libobjc PACGA hash-loop sites (0x3a9c, 0x7984, 0xb3f8..0xb444, 0x2d2a0) degrade to an XOR hash (still deterministic; only collision quality). If that matters later, special-case libobjc by path to keep the register-dependent k there after checking those sites are not store/verify pairs.
 

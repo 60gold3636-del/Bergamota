@@ -31,10 +31,10 @@ Note the dependency closure is bigger than "libSystem": libSystem -> libdispatch
 
 | File | Purpose |
 | --- | --- |
-| `tools/ios18/pacstrip.py` | The rewriter. 4 bytes for 4 bytes, only executable sections, LC_DATA_IN_CODE skipped, fat arm64 slices handled. Table in its docstring (same as feasibility 3.1): RETAA/B -> `ret`; BR/BLR(AA/AB, Z or register) -> `br/blr Xn`; LDRAA/B -> `ldr` (pre-index/offset, `ldur` for small negatives); PACI*/PACD*/AUTI*/AUTD*/XPAC* -> `nop`; PACGA -> `eor Xd,Xn,Xm,ror #k` (k depends on the registers, `mov Xd,Xn` when the modifier is SP); hint space untouched; FJCVTZS counted and printed (file offsets), left alone. `--scan` counts only, `--sign` re-signs, `--dylinker PATH` rewrites LC_LOAD_DYLINKER. Pure Python, no dependencies, ~1 s per large dylib. |
-| `tools/ios18/fetch-ramdisk.sh` | Downloads only the restore ramdisk member of the IPSW (range requests via `tools/remotezip.py`), extracts IMG4, mounts it read-only. |
-| `tools/ios18/mkbundle.py` | Dependency closure of the chosen tools -> `research/ios18poc/{dyld,lib/,bin/,MANIFEST.txt}`; runs pacstrip + codesign on every Mach-O. |
-| `tools/ios18/run-poc.sh` | Pushes the bundle (tar over SSH, skipped when unchanged) and runs the tool with the dyld diagnostics. |
+| `tools/renegade/pacstrip.py` | The rewriter. 4 bytes for 4 bytes, only executable sections, LC_DATA_IN_CODE skipped, fat arm64 slices handled. Table in its docstring (same as feasibility 3.1): RETAA/B -> `ret`; BR/BLR(AA/AB, Z or register) -> `br/blr Xn`; LDRAA/B -> `ldr` (pre-index/offset, `ldur` for small negatives); PACI*/PACD*/AUTI*/AUTD*/XPAC* -> `nop`; PACGA -> `eor Xd,Xn,Xm,ror #k` (k depends on the registers, `mov Xd,Xn` when the modifier is SP); hint space untouched; FJCVTZS counted and printed (file offsets), left alone. `--scan` counts only, `--sign` re-signs, `--dylinker PATH` rewrites LC_LOAD_DYLINKER. Pure Python, no dependencies, ~1 s per large dylib. |
+| `tools/renegade/fetch-ramdisk.sh` | Downloads only the restore ramdisk member of the IPSW (range requests via `tools/remotezip.py`), extracts IMG4, mounts it read-only. |
+| `tools/renegade/mkbundle.py` | Dependency closure of the chosen tools -> `research/ios18poc/{dyld,lib/,bin/,MANIFEST.txt}`; runs pacstrip + codesign on every Mach-O. |
+| `tools/renegade/run-poc.sh` | Pushes the bundle (tar over SSH, skipped when unchanged) and runs the tool with the dyld diagnostics. |
 | `xnu/patches/0131-ios18-arm64e-exec.patch` | Kernel patch (below). Applies on top of 0001-0130 (checked with `patch -p1` and `git apply --check` on `research/bt130/xnu`; the three files compile with `tools/xnu-cc.py`). |
 
 ### Kernel patch 0131 (everything behind boot-arg `sweetarm64e=1`, keyed on the CPU subtype being arm64e)
@@ -48,8 +48,8 @@ Note the dependency closure is bigger than "libSystem": libSystem -> libdispatch
 ```sh
 # 0. bundle (once; needs ipsw, Xcode command-line tools; ~180 MB download, 143 MB result)
 cd /Users/zesmoi/git/iAndroid/ios-beryllium-ios18
-tools/ios18/fetch-ramdisk.sh                     # prints the mountpoint research/ios18/ramdisk/mnt
-python3 -I tools/ios18/mkbundle.py research/ios18/ramdisk/mnt research/ios18poc
+tools/renegade/fetch-ramdisk.sh                     # prints the mountpoint research/ios18/ramdisk/mnt
+python3 -I tools/renegade/mkbundle.py research/ios18/ramdisk/mnt research/ios18poc
 diskutil eject research/ios18/ramdisk/mnt && rm -f research/ios18/ramdisk/094-* research/ios18/ramdisk/ramdisk.apfs
 
 # 1. kernel with 0131: CI builds branches only by dispatch
@@ -65,8 +65,8 @@ BOARD=beryllium shim/build.sh shim/out/payload-0131.bin && cp shim/out/shim-boot
 fastboot boot shim/out/shim-boot-0131.img        # then wait for ssh root@192.168.7.2
 
 # 3. run
-tools/ios18/run-poc.sh                           # expr 6 '*' 7 with DYLD_PRINT_* diagnostics
-tools/ios18/run-poc.sh --quiet -- cat /etc/hosts
+tools/renegade/run-poc.sh                           # expr 6 '*' 7 with DYLD_PRINT_* diagnostics
+tools/renegade/run-poc.sh --quiet -- cat /etc/hosts
 ```
 (The artifact name `xnu-kernel` and the `kernel.development.sweet` file name are from NOTES.md's workflow; use whatever your last `gh run download` used. The worktree has no `shim/out`; either run step 2 in the main checkout with the downloaded kernel, or copy the ADT/payload tools' inputs.)
 
@@ -90,7 +90,7 @@ Cost: loading 116 dylibs without prebuilt loaders: seconds.
 | `Killed: 9` with no dyld output, instantly | Code signature/AMFI. Kernel log (`SWEET AMFI:`, `cs_invalid_page`, `CS_KILLED`): the ad-hoc blob was refused. Try `pacstrip.py --sign` again on that file, check `codesign -v`. |
 | `dyld: Library not loaded: /usr/lib/libSystem.B.dylib` (or any `/usr/lib/...`), and with DYLD_PRINT_SEARCHING `Note: DYLD_*_PATH env vars disabled by AMFI` | The 0x5a answer did not reach dyld. Check the kernel log for `SWEET AMFI: expr __mac_syscall("AMFI", 0x5a)` (the existing 0099 code prints each op once); confirm `sweet_proc_is_arm64e` (the process must exec as arm64e). Struct layout assumption: `{u64 input; u64 *output}` at the third argument. |
 | `Library not loaded ... (no such file)` for one specific dylib | The dependency was not in the bundle (`MANIFEST.txt` lists what is) or it is a leaf-name clash; mkbundle asserts uniqueness. |
-| Signal 4 (SIGILL, exit 132) | A word the rewriter does not cover. Get the PC (kernel log/`ReportCrash`), subtract the slide, `python3 -I tools/ios18/pacstrip.py --scan FILE` and `llvm-objdump -d --mattr=-pauth` around the offset. Known candidates: FJCVTZS (not rewritten), SHA3/SHA512 words in corecrypto and dyld (must be gated by `hw.optional.arm.FEAT_SHA3/SHA512` = 0, which this kernel reports), SB, SVE/SME words in libsystem_platform (gated). |
+| Signal 4 (SIGILL, exit 132) | A word the rewriter does not cover. Get the PC (kernel log/`ReportCrash`), subtract the slide, `python3 -I tools/renegade/pacstrip.py --scan FILE` and `llvm-objdump -d --mattr=-pauth` around the offset. Known candidates: FJCVTZS (not rewritten), SHA3/SHA512 words in corecrypto and dyld (must be gated by `hw.optional.arm.FEAT_SHA3/SHA512` = 0, which this kernel reports), SB, SVE/SME words in libsystem_platform (gated). |
 | Signal 11/10 early, no dyld lines | dyld's `rebaseSelf`/startup: `__DATA_CONST` `mprotect`, `__TPRO_CONST` segment (kernel 8796 ignores the TPRO flag, dyld uses `vm_protect` fallbacks), first syscalls. Run with `DYLD_PRINT_SEGMENTS`; if even that prints nothing the fault is before config. Check the kernel's exception report for the PC and offset in `dyld`. |
 | `dyld: ... PAC failure` / `brk #0xc47x` | A pointer was authenticated against a signature that does not exist: an AUT* we turned into NOP is followed by a check we did not expect, or an instruction encoding was missed. The brk immediates are `0xc470`-`0xc473` (key-specific); find the site and its class. |
 | Hang | Syscall that blocks (kdebug/`kdp` or `__shared_region_*`), check `kern.bootargs`, `sample`/`spindump` are not in the iOS 16 root; use the kernel log (`tools/sweet-usbnet.sh`). |
@@ -112,7 +112,7 @@ First run (kernel with 0131): dyld honoured the AMFI answer (`DYLD_PRINT_*` outp
 * **No VA overlap**: all 674 distinct segment ranges listed by `DYLD_PRINT_SEGMENTS` were checked, the only "overlap" is `__PAGEZERO` vs the first `__TEXT`. (MobileSystemServices `__AUTH_CONST+0x4e0` has the same offset as libdispatch's by coincidence of the page offset, not the VA.)
 * The log line before every data segment is `Setting up kernel page-in linking for <image>`: iOS 18 dyld defaults to `pageInLinkingMode = 2` (not changeable without an internal install: `DYLD_PAGEIN_LINKING=0` is honoured only if `internalInstall()`), so data segments with chained fixups are mapped through `map_with_linking_np` (xnu-8796 has it, `bsd/vm/vm_unix.c`) and the fixups are applied **by the kernel's dyld pager at page-in** (`osfmk/vm/vm_dyld_pager.c fixup_page`).
 * That pager handled `DYLD_CHAINED_PTR_ARM64E`, `_USERLAND` and `_USERLAND24` only under `#if defined(HAS_APPLE_PAC)`, which our build does not define. For every arm64e image it printed `unknown pointer_format` (kernel log) and returned `KERN_FAILURE`; the first touch of such a page (here libdispatch `__AUTH_CONST+0x4e0`, `pc` = libdispatch `__TEXT+0x3cc08` right after libSystem's initializer started) is `KERN_MEMORY_ERROR` = SIGBUS code 0x10000000a. Not a rewriter problem.
-* **Fix: `xnu/patches/0135-ios18-dyld-pager-arm64e-nopac.patch`**: build `fixupPageAuth64` always and, without PAC, make `signPointer()` the identity (pointers stay unsigned, which is what the rewritten code expects: the AUTx instructions are NOPs). Auth and non-auth rebases/binds are walked exactly as in the PAC build (stride 8, 24-bit ordinals, offset- or vmaddr-based targets). Compiles with `tools/xnu-cc.py`; applies on bt130. It needs a new kernel (CI) but no other change: same bundle, same `tools/ios18/run-poc.sh`. Only arm64e images use these pointer formats, so arm64 processes are unaffected.
+* **Fix: `xnu/patches/0135-ios18-dyld-pager-arm64e-nopac.patch`**: build `fixupPageAuth64` always and, without PAC, make `signPointer()` the identity (pointers stay unsigned, which is what the rewritten code expects: the AUTx instructions are NOPs). Auth and non-auth rebases/binds are walked exactly as in the PAC build (stride 8, 24-bit ordinals, offset- or vmaddr-based targets). Compiles with `tools/xnu-cc.py`; applies on bt130. It needs a new kernel (CI) but no other change: same bundle, same `tools/renegade/run-poc.sh`. Only arm64e images use these pointer formats, so arm64 processes are unaffected.
 * If it still faults, the kernel log now says why: `fixupPageAuth64(): ...` lines.
 
 ## 8. Limits of what was verified here
@@ -126,15 +126,15 @@ First run (kernel with 0131): dyld honoured the AMFI answer (`DYLD_PRINT_*` outp
 "For fun" version of the bring-up: no phone filesystem, no iOS 16: the kernel mounts the rewritten iOS 18.7.8 restore ramdisk as the root (`rd=md0`) and runs **its** `/sbin/launchd` (arm64e, rewritten, signed) as PID 1 with **its** `/usr/lib/dyld` and libs at their native paths (no DYLD_* env needed: the paths exist; dyld finds no cache and loads from disk).
 
 ### Image
-* APFS: our xnu-8796 has no APFS (closed kext), so `tools/ios18/mkramdisk-root.sh` converts: stage (`tools/ios18/mkroot.py`: ditto without compression/xattrs, prune, pacstrip --sign of every Mach-O) -> case-sensitive **unjournaled** HFS+ (`newfs_hfs -s`, the kernel's built-in hfs, same as the iOS 16 root) built **without sudo**: attached as a user raw image, populated with ditto, then `tools/ios18/hfsroot_chown.py` sets owner/group of every catalog record to 0:0 in place (the unprivileged Mac user cannot chown; the catalog B-tree leaf walk is 60 lines).
+* APFS: our xnu-8796 has no APFS (closed kext), so `tools/renegade/mkramdisk-root.sh` converts: stage (`tools/renegade/mkroot.py`: ditto without compression/xattrs, prune, pacstrip --sign of every Mach-O) -> case-sensitive **unjournaled** HFS+ (`newfs_hfs -s`, the kernel's built-in hfs, same as the iOS 16 root) built **without sudo**: attached as a user raw image, populated with ditto, then `tools/renegade/hfsroot_chown.py` sets owner/group of every catalog record to 0:0 in place (the unprivileged Mac user cannot chown; the catalog B-tree leaf walk is 60 lines).
 * Pruned: `/usr/standalone` (49 MB firmware), `/usr/local` (restore tools), `Filesystems`, every Mach-O not reachable from `launchd`, `dyld` and `/bin/*` (183 files) -> 125 Mach-O files, **185 MB** image (the ramdisk's ~140 MB of APFS data inflates because decmpfs-compressed files are written uncompressed; the kernel has no decmpfs). Whole boot payload with an existing kernel: **201 MB** (`mkpayload` checked), the ABL fastboot limit is 768 MiB (NOTES).
 * Stock LaunchDaemons (restored_external, camera, driverkitd, ...) are removed (`--stock-daemons` keeps them): they would fight over USB and crash-loop. Two jobs are added that print to the console: `org.sweet.ios18.expr` (`/bin/expr 6 * 7` -> `42`) and `org.sweet.ios18.passwd` (`/bin/cat /etc/master.passwd`).
 
 ### Build and boot
 ```sh
 cd /Users/zesmoi/git/iAndroid/ios-beryllium-ios18
-tools/ios18/fetch-ramdisk.sh                  # mounts research/ios18/ramdisk/mnt
-tools/ios18/mkramdisk-root.sh                 # -> research/ios18/ios18-root.hfs (about 1 minute, no sudo)
+tools/renegade/fetch-ramdisk.sh                  # mounts research/ios18/ramdisk/mnt
+tools/renegade/mkramdisk-root.sh                 # -> research/ios18/ios18-root.hfs (about 1 minute, no sudo)
 # kernel: 0131 + 0133 (hw.targettype) + 0134 (dyld pager) must be in the CI build
 python3 tools/mkpayload.py xnu/out-NNNN/kernel.development.sweet shim/out/beryllium-hi-3x.adt shim/out/payload-ios18rd.bin \
     --ramdisk research/ios18/ios18-root.hfs --compress \
@@ -170,7 +170,7 @@ Look-ahead (static scan of all 117 bundle images for `__sandbox_ms` call sites w
 First boot of `shim-boot-ios18rd.img` (206 MB payload): fastboot OK, "Booting OKAY", then a **black** screen, no console, no USB log. The shim's first act is `con_clear(RED)`, so a black screen means ABL never started the shim: it failed while placing the boot.img ramdisk.
 * **Where ABL puts the ramdisk** (evidence: NOTES 2026-10-14, a 15.8 MB payload: `initrd 0x846F0000-0x855FE3E0`; header says ramdisk address 0x01000000, which ABL does not honour): `lo = 0x85600000 - size rounded up to 64 KiB` (0xF0E3E0 -> 0xF10000; 0x85600000 - 0xF10000 = 0x846F0000, exact). 0x85600000 is the top of the usable low DDR below the hyp/xbl/cmd-db/smem carve-outs (`dtb/beryllium/live.dts`: hyp 0x85700000, xbl 0x85d00000, cmd-db 0x85fe0000, smem 0x86000000, removed 0x86200000-0x8a900000, ...). One data point, but it fits to the byte.
 * So the ramdisk must fit between the DDR base 0x80000000 (ABL's kernel is at 0x80008000, tags at 0x80000100, then our 0.4 MB shim) and 0x85600000: **86 MiB theoretical maximum**; a 206 MB payload would start at 0x78800000, below the DDR: ABL cannot place it. The shim's own copy to 0x1_00000000+ is not the problem (the upper bank has no carve-outs; the shim checks the overlap anyway).
-* **Safe size**: stay below about 56 MiB (start >= 0x82000000, well above ABL's low structures). Proven so far: 15.8 MiB. Not proven: anything above. `tools/ios18/abl-ramdisk-probe.sh KERNEL ADT [MiB...]` builds images with an uncompressed zero ramdisk of 40/56/72/88 MiB; boot them (photograph the `INITRD lo=` line, black = over the limit) to measure the real limit.
+* **Safe size**: stay below about 56 MiB (start >= 0x82000000, well above ABL's low structures). Proven so far: 15.8 MiB. Not proven: anything above. `tools/renegade/abl-ramdisk-probe.sh KERNEL ADT [MiB...]` builds images with an uncompressed zero ramdisk of 40/56/72/88 MiB; boot them (photograph the `INITRD lo=` line, black = over the limit) to measure the real limit.
 
 Fix in this branch:
 * `mkroot.py` now runs `strip -x` on the dylibs (not on dyld/launchd/tools): symbol tables were 25% of the data (145 MiB of dylibs -> 122 MiB; verified: all 118 Mach-O files still pass `codesign -v`, chained fixups untouched). Root image 185 MiB -> **158 MiB** (`research/ios18/ios18-root.hfs`; about 30 MiB of it is free HFS space).
@@ -188,10 +188,10 @@ bootstraps, spawns `org.sweet.ios18.expr` and `org.sweet.ios18.passwd` through x
 ABL ramdisk budget (`--compress`, inflate) -> 0138 mach_ports_lookup3 reply layout (MIG -300) ->
 0139 exclaves_ctl_trap KERN_NOT_SUPPORTED (SIGSYS in launchd's exclaves-boot) -> keep /usr/libexec/xpcproxy
 in the pruned root -> pacstrip PACGA with a constant rotation (Foundation _NSThreadData MAC, brk in
-__NSThreadPoisoned; docs/IOS18_XPCPROXY.md). Next: the full system on userdata (tools/ios18/*full*).
+__NSThreadPoisoned; docs/IOS18_XPCPROXY.md). Next: the full system on userdata (tools/renegade/*full*).
 
 
-## 12. Full iOS 18.7.8 root on userdata (`tools/ios18/mkroot-full.py`)
+## 12. Full iOS 18.7.8 root on userdata (`tools/renegade/mkroot-full.py`)
 
 Goal: the whole iOS 18 system (SpringBoard, daemons, default wallpapers) as an HFS+ image for the `userdata` partition,
 flashed like the iOS 16 image (`fastboot -S 512M flash userdata X.simg`) and booted with `rd=ufsroot0 ufsrw=1 rootrw=1`.
@@ -225,7 +225,7 @@ decryption and each dmg after it was copied (27 GB Mac).
 ### Build
 ```sh
 cd /Users/zesmoi/git/iAndroid/ios-beryllium-ios18
-tools/ios18/mkroot-full.sh [--delete-sources]     # copy,macho,cache,tweaks,seal,verify,simg (needs the decrypted dmgs in research/ios18/ipsw/22H352__iPhone11,8/)
+tools/renegade/mkroot-full.sh [--delete-sources]     # copy,macho,cache,tweaks,seal,verify,simg (needs the decrypted dmgs in research/ios18/ipsw/22H352__iPhone11,8/)
 ```
 Stages of `mkroot-full.py` (`--stages a,b,c`, re-runnable on the same image): `copy` (owner map by lstat of an owners-on mount of each
 source, copy from a noowners mount because root-only files such as `/etc/master.passwd` are unreadable otherwise; newfs_hfs -s,
@@ -240,7 +240,7 @@ together; needed because raw 15 GiB + simg 15 GiB does not fit the disk).
 ### PAC rewrite
 * Standalone Mach-Os: unchanged `pacstrip.py` (the NEW PACGA rule from commit 7d52748, `EOR ... ROR #13`, is used; nothing was
   stripped before that rule existed). ~3060 Mach-O files outside the cache, 2927 rewritten and re-signed.
-* **dyld shared cache: `tools/ios18/pacstrip_cache.py CACHE_DIR`** rewrites every file in place. Parses the main header
+* **dyld shared cache: `tools/renegade/pacstrip_cache.py CACHE_DIR`** rewrites every file in place. Parses the main header
   (image table, sub-cache array with suffixes), the mapping table of each of the 67 files (addresses are global), finds the
   Mach-O header of each of the 3861 images + dyld-in-cache through the mappings and rewrites only the executable SECTIONS
   (10,320 sections, 2378 MiB of code) with `pacstrip.rewrite_word`. 4 KiB pages that changed are collected per file and the **CodeDirectory
@@ -266,7 +266,7 @@ the LaunchServices cache removal are not applied. The stock RAM-disk removals of
 no extra "USB" daemon removal was done beyond CommCenter.
 
 ### Boot image
-`tools/ios18/mkboot-full.sh [KERNEL] [ADT] [OUT]` (defaults `xnu/out-0139/kernel.development.sweet`, `../ios-beryllium/shim/out/beryllium-hi-3x.adt`)
+`tools/renegade/mkboot-full.sh [KERNEL] [ADT] [OUT]` (defaults `xnu/out-0139/kernel.development.sweet`, `../ios-beryllium/shim/out/beryllium-hi-3x.adt`)
 -> `research/ios18/shim-boot-ios18full.img` (17.3 MB, payload checked against the unpacked ramdisk). Cmdline = the RAM-disk cmdline of section 9 with
 `rd=md0` replaced by `rd=ufsroot0` and `ufsrw=1 rootrw=1` added:
 ```
@@ -299,13 +299,13 @@ NOTES), then `fastboot boot research/ios18/shim-boot-ios18full.img`. iOS 16 come
 * Offline checks (all passed): launchd, dyld, SpringBoard, xpcproxy, launchd.plist, 5 wallpaper collections, PosterBoard, SystemVersion present; all 3068 Mach-Os outside the
   cache re-scanned: 0 PAC words left; codesign -v on 150 random ones OK; cache: 258 k page hashes valid, re-scan 0 rewritable words; owner spot check of 3000 paths OK.
 * Time: download ~27 min (8.3 GB), decrypt 20 s, copy ~6 min, macho 5 min (3 000 files, 8 cores), cache 45 s, seal+verify 4 min, simg 2 min.
-* The raw image no longer exists (consumed into the .simg); to modify the root afterwards rebuild (tools/ios18/fetch-root.sh again, ~35 min) or write a simg->raw
+* The raw image no longer exists (consumed into the .simg); to modify the root afterwards rebuild (tools/renegade/fetch-root.sh again, ~35 min) or write a simg->raw
   converter. Mounting the result on the Mac needs that conversion; the checks above were done on the raw image before it was consumed.
 
 
 ### Rebuild 2 (2026-10-20): signing identifier kept (boot panic "code signing identity mismatch ... observed=mount-5555... expected=com.apple.mount")
 * **Cause:** `pacstrip.sign()` ran `codesign -f -s -` without `-i`, so every re-signed binary got `name-<cdhash prefix>`. launchd 18's boot tasks compare the csops identity with `com.apple.<leaf of Program>` (or the task's `CSIdentityOverride`, e.g. `com.apple.seputil` for init_data_protection, `com.apple.xpc.roleaccountd`).
-* **Fix (`tools/ios18/pacstrip.py`, used by the RAM-disk root too):** `cs_identity()` parses the CodeDirectory of the first arm64 slice (identifier, team id, flags) BEFORE signing; `sign()` passes `-i <identifier>`, `-o host,hard,kill,expires,restrict,library,runtime` for those bits of the old flags, re-applies the entitlements (as before), retries codesign up to 3 times (the Home/Music failure of build 1 was a transient one, now retried and any remaining failure aborts the build), and afterwards re-parses the new signature and raises on a different identifier/team id or lost CS flag. `mkroot-full.py` records every old identity in `research/ios18/full/identities.tsv`, aborts on any failed Mach-O, and the `verify` stage re-checks all of them.
+* **Fix (`tools/renegade/pacstrip.py`, used by the RAM-disk root too):** `cs_identity()` parses the CodeDirectory of the first arm64 slice (identifier, team id, flags) BEFORE signing; `sign()` passes `-i <identifier>`, `-o host,hard,kill,expires,restrict,library,runtime` for those bits of the old flags, re-applies the entitlements (as before), retries codesign up to 3 times (the Home/Music failure of build 1 was a transient one, now retried and any remaining failure aborts the build), and afterwards re-parses the new signature and raises on a different identifier/team id or lost CS flag. `mkroot-full.py` records every old identity in `research/ios18/full/identities.tsv`, aborts on any failed Mach-O, and the `verify` stage re-checks all of them.
 * **Result:** 2929 Mach-Os re-signed, 0 failures; verify: identifier, team id (empty, ad hoc) and CS options unchanged on all 2928 present (the 2929th, VirtualAudio, is moved to `Library/Audio/Plug-Ins/HAL.disabled` by a tweak). Original flags in these binaries are just `0x2 (adhoc)`, so the options list is normally empty.
 * **Boot-task audit (embedded plist in `/sbin/launchd`, 37 entries, `Boot` dict; extracted by `boot_task_audit()`):** every boot task with a program path that exists in the root has identifier == `com.apple.<leaf>` or its CSIdentityOverride (mount-phase-1/2 /sbin/mount, fsck, fsck-safe, keybagd, dirs_cleaner, cc_fips_test, tzinit, init_data_protection (override), nvram, sysstatuscheck, mobile_obliterator, finish_demo_restore, xpcroleaccountd (override), init_featureflags, prng_seedctl, launchd_cache_loader, MSUEarlyBootTask, auearlyboot, FinishRestoreFromBackup). Absent from the iPhone OS volume (as on a stock iPhone): `HorizonSetup` (restore only), `darwinos-boot-task`, `realitycoprocessorloaderd`, `cvcalibration_postfactoryfix`, `wakeboardctl` (pre-reboot only). Block-type tasks with no Program (select-boot-mode, commit-boot-mode, init-with-data-volume, exclaves-boot, ...) run inside launchd.
 * **Platform binary (kernel):** `xnu/patches/0035/0036` (`sweet_amfi_vnode_check_signature`) set CS_SIGNED and CS_PLATFORM_BINARY for every signed vnode on MNT_ROOTFS (= our ufsroot0), regardless of signer; csops CS_OPS_STATUS therefore passes launchd's "is not a platform binary" check (it did for iOS 16, and in this boot the mount task got past that check, the failure was the identity one). `CS_PLATFORM_PATH` is not set and nothing in launchd's boot-task code uses it (strings: only "platform binary", "unexpected exec of non-platform binary", csops). Likely next checks, no change proposed without evidence: AMFI selector 0x66 (launch-constraint match; ENOPOLICY = "not satisfied") and 0x5f (cdhash in trust cache: "not trusted") for xpcproxy/launchd-spawned services; if launchd 18 starts rejecting services for constraints, answer 0x66 with "satisfied" for platform binaries (a 10-line change in `sweet_amfi.c`).
@@ -315,7 +315,7 @@ NOTES), then `fastboot boot research/ios18/shim-boot-ios18full.img`. iOS 16 come
 ### mount-phase-2 (analysis; root NOT changed)
 `mount -P 2` (22H352 `/sbin/mount`) processes fstab entries of pass 2 and then always `execv("/System/Library/Filesystems/apfs.fs/apfs_boot_util", "2")` (mount+0x3a08..0x3a10: `cmp w22,#2; b.ne exit; bl`). `apfs_boot_util 2` mounts Log/iDiags/Data volumes by role, deletes Data snapshots and grafts ExclaveOS; on the phone it aborts at "ExclaveOS graft" because of missing kernel sysctls (`hw.osenvironment`, exclaves status), not because of the root. A root-side workaround exists (`mkroot-full.py --patch-mount-phase2`: one word, `b.ne` -> `b` at mount+0x3a0c, re-signed as com.apple.mount) but is OFF by default and not in the current image. Other boot tasks with APFS/data-volume strings (no change needed yet, all non-fatal or AllowCrash): keybagd (AllowCrash), usermanagerd --init (AllowCrash, "missing disknode for the booted user"), MSUEarlyBootTask (AllowCrash), finish_demo_restore (RequireSuccess; looks up the APFS demo volume, expected to skip without a demo staging folder: unverified), fsck (skips the OS container as on iOS 16).
 
-### cc_fips_test: corecrypto FIPS POST integrity HMAC (fix in `tools/ios18/fips_rehmac.py`)
+### cc_fips_test: corecrypto FIPS POST integrity HMAC (fix in `tools/renegade/fips_rehmac.py`)
 Boot symptom: `cc_fips_test` (RequireSuccess) runs the POST KATs (all PASSED) but `FIPS_POST failed!` -> panic. Cause: `fipspost_post_integrity`
 (libcorecrypto, 22H352) calls `fipspost_get_hmac(mh, out, 0)` = HMAC-SHA256(key = one 0x00 byte, first `__TEXT,__text` section of the image, read
 at `mh + section.offset`) and `cc_cmp_safe`s it with the 32 bytes of `__TEXT,__fips_hmacs` (on mismatch it logs `MAC generated:` / `In variable:` and
