@@ -16,6 +16,7 @@
  */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
+#import <objc/message.h>
 #include <stdio.h>
 #include <string.h>
 #include "sweetposter-prs.h"
@@ -53,13 +54,26 @@ static BOOL matches(id o) {
 	return [s containsString:prov] && [s containsString:desc];
 }
 
-static NSArray *fetch_all(int *err) {
+static NSArray *fetch_all_role(NSString *r, int *err) {
 	__block NSArray *res = nil; __block id e = nil;
 	dispatch_semaphore_t s = dispatch_semaphore_create(0);
-	[svc fetchPosterConfigurationsForRole:role completion:^(id a, id b) { res = [a isKindOfClass:[NSArray class]] ? a : nil; e = b; dispatch_semaphore_signal(s); }];
+	[svc fetchPosterConfigurationsForRole:r completion:^(id a, id b) { res = [a isKindOfClass:[NSArray class]] ? a : nil; e = b; dispatch_semaphore_signal(s); }];
 	wt(s);
 	if (!res) { printf("fetch configurations failed: %s\n", D(e).UTF8String); *err = 1; }
 	return res;
+}
+static NSArray *fetch_all(int *err) { return fetch_all_role(role, err); }
+
+/* fetch-only dump of one configuration or descriptor: the identifiers the accessors give, then the description */
+static void dump(const char *tag, id o) {
+	id p = try_sel(o, @selector(providerIdentifier)), d = try_sel(o, @selector(descriptorIdentifier));
+	id pa = try_sel(o, NSSelectorFromString(@"_path"));
+	if (!p && pa) p = try_sel(pa, @selector(providerIdentifier));
+	if (!d && pa) d = try_sel(pa, @selector(descriptorIdentifier));
+	NSString *desc_ = [o description];
+	if (desc_.length > 700) desc_ = [desc_ substringToIndex:700];
+	printf("%s uuid=%s provider=%s descriptor=%s\n    %s\n", tag, D(uuid_of(o)).UTF8String, D(p).UTF8String, D(d).UTF8String,
+	       [desc_ stringByReplacingOccurrencesOfString:@"\n" withString:@" "].UTF8String);
 }
 static id fetch_selected(BOOL *ok) {
 	__block id res = nil, e = nil; __block BOOL done = NO;
@@ -74,6 +88,44 @@ static id fetch_selected(BOOL *ok) {
 int main(int argc, char **argv) {
 	@autoreleasepool {
 		setvbuf(stdout, 0, _IOLBF, 0);
+		if (argc >= 2 && (!strcmp(argv[1], "--list") || !strcmp(argv[1], "--descriptors"))) {
+			/* FETCH ONLY. --list: every configuration of the lock and home roles and the selected ones. --descriptors PROVIDER: what the provider offers. */
+			dlopen("/System/Library/PrivateFrameworks/PosterBoardServices.framework/PosterBoardServices", RTLD_NOW);
+			svc = [[NSClassFromString(@"PRSService") alloc] init];
+			if (!strcmp(argv[1], "--descriptors")) {
+				if (argc < 3) return 2;
+				__block id res = nil, e = nil;
+				dispatch_semaphore_t s0 = dispatch_semaphore_create(0);
+				[svc fetchPosterDescriptorsForExtension:[NSString stringWithUTF8String:argv[2]] completion:^(id a, id b) { res = a; e = b; dispatch_semaphore_signal(s0); }];
+				wt(s0);
+				printf("descriptors for %s: %s (error %s)\n", argv[2], res ? [NSString stringWithFormat:@"%lu", (unsigned long)[res count]].UTF8String : "none", D(e).UTF8String);
+				for (id d in (res ?: @[])) dump("  descriptor", d);
+				return res ? 0 : 1;
+			}
+			for (NSString *r in @[ @"PRPosterRoleLockScreen", @"PRPosterRoleHomeScreen" ]) {
+				int er = 0;
+				NSArray *a = fetch_all_role(r, &er);
+				printf("role %s: %lu configuration(s)\n", r.UTF8String, (unsigned long)a.count);
+				for (id c in a) dump("  config", c);
+				role = r;
+				BOOL ok;
+				id sel = fetch_selected(&ok);
+				printf("role %s selected (fetch %s):\n", r.UTF8String, ok ? "ok" : "failed");
+				if (sel) dump("  SELECTED", sel);
+			}
+			for (NSString *sn in @[ @"fetchSelectedConfiguration:", @"fetchActivePosterConfiguration:" ]) {
+				__block id res = nil, e = nil;
+				dispatch_semaphore_t s1 = dispatch_semaphore_create(0);
+				SEL sl = NSSelectorFromString(sn);
+				if (![svc respondsToSelector:sl]) continue;
+				void (^blk)(id, id) = ^(id a, id b) { res = a; e = b; dispatch_semaphore_signal(s1); };
+				((void (*)(id, SEL, id))objc_msgSend)(svc, sl, blk);
+				wt(s1);
+				printf("%s -> %s\n", sn.UTF8String, res ? "" : D(e).UTF8String);
+				if (res) dump("  ", res);
+			}
+			return 0;
+		}
 		BOOL cleanup = argc > 1 && !strcmp(argv[1], "--cleanup");
 		if (argc - cleanup != 3) { fprintf(stderr, "usage: sweetposterset [--cleanup] PROVIDER DESCRIPTOR_ID\n"); return 2; }
 		prov = [NSString stringWithUTF8String:argv[1 + cleanup]];
