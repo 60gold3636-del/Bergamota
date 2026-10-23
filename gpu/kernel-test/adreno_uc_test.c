@@ -9,7 +9,8 @@
  *   1 open service, INFO (abi version, ready)      5 GEM_INFO GET_IOVA/GET_OFFSET + map into this task
  *   2 GET_PARAM chip id, GMEM size, GPU id, VA     6 CP_NOP + CP_MEM_WRITE (direct address) + CP_MEM_WRITE (address via
  *   3 GEM_NEW, error paths (bad handle, size 0)       relocation) through GEM_SUBMIT, WAIT_FENCE, CPU_PREP, check the BO
- *   4 SUBMITQUEUE_NEW / CLOSE                      7 second submit (fence order), poll wait, GEM_CLOSE, INFO again
+ *   4 SUBMITQUEUE_NEW / CLOSE                      7 second submit (fence order), poll wait, 8 1 MiB BO written at 16 offsets
+ *                                                   (every 4 KiB granule of a 16 KiB page, page ends), GEM_CLOSE, INFO again
  * Add "-v" for the raw numbers.
  */
 #include <IOKit/IOKitLib.h>
@@ -239,6 +240,62 @@ main(int argc, char **argv)
 	sub2.queueid = 63;
 	kr = call(SWEET_GPU_SEL_GEM_SUBMIT, &sub2, sizeof(sub2), sizeof(sub2));
 	CHECK(kr != 0, "GEM_SUBMIT with an unopened queue id -> %#x (expected error)", kr);
+
+	/* 8: a 1 MiB BO (many 16 KiB xnu pages, each 4 KiB GPU page mapped separately): CP_MEM_WRITE at offsets in every 4 KiB
+	 * granule of the first 16 KiB page, across page boundaries and at the very end. Command stream in the first 4 KiB. */
+	{
+		struct sweet_msm_gem_new big = { .size = 1 << 20 };
+		kr = call(SWEET_GPU_SEL_GEM_NEW, &big, sizeof(big), sizeof(big));
+		CHECK(kr == 0 && big.handle != 0, "GEM_NEW 1 MiB -> handle %u kr %#x", big.handle, kr);
+		if (kr == 0) {
+			struct sweet_msm_gem_info bi = { .handle = big.handle, .info = SWEET_MSM_INFO_GET_IOVA };
+			(void)call(SWEET_GPU_SEL_GEM_INFO, &bi, sizeof(bi), sizeof(bi));
+			struct sweet_msm_gem_info bo2 = { .handle = big.handle, .info = SWEET_MSM_INFO_GET_OFFSET };
+			(void)call(SWEET_GPU_SEL_GEM_INFO, &bo2, sizeof(bo2), sizeof(bo2));
+			mach_vm_address_t baddr = 0;
+			mach_vm_size_t bsize = 0;
+			kr = IOConnectMapMemory64(g_conn, (uint32_t)bo2.value, mach_task_self(), &baddr, &bsize, kIOMapAnywhere | kIOMapWriteCombineCache);
+			CHECK(kr == 0 && bsize >= (1 << 20), "map 1 MiB BO -> %#llx size %llu", (unsigned long long)baddr, (unsigned long long)bsize);
+			if (kr == 0) {
+				volatile uint32_t *bb = (volatile uint32_t *)(uintptr_t)baddr;
+				static const uint32_t offs[] = { 0x1000, 0x2000, 0x3000, 0x3ffc, 0x4000, 0x4004, 0x5000, 0x7000, 0x8000, 0x10000,
+					0x40000, 0x7f000, 0x80000, 0xc0010, 0xff000, 0xffffc };
+				const unsigned noffs = sizeof(offs) / sizeof(offs[0]);
+				unsigned k = 0;
+				for (unsigned i = 0; i < noffs; i++) {
+					bb[offs[i] / 4] = 0;
+				}
+				for (unsigned i = 0; i < noffs; i++) {
+					bb[k++] = pkt7(61, 3);
+					bb[k++] = (uint32_t)(bi.value + offs[i]);
+					bb[k++] = (uint32_t)((bi.value + offs[i]) >> 32);
+					bb[k++] = 0xb16b0000u | i;
+				}
+				struct sweet_msm_gem_submit_bo sb2 = { .flags = SWEET_MSM_SUBMIT_BO_READ | SWEET_MSM_SUBMIT_BO_WRITE, .handle = big.handle };
+				struct sweet_msm_gem_submit_cmd sc2 = { .type = SWEET_MSM_SUBMIT_CMD_BUF, .submit_idx = 0, .submit_offset = 0, .size = k * 4 };
+				struct sweet_msm_gem_submit su = { .nr_bos = 1, .nr_cmds = 1, .bos = (uint64_t)(uintptr_t)&sb2, .cmds = (uint64_t)(uintptr_t)&sc2 };
+				kr = call(SWEET_GPU_SEL_GEM_SUBMIT, &su, sizeof(su), sizeof(su));
+				CHECK(kr == 0 && su.fence != 0, "GEM_SUBMIT %u MEM_WRITEs into the 1 MiB BO -> fence %u kr %#x", noffs, su.fence, kr);
+				struct sweet_msm_wait_fence w2 = { .fence = su.fence, .timeout = rel(2, 0) };
+				kr = call(SWEET_GPU_SEL_WAIT_FENCE, &w2, sizeof(w2), 0);
+				CHECK(kr == 0, "WAIT_FENCE %u kr %#x", su.fence, kr);
+				if (kr != 0) {
+					dump_debug("after the 1 MiB submit failed");
+				}
+				unsigned bad = 0;
+				for (unsigned i = 0; i < noffs; i++) {
+					if (bb[offs[i] / 4] != (0xb16b0000u | i)) {
+						printf("  offset %#x = %#x (want %#x)\n", offs[i], bb[offs[i] / 4], 0xb16b0000u | i);
+						bad++;
+					}
+				}
+				CHECK(bad == 0, "%u of %u writes landed in the 1 MiB BO", noffs - bad, noffs);
+				IOConnectUnmapMemory64(g_conn, (uint32_t)bo2.value, mach_task_self(), baddr);
+			}
+			struct sweet_gem_close bc = { .handle = big.handle };
+			(void)call(SWEET_GPU_SEL_GEM_CLOSE, &bc, sizeof(bc), 0);
+		}
+	}
 
 	IOConnectUnmapMemory64(g_conn, (uint32_t)go.value, mach_task_self(), addr);
 	struct sweet_gem_close gc = { .handle = nb2.handle };
