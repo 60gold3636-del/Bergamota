@@ -54,3 +54,7 @@ void osm_sweet_forget(unsigned surface_id) { OSMesaSweetForgetSurface(surface_id
 
 extern void OSMesaSweetStats(double *out, int n);
 void osm_sweet_stats(double *out, int n) { OSMesaSweetStats(out, n); }
+extern int OSMesaSweetAttachDirect(unsigned name, unsigned surface_id);
+extern void OSMesaSweetDirectSync(unsigned surface_id);
+int osm_sweet_attach_direct(unsigned name, unsigned surface_id) { return OSMesaSweetAttachDirect(name, surface_id); }
+void osm_sweet_direct_sync(unsigned surface_id) { OSMesaSweetDirectSync(surface_id); }
