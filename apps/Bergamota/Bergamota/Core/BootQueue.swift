@@ -341,6 +341,20 @@ final class BootQueue {
         case .bergamotaFastboot:
             if settings.flashTool == nil { log += "\(UserdataFlash.toolName) not found: can not flash through Bergamota fastboot\n"; return nil }
             if via == .abl { log += "phone is in Bergamota fastboot: flashing there (ABL is not reachable from here)\n" }
+            // The read-only build (bergamota-fastboot.img) has no `bergamota-flash` variable: back to ABL, then the flash build.
+            if let fb = settings.fastboot, let serial = monitor.fastbootSerial {
+                let g = await Shell.run(fb, ["-s", serial, "getvar", "bergamota-flash"], timeout: 5)
+                if g.combined.contains("unknown variable") {
+                    log += "Bergamota fastboot is the read-only build: rebooting to ABL for the flash build\n"
+                    _ = await Shell.run(fb, ["-s", serial, "reboot", "bootloader"], timeout: 10)
+                    for _ in 0..<90 {
+                        if monitor.state == .fastboot { return await prepareFlashRoute(via: via, log: &log) }
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                    log += "ABL fastboot did not appear within 90 s\n"
+                    return nil
+                }
+            }
             return .bergamota
         case .fastboot:
             if via == .abl { return .abl }
