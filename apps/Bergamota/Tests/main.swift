@@ -49,6 +49,16 @@ check(p.cpuLoad.count == 8 && p.clusters[0].loadPct == 69 && p.clusters[0].curKh
 check(p.renderer.mode == "fd630" && p.renderer.backboarddPid == 745, "phone-live: FD630 from the real GPU client") 
 check(p.battery.percent == 10 && p.battery.currentMa == -140 && p.battery.voltageMv == 3552, "phone-live: battery")
 
+// recorded on the phone with the governor kernel (v1 kern.sweet_cpufreq, kern.sweet_gpu in slumber)
+let g = PhoneMetrics.parse(sample("phone-gov.json"))!
+check(g.freqKnown && g.clusters[0].curKhz == 902_400 && g.clusters[1].curKhz == 2_803_200, "phone-gov: cur kHz of both clusters")
+check(g.clusters[0].minKhz == 300_000 && g.clusters[0].maxKhz == 1_766_400 && g.clusters[0].capKhz == 902_400, "phone-gov: min/max/cap")
+check(g.clusters[0].mode == "governor" && g.clusters[0].modeText == "governor, cap 902 MHz" && g.clusters[1].modeText == "governor", "phone-gov: governor mode text (cap shown only below max)")
+check(g.clusters[0].lutKhz.count == 18 && g.clusters[1].lutKhz.count == 27 && g.clusters[0].changes == 243 && g.clusters[0].kernelLoadPct == 99, "phone-gov: LUT, changes, kernel load")
+check(g.gpu.state == "slumber" && g.gpu.mhz == 0 && g.gpu.level == 0 && g.gpu.levels == 7 && g.gpu.maxMhz == 710 && g.gpu.hasDCVS, "phone-gov: GPU slumber, 0 MHz, DCVS present")
+check(g.gpu.freqMode == "gov" && g.gpu.suspends == 9 && g.gpu.pids.isEmpty && g.gpu.busyPct == 0, "phone-gov: GPU governor, suspends, no pids")
+check(metricsWaiting(g).isEmpty, "phone-gov: nothing left to wait on")
+
 // SSH noise in front of the JSON, and failure output
 check(PhoneMetrics.parse(sample("noisy.txt"))?.battery.percent == 87, "noisy: banner lines before the JSON are skipped")
 check(PhoneMetrics.parse(sample("missing.txt")) == nil, "missing tool output: no JSON")

@@ -190,7 +190,9 @@ struct PerformanceCard: View {
     private func gpuLine(_ g: GPUMetrics) -> String {
         var p: [String] = []
         if let l = g.level { p.append("level \(l)" + (g.levels.map { "/\($0)" } ?? "")) }
+        if let f = g.freqMode { p.append(f == "gov" ? "governor" : f) }
         if g.clients > 0 { p.append("\(g.clients) client\(g.clients == 1 ? "" : "s")") }
+        if let r = g.recoveries, r > 0 { p.append("\(r) recover\(r == 1 ? "y" : "ies")") }
         if p.isEmpty { return g.hasDCVS ? "" : (g.state == "absent" ? "no GPU driver" : "level/MHz/busy not reported yet") }
         return p.joined(separator: " | ")
     }

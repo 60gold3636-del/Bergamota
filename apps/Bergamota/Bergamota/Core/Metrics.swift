@@ -13,6 +13,11 @@ struct ClusterMetrics: Equatable, Sendable {
     var mode = "unknown"
     var governor: String?
     var capPercent: Int?
+    /// The governor's ceiling in kHz (cap_khz of the v1 sysctl) and its own load figure (busiest CPU of the cluster), LUT and number of state writes.
+    var capKhz: Int?
+    var kernelLoadPct: Int?
+    var changes: Int?
+    var lutKhz: [Int] = []
     var loadPct: Double?
 
     /// SDM845 top states, used for the bar scale only while the kernel does not report `maxKhz`.
@@ -20,7 +25,10 @@ struct ClusterMetrics: Equatable, Sendable {
 
     var modeText: String {
         switch mode {
-        case "governor": return "governor " + (governor ?? "?")
+        case "governor":
+            var t = (governor == nil || governor == "gov") ? "governor" : "governor " + governor!
+            if let cap = capKhz, let mx = maxKhz, cap > 0, cap < mx { t += ", cap \(formatKhz(cap))" }
+            return t
         case "static": return capPercent.map { "capped at \($0)%" } ?? "fixed"
         case "off": return "cpufreq off (bootloader state)"
         case "pending": return "cpufreq starting"
@@ -42,6 +50,12 @@ struct GPUMetrics: Equatable, Sendable {
     var busyPct: Double?
     var clients = 0
     var source: String?
+    /// gov | fixed
+    var freqMode: String?
+    var pids: [Int] = []
+    var suspends: Int?
+    var recoveries: Int?
+    var hangs: Int?
 
     var hasDCVS: Bool { mhz != nil || level != nil || busyPct != nil }
 }
@@ -123,6 +137,10 @@ struct PhoneMetrics: Equatable, Sendable {
                 k.mode = str(c, "mode") ?? "unknown"
                 k.governor = str(c, "governor")
                 k.capPercent = int(c, "capPercent")
+                k.capKhz = int(c, "capKhz")
+                k.kernelLoadPct = int(c, "kernelLoadPct")
+                k.changes = int(c, "changes")
+                k.lutKhz = (c["lutKhz"] as? [Any])?.compactMap { ($0 as? NSNumber)?.intValue } ?? []
                 k.loadPct = num(c, "loadPct")
                 m.clusters.append(k)
             }
@@ -138,6 +156,11 @@ struct PhoneMetrics: Equatable, Sendable {
             m.gpu.busyPct = num(g, "busyPct")
             m.gpu.clients = int(g, "clients") ?? 0
             m.gpu.source = str(g, "source")
+            m.gpu.freqMode = str(g, "freqMode")
+            m.gpu.pids = (g["pids"] as? [Any])?.compactMap { ($0 as? NSNumber)?.intValue } ?? []
+            m.gpu.suspends = int(g, "suspends")
+            m.gpu.recoveries = int(g, "recoveries")
+            m.gpu.hangs = int(g, "hangs")
         }
         if let r = o["renderer"] as? [String: Any] {
             m.renderer.mode = str(r, "mode") ?? "cpu"
