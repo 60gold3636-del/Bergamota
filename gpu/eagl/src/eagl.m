@@ -23,6 +23,9 @@
 #import <objc/runtime.h>
 #import <mach-o/dyld.h>
 #import <pthread.h>
+#import <mach/mach.h>
+#import <sys/stat.h>
+#import <unistd.h>
 #import <stdatomic.h>
 #import <objc/message.h>
 #import <math.h>
@@ -84,6 +87,7 @@ typedef struct {                    // renderbuffer bound to a drawable (renderb
 
 typedef struct {                    // attachImage:toCoreSurface:invertedRender:
     GLuint name;
+    int kind;                       // 0 = a GL object name was given, 1 = texture bound at the given target, 2 = renderbuffer
     IOSurfaceRef surf;              // retained
     BOOL inverted;
 } Attach;
@@ -137,8 +141,9 @@ static EAGLContext *cur_ctx(void) {
 
 // Copy an RGBA w*h bottom-up GL readback into a BGRA IOSurface, top-down (or bottom-up when `keep` is set).
 static void rgba_to_surface(const uint8_t *src, uint32_t w, uint32_t h, IOSurfaceRef s, BOOL flip, BOOL opaque) {
-    IOSurfaceLock(s, 0, NULL);
-    uint8_t *dst = IOSurfaceGetBaseAddress(s);
+    kern_return_t lk = IOSurfaceLock(s, 0, NULL);
+    uint8_t *dst = lk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(s) : NULL;
+    if (!dst) { if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL); return; }
     size_t bpr = IOSurfaceGetBytesPerRow(s);
     size_t sw = IOSurfaceGetWidth(s), sh = IOSurfaceGetHeight(s);
     uint32_t cw = w < sw ? w : (uint32_t)sw, ch = h < sh ? h : (uint32_t)sh;
@@ -192,21 +197,70 @@ static uint8_t *read_image(EAGLContext *c, GLuint name, BOOL isTexture, uint32_t
     return buf;
 }
 
+// Debug dump (EAGL_SHIM_DEBUG=1): frames 1, 10 and 60 of the attached-image sync, and any time /private/var/tmp/bgl-dump-now exists, are
+// written as PPM files to /private/var/tmp/bgl-dump/: "-gl" = what the GL side holds (renderbuffer/texture read back), "-surf" = what the
+// CPU sees in the IOSurface right after our sync. The first pixels and the surface geometry go to the log.
+static void dump_ppm(const char *path, const uint8_t *rgba_or_bgra, uint32_t w, uint32_t h, size_t stride, int bgra, BOOL flip) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "P6\n%u %u\n255\n", w, h);
+    for (uint32_t y = 0; y < h; y++) {
+        const uint8_t *row = rgba_or_bgra + (size_t)(flip ? h - 1 - y : y) * stride;
+        for (uint32_t x = 0; x < w; x++) {
+            const uint8_t *q = row + x * 4;
+            fputc(bgra ? q[2] : q[0], f); fputc(q[1], f); fputc(bgra ? q[0] : q[2], f);
+        }
+    }
+    fclose(f);
+}
+static void maybe_dump(EAGLContext *c, int idx, BOOL isTex, uint32_t gw, uint32_t gh, BOOL gpu_path) {
+    static int frame;
+    struct _EAGLContextPrivate *p = c->_private;
+    Attach *a = &p->att[idx];
+    if (idx == 0) frame++;
+    int now = access("/private/var/tmp/bgl-dump-now", F_OK) == 0;
+    if (!(frame == 1 || frame == 10 || frame == 60 || now)) return;
+    if (now && idx == p->natt - 1) unlink("/private/var/tmp/bgl-dump-now");
+    mkdir("/private/var/tmp/bgl-dump", 0777);
+    uint32_t w, h;
+    uint8_t *buf = read_image(c, a->name, isTex, gw, gh, &w, &h);
+    char path[256];
+    if (buf) { snprintf(path, sizeof path, "/private/var/tmp/bgl-dump/f%d-a%d-gl.ppm", frame, idx); dump_ppm(path, buf, w, h, (size_t)w * 4, 0, YES); }
+    kern_return_t dlk = IOSurfaceLock(a->surf, kIOSurfaceLockReadOnly, NULL);
+    const uint8_t *sp = dlk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(a->surf) : NULL;
+    if (!sp) { fprintf(stderr, "EAGL(shim): dump frame %d: surface %u has no CPU mapping (lock %x)\n", frame, IOSurfaceGetID(a->surf), dlk); if (dlk == KERN_SUCCESS) IOSurfaceUnlock(a->surf, kIOSurfaceLockReadOnly, NULL); free(buf); return; }
+    size_t bpr = IOSurfaceGetBytesPerRow(a->surf);
+    uint32_t sw = (uint32_t)IOSurfaceGetWidth(a->surf), sh = (uint32_t)IOSurfaceGetHeight(a->surf);
+    OSType pf = IOSurfaceGetPixelFormat(a->surf);
+    fprintf(stderr, "EAGL(shim): dump frame %d attach %d name %u %s: surface %u %ux%u fmt %08x stride %zu inverted %d gpu_blit %d, GL image %ux%u; first pixels (bytes) %02x%02x%02x%02x %02x%02x%02x%02x, centre %02x%02x%02x%02x\n",
+            frame, idx, a->name, isTex ? "texture" : "renderbuffer", IOSurfaceGetID(a->surf), sw, sh, (unsigned)pf, bpr, a->inverted, gpu_path, w, h,
+            sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], sp[7],
+            sp[(sh / 2) * bpr + (sw / 2) * 4], sp[(sh / 2) * bpr + (sw / 2) * 4 + 1], sp[(sh / 2) * bpr + (sw / 2) * 4 + 2], sp[(sh / 2) * bpr + (sw / 2) * 4 + 3]);
+    if (pf == 'BGRA') { snprintf(path, sizeof path, "/private/var/tmp/bgl-dump/f%d-a%d-surf.ppm", frame, idx); dump_ppm(path, sp, sw, sh, bpr, 1, NO); }
+    IOSurfaceUnlock(a->surf, kIOSurfaceLockReadOnly, NULL);
+    free(buf);
+}
+
 // Flush every attachImage: association of this context into its IOSurface.
 static void sync_attached(EAGLContext *c) {
     struct _EAGLContextPrivate *p = c->_private;
     for (int i = 0; i < p->natt; i++) {
         Attach *a = &p->att[i];
-        BOOL isTex = glIsTexture(a->name) && !glIsRenderbuffer(a->name);
+        BOOL isTex = a->kind ? (a->kind == 1) : (glIsTexture(a->name) && !glIsRenderbuffer(a->name));
         // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
-        if (osm_sweet_active() && osm_sweet_blit(a->name, isTex, IOSurfaceGetID(a->surf), !a->inverted, NO)) continue;
+        BOOL flip = a->kind ? a->inverted : !a->inverted;      // target-form attach (the render server): YES = rows flipped, NO = as GL has them (seen on the phone: NO + flip drew the UI upside down)
+        if (osm_sweet_active() && osm_sweet_blit(a->name, isTex, IOSurfaceGetID(a->surf), flip, NO)) {
+            if (g_debug) maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), YES);
+            continue;
+        }
         uint32_t w, h;
         uint8_t *buf = read_image(c, a->name, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), &w, &h);
         if (buf) {
             // GL rows are bottom-up; a "normal" surface is top-down. invertedRender means CA already drew it flipped.
-            rgba_to_surface(buf, w, h, a->surf, !a->inverted, NO);
+            rgba_to_surface(buf, w, h, a->surf, flip, NO);
             free(buf);
         }
+        if (g_debug) maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), NO);
     }
 }
 
@@ -429,9 +483,33 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
 
 // --- IOSurface ---
 - (BOOL)attachImage:(NSUInteger)image toCoreSurface:(IOSurfaceRef)surface invertedRender:(BOOL)inverted {
+    // `image` is a GL TARGET (CoreAnimation passes GL_TEXTURE_2D = 3553, found by dumping the server's calls on the phone): the image
+    // currently bound at that target gets the IOSurface as its storage. A plain object name (our own tests) is still accepted.
     struct _EAGLContextPrivate *p = _private;
+    int kind = 0;
+    GLuint name = (GLuint)image;
+    if (surface && (image == GL_TEXTURE_2D || image == GL_RENDERBUFFER || image == 0x84f5 /* TEXTURE_RECTANGLE */)) {
+        GLint bound = 0;
+        if (image == GL_RENDERBUFFER) { glGetIntegerv(GL_RENDERBUFFER_BINDING, &bound); kind = 2; }
+        else { glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound); kind = 1; }
+        if (!bound) return NO;
+        name = (GLuint)bound;
+        uint32_t w = (uint32_t)IOSurfaceGetWidth(surface), h = (uint32_t)IOSurfaceGetHeight(surface);
+        if (kind == 2) glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, w, h);
+        else {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            // keep what the surface already shows: CoreAnimation redraws only the damaged part of a swap-chain buffer
+            if (IOSurfaceGetPixelFormat(surface) == 'BGRA')
+                [self texImageIOSurface:surface target:GL_TEXTURE_2D internalFormat:GL_RGBA width:w height:h format:GL_BGRA_EXT type:GL_UNSIGNED_BYTE plane:0 invert:!inverted];   // same row order as the sync
+        }
+        if (glGetError() != GL_NO_ERROR) EAGL_DEBUG("attachImage: storage for %ux%u failed\n", w, h);
+    }
     int idx = -1;
-    for (int i = 0; i < p->natt; i++) if (p->att[i].name == image) idx = i;
+    for (int i = 0; i < p->natt; i++) if (p->att[i].name == name && p->att[i].kind == kind) idx = i;
     if (!surface) {                                     // detach
         if (idx >= 0) { osm_sweet_forget(IOSurfaceGetID(p->att[idx].surf)); CFRelease(p->att[idx].surf); p->att[idx] = p->att[--p->natt]; }
         return YES;
@@ -439,9 +517,10 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     if (idx < 0) {
         if (p->natt >= MAX_BIND) return NO;
         idx = p->natt++;
-    } else CFRelease(p->att[idx].surf);
-    p->att[idx].name = (GLuint)image; p->att[idx].surf = (IOSurfaceRef)CFRetain(surface); p->att[idx].inverted = inverted;
-    EAGL_DEBUG("attachImage %lu -> IOSurface %p inverted=%d\n", (unsigned long)image, surface, inverted);
+    } else { osm_sweet_forget(IOSurfaceGetID(p->att[idx].surf)); CFRelease(p->att[idx].surf); }
+    p->att[idx].name = name; p->att[idx].kind = kind; p->att[idx].surf = (IOSurfaceRef)CFRetain(surface); p->att[idx].inverted = inverted;
+    EAGL_DEBUG("attachImage %lu -> %s %u, IOSurface %u (%zux%zu) inverted=%d\n", (unsigned long)image, kind == 2 ? "renderbuffer" : kind == 1 ? "texture" : "object", name,
+               IOSurfaceGetID(surface), IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), inverted);
     return YES;
 }
 
@@ -458,39 +537,65 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     EAGL_DEBUG("texImageIOSurface %p target 0x%lx ifmt 0x%lx %ux%u fmt 0x%lx type 0x%lx invert %d\n", ioSurface, (unsigned long)target, (unsigned long)internalFormat, width, height, (unsigned long)format, (unsigned long)type, invert);
     if (cur_ctx() != self || !ioSurface || plane != 0) return NO;
     OSType pf = IOSurfaceGetPixelFormat(ioSurface);
-    if (pf != 'BGRA' && pf != 'RGBA' && pf != 0) return NO;      // only 8-bit 4 byte surfaces for now
     size_t sw = IOSurfaceGetWidth(ioSurface), sh = IOSurfaceGetHeight(ioSurface);
     uint32_t w = width < sw ? width : (uint32_t)sw, h = height < sh ? height : (uint32_t)sh;
     if (!w || !h) return NO;
-    uint32_t *tmp = malloc((size_t)w * h * 4);
+    // Bytes per texel from the GL format/type CoreAnimation asks for (it uploads A8 masks, LA8, RGBA half float gradients, BGRA ...).
+    size_t comps = 0, csz = 1;
+    switch (format) {
+    case 0x1906: case 0x1909: case 0x1903: comps = 1; break;                 // ALPHA, LUMINANCE, RED
+    case 0x190a: case 0x8227: comps = 2; break;                              // LUMINANCE_ALPHA, RG
+    case 0x1907: comps = 3; break;                                           // RGB
+    case 0x1908: case GL_BGRA_EXT: comps = 4; break;                         // RGBA, BGRA
+    default: return NO;
+    }
+    switch (type) {
+    case 0x1401: csz = 1; break;                                             // UNSIGNED_BYTE
+    case 0x140b: case 0x8d61: csz = 2; break;                                // HALF_FLOAT(_OES)
+    case 0x1406: csz = 4; break;                                             // FLOAT
+    case 0x8363: case 0x8033: case 0x8034: comps = 1; csz = 2; break;        // packed 16 bit
+    case 0x8368: comps = 1; csz = 4; break;                                  // UNSIGNED_INT_2_10_10_10_REV
+    default: return NO;
+    }
+    size_t bpp = comps * csz, bpr = IOSurfaceGetBytesPerRow(ioSurface);
+    if (w * bpp > bpr) return NO;
+    BOOL bgra8 = (format == GL_BGRA_EXT && type == 0x1401);                  // swizzled to RGBA below (portable across ES implementations)
+    uint8_t *tmp = malloc((size_t)w * h * bpp);
     if (!tmp) return NO;
-    IOSurfaceLock(ioSurface, kIOSurfaceLockReadOnly, NULL);
-    const uint8_t *src = IOSurfaceGetBaseAddress(ioSurface);
-    size_t bpr = IOSurfaceGetBytesPerRow(ioSurface);
+    kern_return_t lk = IOSurfaceLock(ioSurface, kIOSurfaceLockReadOnly, NULL);
+    const uint8_t *src = lk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(ioSurface) : NULL;
+    if (!src) {                         // not CPU-mappable here (the render server's display surfaces): nothing to read
+        if (lk == KERN_SUCCESS) IOSurfaceUnlock(ioSurface, kIOSurfaceLockReadOnly, NULL);
+        EAGL_DEBUG("texImageIOSurface: surface %u has no CPU mapping (lock %x)\n", IOSurfaceGetID(ioSurface), lk);
+        free(tmp);
+        return NO;
+    }
     for (uint32_t y = 0; y < h; y++) {
-        const uint32_t *sp = (const uint32_t *)(src + (invert ? y : (h - 1 - y)) * bpr);   // CA passes invert:NO and renders with a flipped projection (invertedRender:YES): its textures must be flipped on upload
-        uint32_t *dp = tmp + (size_t)y * w;
-        if (pf == 'RGBA') memcpy(dp, sp, (size_t)w * 4);
-        else for (uint32_t x = 0; x < w; x++) { uint32_t q = sp[x]; dp[x] = (q & 0xff00ff00u) | ((q & 0xff) << 16) | ((q >> 16) & 0xff); }
+        const uint8_t *sp = src + (invert ? y : (h - 1 - y)) * bpr;
+        uint8_t *dp = tmp + (size_t)y * w * bpp;
+        if (bgra8) for (uint32_t x = 0; x < w; x++) { uint32_t q = ((const uint32_t *)sp)[x]; ((uint32_t *)dp)[x] = (q & 0xff00ff00u) | ((q & 0xff) << 16) | ((q >> 16) & 0xff); }
+        else memcpy(dp, sp, (size_t)w * bpp);
     }
     IOSurfaceUnlock(ioSurface, kIOSurfaceLockReadOnly, NULL);
+    (void)pf;
     GLint oldAlign = 4, oldRow = 0;
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldAlign);
     glGetIntegerv(GL_UNPACK_ROW_LENGTH, &oldRow);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     GLenum ifmt = internalFormat == GL_BGRA_EXT ? GL_RGBA : (GLenum)internalFormat;
-    glTexImage2D((GLenum)target, 0, ifmt, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+    glTexImage2D((GLenum)target, 0, ifmt, w, h, 0, bgra8 ? GL_RGBA : (GLenum)format, (GLenum)type, tmp);
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) EAGL_DEBUG("  glTexImage2D failed 0x%x (ifmt 0x%lx fmt 0x%lx type 0x%lx)\n", err, (unsigned long)internalFormat, (unsigned long)format, (unsigned long)type);
     // IOSurface textures have no mip chain: make the texture complete with sane defaults (the client overrides them if it cares).
     glTexParameteri((GLenum)target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri((GLenum)target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    EAGL_DEBUG("  first texel RGBA %08x, centre %08x\n", tmp[0], tmp[(size_t)(h / 2) * w + w / 2]);
     glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, oldRow);
     free(tmp);
-    return glGetError() == GL_NO_ERROR;
+    return err == GL_NO_ERROR;
 }
 
 @end

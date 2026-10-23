@@ -169,6 +169,22 @@ static void test_attach_and_texture(void) {
     CHECK(near(p[1], 255) && near(p[0], 0) && near(p[2], 0), "glFinish syncs the attached IOSurface, top row green (BGRA %d %d %d %d)", p[0], p[1], p[2], p[3]);
     CHECK(near(q[2], 255) && near(q[0], 255) && near(q[1], 0), "surface is top-down: bottom row magenta (BGRA %d %d %d %d)", q[0], q[1], q[2], q[3]);
 
+    // attachImage with a TARGET (what CoreAnimation's render server passes): the texture bound at GL_TEXTURE_2D gets the surface as storage
+    {
+        IOSurfaceRef s2 = mk_surface(48, 32);
+        GLuint t3, f3; glGenTextures(1, &t3); glBindTexture(GL_TEXTURE_2D, t3);
+        BOOL ok = [ctx attachImage:GL_TEXTURE_2D toCoreSurface:s2 invertedRender:NO];
+        glGenFramebuffers(1, &f3); glBindFramebuffer(GL_FRAMEBUFFER, f3);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t3, 0);
+        CHECK(ok && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE, "attachImage:GL_TEXTURE_2D gives the bound texture storage (FBO complete)");
+        glViewport(0, 0, 48, 32); glClearColor(1, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
+        glScissor(0, 0, 48, 8); glEnable(GL_SCISSOR_TEST); glClearColor(0, 0, 1, 1); glClear(GL_COLOR_BUFFER_BIT); glDisable(GL_SCISSOR_TEST);   // bottom GL rows blue
+        glFinish();
+        uint8_t a3[4], b3[4]; surf_pixel(s2, 24, 2, a3); surf_pixel(s2, 24, 29, b3);
+        CHECK(near(a3[0], 255) && near(a3[2], 0) && near(b3[2], 255) && near(b3[0], 0), "texture-target attach syncs to the surface, inverted:NO keeps the GL row order (bottom GL rows first) (top BGRA %d %d %d, bottom %d %d %d)", a3[0], a3[1], a3[2], b3[0], b3[1], b3[2]);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        CFRelease(s2);
+    }
     // texImageIOSurface:...plane:invert:
     IOSurfaceRef src = mk_surface(32, 32);
     IOSurfaceLock(src, 0, NULL);
@@ -190,6 +206,23 @@ static void test_attach_and_texture(void) {
     glReadPixels(5, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
     CHECK(ti && px[0] == 200, "invert:NO flips rows (R=%d)", px[0]);
 
+    // CoreAnimation's other uploads: A8 mask, LA8, RGBA16F half float (256x1 gradient table), RGB565
+    {
+        struct { uint32_t pf; int bpp; GLenum ifmt, fmt, type; const char *name; } cases[] = {
+            { 'L008', 1, GL_ALPHA, GL_ALPHA, GL_UNSIGNED_BYTE, "A8" },
+            { '2C08', 2, GL_LUMINANCE_ALPHA, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, "LA8" },
+            { 'RGhA', 8, GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, "RGBA16F" },
+            { 'L565', 2, GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, "RGB565" } };
+        for (int i = 0; i < 4; i++) {
+            NSDictionary *d = @{ (id)kIOSurfaceWidth : @(37), (id)kIOSurfaceHeight : @(5), (id)kIOSurfaceBytesPerElement : @(cases[i].bpp),
+                                 (id)kIOSurfacePixelFormat : @(cases[i].pf), (id)kIOSurfaceBytesPerRow : @(((37 * cases[i].bpp) + 63) & ~63) };
+            IOSurfaceRef sf = IOSurfaceCreate((CFDictionaryRef)d);
+            GLuint t2; glGenTextures(1, &t2); glBindTexture(GL_TEXTURE_2D, t2);
+            BOOL ok = sf && [ctx texImageIOSurface:sf target:GL_TEXTURE_2D internalFormat:cases[i].ifmt width:37 height:5 format:cases[i].fmt type:cases[i].type plane:0 invert:NO];
+            CHECK(ok && glGetError() == GL_NO_ERROR, "texImageIOSurface %s surface (pixel format %08x)", cases[i].name, cases[i].pf);
+            if (sf) CFRelease(sf);
+        }
+    }
     // sharegroup: a texture created in ctx is visible in a second context of the same group
     EAGLContext *c2 = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3 sharegroup:ctx.sharegroup];
     CHECK(c2 != nil && c2.sharegroup == ctx.sharegroup, "sharegroup shared");
