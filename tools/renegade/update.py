@@ -2,7 +2,7 @@
 """Renegade in-place update (`renegade update`): apply the root tweaks of root_tweaks18.py to a FINISHED root image,
 without the IPSW dmgs (deleted, and the Mac has no room for them).
 
-  update.py IMAGE.simg [--no-appreg] [--no-posterboard] [--no-bluetooth] [--no-jb] [--force-jb] [--mnt DIR]
+  update.py IMAGE.simg [--no-appreg] [--no-posterboard] [--no-bluetooth] [--no-jb] [--no-wallpaper] [--force-jb] [--mnt DIR]
   update.py IMAGE.img                      resume: the raw image a failed run left behind (see below)
 
 Steps (every one checks `df` first and stops below 5 GiB free on the volume of the image):
@@ -12,7 +12,8 @@ Steps (every one checks `df` first and stops below 5 GiB free on the volume of t
                 written, so the disk use stays flat; the simg no longer exists afterwards)
   2 attach      hdiutil attach, read-write, no sudo, mounted at --mnt like mkroot-full.py does
   3 tweaks      staged apps -> /Applications (+ the register list), bluetooth (bluetoothd env, BlueTool stub, hcitest),
-                PosterBoard + sweetfp.dylib, the first-boot job (sweetuicache registration, jailbreak post-install),
+                PosterBoard + sweetfp.dylib, the first-boot job (sweetuicache registration, default wallpaper/icon style via
+                SweetRun, jailbreak post-install),
                 /private/var/jb (Procursus, Sileo, TrollStore). All idempotent: a second run changes nothing.
                 The paths that are new (HFS creation date after the start) or that got an owner on purpose are collected
                 into an owner map; /System/Library/xpc/launchd.plist is put back to 0:0 (an old build left 501:20)
@@ -115,7 +116,7 @@ def preflight(simg, rt, feats):
     for p in ('/System/Library/xpc/launchd.plist', '/private/var', '/Applications'):
         if not have(p):
             problems.append('missing in the image: ' + p)
-    if (feats['appreg'] or feats['jb']) and not have('/bin/sh'):
+    if (feats['appreg'] or feats['jb'] or feats['wallpaper']) and not have('/bin/sh'):
         problems.append('missing in the image: /bin/sh (dash; the first-boot job needs it)')
     ve = v.lookup('/var', follow=False)
     if not ve or ve[0] != 2 or not v.read_file(*ve).decode().startswith('private/var'):
@@ -141,8 +142,10 @@ def preflight(simg, rt, feats):
 def check_tools(rt, feats):
     problems = []
     need = []
-    if feats['appreg'] or feats['jb']:
+    if feats['appreg'] or feats['jb'] or feats['wallpaper']:
         need.append(('ios18/sweetuicache', 'sweetuicache (first-boot job)'))
+    if feats['wallpaper']:
+        need += [('ios18/' + n, n) for n in ('sweetposterset', 'sweeticonstyle', 'sweetopen', 'SweetRun.app')]
     if feats['posterboard']:
         need.append(('ios18/sweetfp.dylib', 'sweetfp.dylib'))
     if feats['bluetooth']:
@@ -200,13 +203,15 @@ def main():
     for f_, what in (('appreg', 'first-boot LaunchServices registration of the staged apps'),
                      ('posterboard', 'sweetfp.dylib + the LC_LOAD_DYLIB in PosterBoard'),
                      ('bluetooth', 'bluetoothd env, BlueTool stub, hcitest'),
-                     ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)')):
+                     ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)'),
+                     ('wallpaper', 'default Gradient wallpaper and icon style at first boot')):
         ap.add_argument('--no-' + f_, action='store_true', help='skip: ' + what)
     ap.add_argument('--force-jb', action='store_true', help='reinstall /private/var/jb even when it is at the pinned versions')
     ap.add_argument('--mnt', help='mount point (default: IMAGE.mnt next to the image)')
     ap.add_argument('--check', action='store_true', help='preflight only (read only), consume nothing')
     a = ap.parse_args()
-    for f_ in ('appreg', 'posterboard', 'bluetooth', 'jb'):
+    rt_features = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper')
+    for f_ in rt_features:
         if getattr(a, 'no_' + f_):
             os.environ['RENEGADE_NO_' + f_.upper()] = '1'
     rt = load('root_tweaks18', 'root_tweaks18.py')
@@ -289,7 +294,7 @@ def main():
             rt.bluetooth(mnt)
         if feats['posterboard']:
             rt.posterboard(mnt)
-        rt.firstboot(mnt, appreg=feats['appreg'], jb=feats['jb'])
+        rt.firstboot(mnt, appreg=feats['appreg'], jb=feats['jb'], wallpaper=feats['wallpaper'])
         jb_table = {}
         if feats['jb']:
             rt.jailbreak_userland(mnt, jb_owners, force=a.force_jb, prestaged=jb_prestaged)

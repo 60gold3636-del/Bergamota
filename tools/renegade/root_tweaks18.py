@@ -527,13 +527,14 @@ def event_timing(root):
 #   posterboard  posterboard(): sweetfp.dylib linked into PosterBoard (NSURLFileProtectionKey on HFS+)
 #   bluetooth    bluetooth(): BT_HCI_TRANSPORT in bluetoothd's job, BlueTool stub, hcitest
 #   jb           jailbreak_userland() + firstboot(): Procursus rootless, Sileo, TrollStore (jailbreak.py)
+#   wallpaper    firstboot(): Gradient darkBlue.preset1 as lock poster + default (not tinted) icon style, once, as mobile
 #
-# All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB) or the
+# All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER) or the
 # --no-<feature> flags of `renegade root` and `renegade update`, which set the same variables.
 # Every function is idempotent: `renegade update` runs them again on a finished image.
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
-FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb')
+FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper')
 SWEETNET_DIRS = [os.environ.get('RENEGADE_SWEETNET'),
                  os.path.join(REPO, 'research/sweetnet'),
                  os.path.join(REPO, '..', 'ios-beryllium', 'research/sweetnet')]
@@ -672,7 +673,12 @@ FIRSTBOOT_SCRIPT = r'''#!/bin/sh
 #       /usr/local/bin/sweetuicache /Applications/NAME.app      (one call per app, as root, like the live fix)
 #     LaunchServices answers only once lsd is up, so the first app is retried (5 s apart, 10 min at most).
 #  2. the jailbreak post-install (/var/jb/usr/share/renegade-jb/postinstall.sh) if the root has one
-#  3. disables itself: marker /private/var/db/.renegade-firstboot-done (after 3 incomplete runs too)
+#  3. WALL: the default wallpaper (Gradient poster, no Metal) and icon style (default, not tinted), once, as mobile:
+#     /private/var/tmp/sweetrun.sh is written, `sweetopen com.sweet.run` starts SweetRun.app through FrontBoard (an app
+#     lives in the mobile user's launchd domain, where PosterBoard's XPC service is reachable) and the script runs
+#     sweetposterset (retried: -2203 while PosterBoard's store has no lock role yet, or the service is not up) and
+#     sweeticonstyle. Marker /private/var/db/.renegade-poster-done
+#  4. disables itself: marker /private/var/db/.renegade-firstboot-done (after 3 incomplete runs too)
 DONE=/private/var/db/.renegade-firstboot-done
 TRIES=/private/var/db/.renegade-firstboot-tries
 [ -e $DONE ] && exit 0
@@ -716,6 +722,53 @@ if [ $APPREG = 1 ] && [ -x $UIC ] && [ -s $LIST ]; then
 	done
 	[ $rc = 0 ] && echo "apps registered" || echo "registration incomplete"
 fi
+WALL=@WALL@
+PDONE=/private/var/db/.renegade-poster-done
+if [ $WALL = 1 ] && [ ! -e $PDONE ] && [ -d /Applications/SweetRun.app ]; then
+	echo "-- default wallpaper and icon style, as mobile via SweetRun"
+	T=/private/var/tmp
+	t=0
+	until reg SweetRun.app; do      # idempotent; lsd may not be up yet when appreg is off
+		t=$((t+1))
+		[ $t -ge 24 ] && break
+		sleep 5
+	done
+	rm -f $T/sweetrun.log $T/renegade-poster.rc
+	cat >$T/sweetrun.sh <<'EOS'
+export PATH=/usr/local/bin:/usr/bin:/bin
+n=0
+ok=1
+while [ $n -lt 20 ]; do
+	n=$((n+1))
+	echo "sweetposterset try $n"
+	/usr/local/bin/sweetposterset com.apple.GradientPoster.GradientPosterExtension darkBlue.preset1 && { ok=0; break; }
+	sleep 10
+done
+echo "sweetposterset rc=$ok"
+/usr/local/bin/sweeticonstyle default || ok=1
+echo $ok >/private/var/tmp/renegade-poster.rc
+EOS
+	chmod 644 $T/sweetrun.sh
+	t=0
+	until /usr/local/bin/sweetopen com.sweet.run; do      # works once SpringBoard is up
+		t=$((t+1))
+		[ $t -ge 120 ] && break
+		sleep 5
+	done
+	t=0
+	while [ ! -e $T/renegade-poster.rc ] && [ $t -lt 240 ]; do
+		t=$((t+1))
+		sleep 5
+	done
+	cat $T/sweetrun.log
+	if [ -e $T/renegade-poster.rc ] && [ "$(cat $T/renegade-poster.rc)" = 0 ]; then
+		touch $PDONE
+		echo "wallpaper and icon style set"
+	else
+		rc=1
+		echo "wallpaper/icon style not set (retried on the next boot)"
+	fi
+fi
 JBPI=/var/jb/usr/share/renegade-jb/postinstall.sh
 if [ -f $JBPI ] && [ ! -e /var/jb/.renegade-jb-done ]; then
 	echo "-- jailbreak post-install ($JBPI)"
@@ -730,13 +783,13 @@ exit 0
 '''
 
 
-def firstboot(root, appreg=True, jb=True):
+def firstboot(root, appreg=True, jb=True, wallpaper=True):
     """First-boot job: app registration with sweetuicache and, when the root has /var/jb, the jailbreak post-install
     (Sileo and TrollStore registration). Runs from the launchd.plist cache, needs /bin/sh (dash, ssh tweak). Disables
     itself with /private/var/db/.renegade-firstboot-done. Also installs /usr/local/bin/sweetuicache (arm64e,
     pacstrip --sign, tools/sweetnet/build.sh)."""
-    if not appreg and not jb:
-        print('firstboot: appreg and jb are both off: no job')
+    if not appreg and not jb and not wallpaper:
+        print('firstboot: appreg, jb and wallpaper are all off: no job')
         return
     uic = UICACHE or find_sweetnet('ios18/sweetuicache')
     if not uic:
@@ -746,15 +799,34 @@ def firstboot(root, appreg=True, jb=True):
         print('firstboot: /bin/sh missing (the ssh tweak installs dash): skipped')
         return
     install_file(uic, os.path.join(root, 'usr/local/bin/sweetuicache'))
-    write_file(os.path.join(root, FIRSTBOOT_SH), FIRSTBOOT_SCRIPT.replace('@APPREG@', '1' if appreg else '0'), 0o755)
+    if wallpaper:
+        wall = [find_sweetnet('ios18/' + n) for n in ('sweetposterset', 'sweeticonstyle', 'sweetopen', 'SweetRun.app')]
+        if not all(wall):
+            print('firstboot: sweetposterset/sweeticonstyle/sweetopen/SweetRun.app not built (tools/sweetnet/build.sh): '
+                  'default wallpaper and icon style skipped')
+            wallpaper = False
+        else:
+            for n, src in zip(('sweetposterset', 'sweeticonstyle', 'sweetopen'), wall):
+                install_file(src, os.path.join(root, 'usr/local/bin', n))
+            app = os.path.join(root, 'Applications/SweetRun.app')
+            if os.path.exists(app):
+                shutil.rmtree(app)
+            shutil.copytree(wall[3], app, symlinks=True)
+            for d, dirs, files in os.walk(app):
+                for n in dirs + files:
+                    os.lchown(os.path.join(d, n), 0, 0)
+            os.lchown(app, 0, 0)
+            print('firstboot: sweetposterset, sweeticonstyle, sweetopen, /Applications/SweetRun.app installed')
+    write_file(os.path.join(root, FIRSTBOOT_SH), FIRSTBOOT_SCRIPT.replace('@APPREG@', '1' if appreg else '0')
+               .replace('@WALL@', '1' if wallpaper else '0'), 0o755)
     add_job(root, FIRSTBOOT_LABEL, {
         'Label': FIRSTBOOT_LABEL, 'ProgramArguments': ['/bin/sh', '/' + FIRSTBOOT_SH],
         'RunAtLoad': True, 'UserName': 'root', 'StandardErrorPath': '/dev/console',
         'EnvironmentVariables': {'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'}})
     reg = os.path.join(root, REGISTER_LIST)
     n = len([l for l in open(reg).read().split('\n') if l]) if os.path.exists(reg) else 0
-    print('firstboot: job %s (%d apps to register, appreg %s, jailbreak post-install %s)' % (
-        FIRSTBOOT_LABEL, n, 'on' if appreg else 'off', 'if present' if jb else 'off'))
+    print('firstboot: job %s (%d apps to register, appreg %s, wallpaper %s, jailbreak post-install %s)' % (
+        FIRSTBOOT_LABEL, n, 'on' if appreg else 'off', 'on' if wallpaper else 'off', 'if present' if jb else 'off'))
 
 
 def jailbreak_userland(root, owners_out, force=False, prestaged=False):
@@ -782,7 +854,7 @@ def auto(root):
         bluetooth(root)
     if enabled('posterboard'):
         posterboard(root)
-    firstboot(root, appreg=enabled('appreg'), jb=enabled('jb'))
+    firstboot(root, appreg=enabled('appreg'), jb=enabled('jb'), wallpaper=enabled('wallpaper'))
 
 
 def main():

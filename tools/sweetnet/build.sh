@@ -43,3 +43,29 @@ if [ "${IOS18:-1}" = 1 ]; then
 	python3 -I "$pacstrip" --sign "$out18/sweetfp.dylib"
 	ls -l "$out18"
 fi
+
+# First-boot wallpaper/icon style and the mobile-domain runner (root_tweaks18.firstboot, iOS 18, arm64e + pacstrip)
+if [ "${IOS18:-1}" = 1 ]; then
+	out18=$out/ios18
+	pacstrip=$here/../renegade/pacstrip.py
+	b18() { # name source entitlements [extra clang args]
+		n=$1; src=$2; ents=$3; shift 3
+		xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -fobjc-arc -framework Foundation "$@" \
+			"$here/$src" -o "$out18/$n"
+		codesign -s - -f --entitlements "$here/$ents" "$out18/$n"
+		python3 -I "$pacstrip" --sign "$out18/$n"
+	}
+	b18 sweetposterset sweetposterset.m posterset.entitlements
+	b18 sweeticonstyle sweeticonstyle.m iconstyle.entitlements -framework UIKit
+	b18 sweetopen sweetopen.m uicache.entitlements
+	# SweetRun.app: runs /private/var/tmp/sweetrun.sh as mobile in the user's launchd domain (an app started by FrontBoard)
+	app=$out18/SweetRun.app
+	rm -rf "$app"; mkdir -p "$app"
+	cp "$here/sweetrun-app/Info.plist" "$app/Info.plist"
+	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -fobjc-arc -framework UIKit -framework Foundation \
+		"$here/sweetrun-app/sweetrun.m" -o "$app/SweetRun"
+	codesign -s - -f --entitlements "$here/sweetrun-app/run.entitlements" "$app"
+	python3 -I "$pacstrip" --sign "$app/SweetRun"
+	codesign -s - -f --entitlements "$here/sweetrun-app/run.entitlements" "$app"      # seal the bundle again
+	ls -l "$out18"
+fi

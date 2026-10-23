@@ -737,10 +737,11 @@ def main():
     for f_, what in (('appreg', 'first-boot LaunchServices registration of the staged apps (sweetuicache)'),
                      ('posterboard', 'sweetfp.dylib + the LC_LOAD_DYLIB in PosterBoard'),
                      ('bluetooth', 'bluetoothd env, BlueTool stub, hcitest'),
-                     ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)')):
+                     ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)'),
+                     ('wallpaper', 'default Gradient wallpaper and icon style at first boot')):
         ap.add_argument('--no-' + f_, action='store_true', help='opt out: ' + what + ' (same as RENEGADE_NO_' + f_.upper() + '=1)')
     a = ap.parse_args()
-    for f_ in ('appreg', 'posterboard', 'bluetooth', 'jb'):
+    for f_ in ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper'):
         if getattr(a, 'no_' + f_):
             os.environ['RENEGADE_NO_' + f_.upper()] = '1'
     os.makedirs(W, exist_ok=True)
