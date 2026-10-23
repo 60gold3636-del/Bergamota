@@ -12,6 +12,9 @@ No sudo. Stages (each one can be re-run on the same image; the image stays in --
   macho   pacstrip + ad-hoc codesign (entitlements kept) of every Mach-O, in parallel, hard links kept
   cache   tools/renegade/pacstrip_cache.py over the dyld shared cache (code sections, signature page hashes)
   tweaks  the iOS 16 first-boot tweaks (root_tweaks18.py = sweet-root-tweaks.py) + iOS 18 launchd bring-up jobs
+  jb      OFF by default (--stages ...,tweaks,jb,seal or RENEGADE_JB=1): the optional jailbreak userland, see
+          tools/renegade/jailbreak.py: /var/jb (Procursus rootless bootstrap), Sileo, the TrollStore payload and a
+          first-boot LaunchDaemon that registers the apps and runs trollstorehelper install-trollstore
   seal    unmount, hfsroot_owners.py (real owners/modes, the rest root:wheel), fsck_hfs, offline checks,
           img2simg --consume (the raw image is turned into the .simg, see tools/renegade/img2simg.py)
 Disk is tight: every stage checks `df` and stops below 5 GiB free.
@@ -185,6 +188,8 @@ def stage_copy(a, img, rootmnt, dmgs):
     """Per source: owners-on mount (owner map; root-only files are unreadable there), then a noowners mount for
     the copy (every file readable by the user). The cryptexes go in first, the OS volume on top."""
     need_free('copy stage')
+    if os.path.exists(JB_OWNERS):
+        os.unlink(JB_OWNERS)
     for k, v in dmgs.items():
         if not os.path.exists(v) and k not in (a.skip_sources or '').split(','):
             sys.exit(f'missing {k} dmg {v}: run tools/renegade/fetch-root.sh')
@@ -501,6 +506,19 @@ def stage_tweaks(a, root):
     log(f'{len(chowned)} owner overrides in {OWNER_EXTRA}')
 
 
+# --- stage: jb (optional) -------------------------------------------------------------------------------------------
+JB_OWNERS = os.path.join(W, 'owners-jb.tsv')
+
+
+def stage_jb(a, root):
+    need_free('jb stage')
+    import jailbreak
+    jailbreak.fetch()
+    jailbreak.stage_build()
+    n = jailbreak.image_stage(root, JB_OWNERS)
+    log(f'jailbreak userland: {n} paths staged into the image, owners in {JB_OWNERS}')
+
+
 def patch_mount_phase2(root):
     """`mount -P 2` (boot task mount-phase-2) ends, after the fstab entries of pass 2, in
     execv("/System/Library/Filesystems/apfs.fs/apfs_boot_util", "2") (mount+0x3a08: `cmp w22,#2; b.ne exit; bl apfs_boot_util`).
@@ -539,6 +557,8 @@ def stage_seal(a, img, rootmnt):
     table = load_map(os.path.join(W, 'owners.tsv'))
     if os.path.exists(OWNER_EXTRA):
         table.update(load_map(OWNER_EXTRA))
+    if os.path.exists(JB_OWNERS):                     # written by stage jb, removed by stage copy
+        table.update(load_map(JB_OWNERS))
     merged = os.path.join(W, 'owners-final.tsv')
     write_map(table, merged)
     run([sys.executable, '-I', os.path.join(HERE, 'hfsroot_owners.py'), img, '--map', merged, '--default-root'])
@@ -708,9 +728,12 @@ def main():
     a = ap.parse_args()
     os.makedirs(W, exist_ok=True)
     rootmnt = os.path.join(W, 'root')
+    if os.environ.get('RENEGADE_JB') == '1' and 'jb' not in a.stages.split(','):
+        st = a.stages.split(',')
+        a.stages = ','.join(st[:st.index('seal')] + ['jb'] + st[st.index('seal'):]) if 'seal' in st else a.stages + ',jb'
     stages = a.stages.split(',')
     dmgs = find_dmgs(a.ipsw_dir)
-    if 'copy' not in stages and stages[0] in ('macho', 'cache', 'tweaks') and not os.path.ismount(rootmnt):
+    if 'copy' not in stages and stages[0] in ('macho', 'cache', 'tweaks', 'jb') and not os.path.ismount(rootmnt):
         attach(a.out, rootmnt, readonly=False)
     for s in stages:
         t0 = time.time()
@@ -723,6 +746,8 @@ def main():
             stage_cache(a, rootmnt)
         elif s == 'tweaks':
             stage_tweaks(a, rootmnt)
+        elif s == 'jb':
+            stage_jb(a, rootmnt)
         elif s == 'seal':
             stage_seal(a, a.out, rootmnt)
         elif s == 'verify':
