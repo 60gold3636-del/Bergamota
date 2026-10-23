@@ -58,6 +58,7 @@ void gl_resolve_all(void) {
             char buf[128];
             snprintf(buf, sizeof buf, "%sARB", n);
             p = lookup(buf);
+            if (!p) { snprintf(buf, sizeof buf, "%sEXT", n); p = lookup(buf); }   // glVertexAttribI4i -> ...EXT
         }
         gl_tab[i] = p ? p : (void *)gl_unimpl;
     }

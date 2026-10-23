@@ -99,8 +99,7 @@ about 560 ms/frame** (softpipe is a reference rasteriser: usable for correctness
    CoreAnimation calls GL through it instead of the `gl*` exports, that structure must be reverse engineered from `GLEngine`/QuartzCore callers (next analysis step before injection).
 3. `attachImage:` takes a GL object name (`Q`): the shim guesses renderbuffer vs texture with `glIsTexture/glIsRenderbuffer`; the real semantics (e.g. mipmap level, MSAA) are unverified.
 4. ES2 contexts report GL_VERSION ES 3.1 (Mesa gives the highest); Apple reports 2.0 for ES2 contexts. `MESA_GLES_VERSION_OVERRIDE` could cap it per process.
-5. Not implemented (forward to a logging stub): Apple fence extension (`glGenFencesAPPLE`, `glSetFenceAPPLE`, ...), `glResolveMultisampleFramebufferAPPLE`, matrix-palette OES
-   (`glCurrentPaletteMatrixOES`, ...), `glFinishObjectAPPLE`/`glTestObjectAPPLE`. The exact list is printed with `EAGL_SHIM_DEBUG=1` ([phone] run pending, phone went offline).
+5. Not implemented (forward to a logging stub), computed statically against Mesa's glapi table (the on-phone `EAGL_SHIM_DEBUG=1` listing could not be run, the phone went offline again): 17 of 457, namely the Apple fence extension (`glGenFencesAPPLE`, `glSetFenceAPPLE`, `glTestFenceAPPLE`, `glFinishFenceAPPLE`, `glDeleteFencesAPPLE`, `glIsFenceAPPLE`), `glFinishObjectAPPLE`, `glTestObjectAPPLE`, `glResolveMultisampleFramebufferAPPLE`, `glGetFramebufferParameteriAPPLE` and the matrix-palette OES set (4). Note `GL_APPLE_fence` is one of the extensions QuartzCore probes (section below).
 6. Only 8-bit 4-byte IOSurfaces (BGRA/RGBA, plane 0) for `texImageIOSurface:`; no XR10/wide-colour formats, no YUV planes.
 7. `GLC*` dispatch-selection functions are no-ops (they swap the real GLEngine's function tables).
 8. Single-threaded softpipe; no `multiThreaded` fast path; `setBlockFence:onQueue:` finishes synchronously.
@@ -116,3 +115,42 @@ about 560 ms/frame** (softpipe is a reference rasteriser: usable for correctness
 2. Decode `EAGLMacroContext` use in QuartzCore 22H352, then inject the shim into a detached test process first, then backboardd (DYLD interpose of the framework path
    or a root-image replacement with `SHIM_INSTALL_NAME`).
 3. Confirm the unresolved-entry-point list on the phone and add the missing Apple extensions that apps use (fences).
+
+## How QuartzCore reaches GL (static analysis of 22H352, 2026-10-23)
+
+Method: `tools/renegade/dsctools` + a capstone scan of QuartzCore `__text` (addresses are unslid cache addresses; QuartzCore = 0x18470f000).
+
+1. **CoreAnimation does not call the `gl*` exports; it uses the macro context.** The only caller of `-[EAGLContext getMacroContextPrivate]` is at 0x1848f9728
+   (the OGL context constructor, 0x1848f968c). It stores the result at `this+0x840` and then calls `glGetString`-like functions as `(*(ctx+0x3b0))(*(ctx+0), name)`,
+   i.e. the CGL macro convention: **`EAGLMacroContext` == `struct _CGLContextObject { GLIContext rend; GLIFunctionDispatch disp; ... }`** (macOS `OpenGL/CGLContext.h`, `gliDispatch.h`):
+   `rend` at +0 is passed as the first argument of every call, function pointers start at +8 (slot i at 8+8*i), signature `fn(rend, args...)`.
+   Check: slot 117 = `get_string` in the public macOS header = offset 0x3b0, exactly what QuartzCore loads. It then probes `GL_APPLE_fence`, `GL_APPLE_texture_filter_cubic`,
+   `GL_APPLE_texture_ycbcr_*`, `GL_APPLE_texture_xr`, `GL_APPLE_tile_order_rot`, `GL_EXT_shader_framebuffer_fetch`, `GL_EXT_texture_filter_anisotropic`, `GL_EXT_texture_lod_bias`,
+   `GL_OES_standard_derivatives`, `GL_OES_texture_[half_]float[_linear]`, `GL_IMG_texture_compression_pvrtc`, `GL_KHR_texture_compression_astc_ldr` (strings at 0x184a6a0d7..) through the
+   EXTENSIONS string, and honours `CA_DISABLE_WORKAROUNDS`, `CA_MAX_TEXTURE_UNITS`, `CA_MAX_TEXTURE_SIZE`.
+2. **Slot map is only partly public.** A scan of all `ldr x8,[ctx,#off]; ldr x0,[ctx]; blr x8` sites finds 49 offsets. The low ones fit the public macOS order and are what a GLES
+   renderer needs first (bind_texture, clear, delete/gen_textures, disable/enable, draw_arrays, finish, get_integerv, get_string, pixel_storei, scissor, tex_parameteri/f, viewport,
+   active_texture, blend_equation: offsets 0x30..0xab8). Offsets above about 0xbd0 do **not** match the macOS names (e.g. `draw_elements_base_vertex` x28, `program_env_parameter4f_ARB` x10), and
+   no slot for `glTexImage2D`, `glUseProgram`, `glUniform*`, framebuffer calls shows up where the public order would put them: Apple's ES extension of the dispatch struct is ordered
+   differently (shader/uniform/FBO/VAO functions). **The ES half of the slot map must be decoded from the real GLEngine's table** (the function-pointer array it copies into `disp`),
+   or from the call-site argument shapes; it is not in any public header. The shim still returns a zeroed block (`getMacroContextPrivate`), so injected CA would crash on the first call.
+   Plan: generate `disp[]` thunks (`fn(rend, a...)` -> `glFoo(a...)`) from `gliDispatch.h` + `CGLMacro.h` for the public part and a decoded table for the rest.
+3. **`CA_ENABLE_OGL`:** the single reference (0x1848cf69c, in a CA::OGL object constructor) calls `getenv("CA_ENABLE_OGL")` once and **discards the result** (guard byte only). It does not gate GL
+   at that site; no other reference exists. Other switches found: `CA_NO_ACCEL`, `CA_ACCEL_BACKING`, `CA_DISABLE_RENDER`, `CA_PRINT_SHADERS`, `CA_FORCE_GENERIC_SHADERS`, `CA_EMPTY_SHADERS`.
+4. **Where the server creates its `EAGLContext` is not found.** QuartzCore has no selector reference to `initWithAPI*`/`sharegroup`, only `getMacroContextPrivate`, `attachImage:...`,
+   `texImageIOSurface:...invert:`, `setCurrentContext:`, `API`, `nativeWindow`, `presentRenderbuffer:atTime:`; the renderer-selection code at 0x1849d1140..0x1849d1400 logs
+   `Failed to initialize Metal or OpenGLES contexts!` and falls back to the software server. The context is probably created in another image (class refs go through the binding
+   tables) or by the public `CARenderer rendererWithEAGLContext:options:` path (`_initWithEAGLContext:options:` at 0x184abdec0 is the callee used by it).
+
+## Proposal: testing the shim under CoreAnimation without touching backboardd/SpringBoard
+
+* **Step 1 (safe, separate process):** a test tool that creates our `EAGLContext`, builds a small CALayer tree and drives `+[CARenderer rendererWithEAGLContext:options:]`
+  (`beginFrameAtTime:timeStamp:`, `addUpdateRect:`, `render`, `endFrame`) into an FBO backed by `attachImage:toCoreSurface:invertedRender:`. This exercises exactly `CA::OGL` through the macro
+  context (everything in finding 1) with no render server involved, writes only to its own IOSurface, and a crash only kills the tool. Needs QuartzCore in the process
+  (library load only) and the macro-context thunks from finding 2. Success criterion: the IOSurface contains the layer colours/image.
+* **Step 2 (still isolated):** a tiny app/daemon with a `CAEAGLLayer` in its own `CAContext` is not useful without the live render server, so skip it; instead run a second, private render
+  server only if needed (`CA_FORCE_LOCAL_SERVER` exists as a string in QuartzCore: a CA server inside the test process).
+* **Step 3 (only after 1-2):** inject into backboardd by a launchd job override, not by replacing files: a copy of the `backboardd` plist in `/Library/LaunchDaemons` (or the existing
+  job) with `EnvironmentVariables: DYLD_INSERT_LIBRARIES=/var/root/gpu-eagl/...` plus `DYLD_FRAMEWORK_PATH`; revert = delete the override file (and `launchctl bootout`/reboot). Fallback is
+  automatic in CA (Metal -> GLES -> software), so a failing GLES init should land on the software path, but a crash loop must be assumed possible: keep an SSH session and a
+  timed revert (`sleep 120; rm override; launchctl ...`) running before the first try. Do not do this until the on-device test of step 1 passes.
