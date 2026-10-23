@@ -45,7 +45,7 @@
 
 #define EAGL_DEBUG(...) do { if (g_debug) fprintf(stderr, "EAGL(shim): " __VA_ARGS__); } while (0)
 extern void gl_unimpl(void);
-static int g_dirty_track = 0;       // BGL_DIRTY=1 (marker word "dirty"): copy display-size attachments only when drawn into; default: copy every attachment at every flush
+static int g_dirty_track = 1;       // copy display-size attachments only when drawn into (default; BGL_SYNC_ALL=1 copies every attachment at every flush). Copying both double-buffered display textures every flush overwrote the idle surface with stale pixels: flicker and a missing wallpaper
 static int g_debug, g_debug_frames;   // EAGL_SHIM_DEBUG=1: log + PIPE statistics; =2 also per-frame luminance and thumbnails
 static volatile int g_target_attach;      // set once attachImage:<target> was used: the render server's convention (see texImageIOSurface)
 
@@ -421,14 +421,23 @@ static void eagl_install_hooks(void) {
             if (!strcmp(gl_names[i], "glFlush")) { mesa_glFlush = gl_tab[i]; gl_tab[i] = (void *)shim_glFlush; }
             if (!strcmp(gl_names[i], "glFinish")) { mesa_glFinish = gl_tab[i]; gl_tab[i] = (void *)shim_glFinish; }
         }
-        g_dirty_track = getenv("BGL_DIRTY") != NULL && !getenv("BGL_SYNC_ALL");
+        g_debug = getenv("EAGL_SHIM_DEBUG") != NULL; g_debug_frames = g_debug && !strcmp(getenv("EAGL_SHIM_DEBUG"), "2");
+        g_dirty_track = !getenv("BGL_SYNC_ALL");
         if (g_dirty_track) {
+            // every alias of an entry point is hooked (glBindFramebuffer / glBindFramebufferOES / ...: the render server's slots may use either spelling)
+            static const char *const sfx[] = { "", "OES", "EXT", "ARB", "APPLE", "ANGLE" };
             for (int i = 0; i < gl_nfuncs; i++)
-                for (unsigned k = 0; k < sizeof g_dirty_hooks / sizeof g_dirty_hooks[0]; k++)
-                    if (!strcmp(gl_names[i], g_dirty_hooks[k].name) && gl_tab[i] != (void *)gl_unimpl) { *g_dirty_hooks[k].orig = gl_tab[i]; gl_tab[i] = g_dirty_hooks[k].hook; }
+                for (unsigned k = 0; k < sizeof g_dirty_hooks / sizeof g_dirty_hooks[0]; k++) {
+                    size_t n = strlen(g_dirty_hooks[k].name);
+                    if (strncmp(gl_names[i], g_dirty_hooks[k].name, n) || gl_tab[i] == (void *)gl_unimpl) continue;
+                    BOOL ok = NO; for (unsigned q = 0; q < 6; q++) if (!strcmp(gl_names[i] + n, sfx[q])) ok = YES;
+                    if (!ok) continue;
+                    if (!*g_dirty_hooks[k].orig) *g_dirty_hooks[k].orig = gl_tab[i];
+                    if (g_debug) fprintf(stderr, "EAGL(shim): dirty-tracking hook on %s\n", gl_names[i]);
+                    gl_tab[i] = g_dirty_hooks[k].hook;
+                }
             for (unsigned k = 0; k < sizeof g_dirty_hooks / sizeof g_dirty_hooks[0]; k++) if (!*g_dirty_hooks[k].orig) g_dirty_track = 0;   // an entry point missing: cannot track reliably
         }
-        g_debug = getenv("EAGL_SHIM_DEBUG") != NULL; g_debug_frames = g_debug && !strcmp(getenv("EAGL_SHIM_DEBUG"), "2");
         if (g_debug) {                  // list the exported entry points Mesa could not provide
             int n = 0;
             for (int i = 0; i < gl_nfuncs; i++) if (gl_tab[i] == (void *)gl_unimpl) { fprintf(stderr, "EAGL(shim): unresolved %s\n", gl_names[i]); n++; }

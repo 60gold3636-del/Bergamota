@@ -78,7 +78,7 @@ static int boot_uuid(char *out, size_t n)
 /* The volatile marker holds "MODE UUID [debug]" (MODE soft|1) and is honoured only when UUID is the boot session UUID of THIS boot
  * (kern.bootsessionuuid): a marker left over from an earlier boot can never act, whatever the clock says (the first live test showed that
  * kern.boottime and file times are unreliable early in boot: the RTC is set only later). Returns 1 and the mode in val. */
-static int g_marker_debug, g_marker_nohook, g_marker_frames, g_marker_dirty;
+static int g_marker_debug, g_marker_nohook, g_marker_frames, g_marker_dirty, g_marker_syncall;
 static int marker_mode(char *val, size_t vlen)
 {
 	char line[256], uuid[64] = "", cur[64] = "";
@@ -98,7 +98,7 @@ static int marker_mode(char *val, size_t vlen)
 	dbg = strtok_r(NULL, " \r\n", &save);
 	if (!mode || !u)
 		return 0;
-	/* words after the uuid, any order: debug, frames (debug + per-frame luminance/thumbnails), nohook, dirty (copy only display buffers drawn into) */
+	/* words after the uuid, any order: debug, frames (debug + per-frame luminance/thumbnails), nohook, dirty (accepted, now the default; sync-all disables it) */
 	{
 		char *w = dbg;
 		int debug = 0;
@@ -107,13 +107,14 @@ static int marker_mode(char *val, size_t vlen)
 			else if (!strcmp(w, "debug")) debug = 1;
 			else if (!strcmp(w, "frames")) { debug = 1; g_marker_frames = 1; }
 			else if (!strcmp(w, "dirty")) g_marker_dirty = 1;
+			else if (!strcmp(w, "syncall")) g_marker_syncall = 1;
 			w = strtok_r(NULL, " \r\n", &save);
 		}
 		dbg = debug ? "debug" : NULL;
 	}
 	snprintf(uuid, sizeof uuid, "%s", u);
 	if (strcmp(uuid, cur) != 0) {   /* a marker of another boot grants nothing */
-		g_marker_nohook = g_marker_frames = g_marker_dirty = 0;
+		g_marker_nohook = g_marker_frames = g_marker_dirty = g_marker_syncall = 0;
 		return 0;
 	}
 	g_marker_debug = dbg && !strcmp(dbg, "debug");
@@ -204,7 +205,7 @@ int main(int argc, char **argv)
 			setenv("SWEET_GPU_DEBUG", "1", 1);
 			setenv("MESA_DEBUG", "1", 1);   /* GL errors and shader compile/link failures on stderr */
 		}
-		if (g_marker_dirty) setenv("BGL_DIRTY", "1", 1);
+		if (g_marker_syncall) setenv("BGL_SYNC_ALL", "1", 1);
 		if (stat(LOG_PATH, &st) == 0 && st.st_size > (1 << 20))
 			unlink(LOG_PATH);
 		int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
