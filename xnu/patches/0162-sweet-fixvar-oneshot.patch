@@ -1,0 +1,263 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -430,6 +430,24 @@
+ 		printf("SWEET LS: unlink %s -> %d\n", paths[i], error);
+ 	}
+ }
++
++/*
++ * SWEET: boot-arg sweetfixvar=1 repairs a /var that was turned from the symlink
++ * (-> private/var) into a real directory. See sweet_fixvar() in vfs_syscalls.c.
++ * One-shot: drop the boot-arg after.
++ */
++extern void sweet_fixvar(void);
++
++static void
++sweet_fixvar_once(void)
++{
++	uint32_t on = 0;
++
++	if (!PE_parse_boot_argn("sweetfixvar", &on, sizeof(on)) || on != 1) {
++		return;
++	}
++	sweet_fixvar();
++}
+ void (*unmountroot_pre_hook)(void);
+ #endif
+ void set_rootvnode(vnode_t);
+@@ -1073,6 +1091,7 @@
+ 	siginit(kernproc);
+ 
+ 	sweet_ls_reset();
++	sweet_fixvar_once();
+ 
+ 	bsd_init_kprintf("calling bsd_utaskbootstrap\n");
+ 	bsd_utaskbootstrap();
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -10298,7 +10298,225 @@
+ 		kfree_data(bufptr, bufsize);
+ 		kfree_type(struct direntry, entry64);
+ 		return error;
++	}
++}
++
++/*
++ * SWEET: one-shot repair of a root whose /var symlink (-> private/var) was replaced by a real
++ * directory (a bootstrap installer did that). Run from bsd_init under boot-arg sweetfixvar=1,
++ * after the root is mounted read-write and before launchd. Nothing is ever deleted except the
++ * (then empty) /var directory itself: every entry of /var is renamed into /private/var, under
++ * "<name>.fromvar" if that name is already taken. Any error stops the whole sequence.
++ */
++#define SWEET_FIXVAR_MAXNAMES   8
++#define SWEET_FIXVAR_NAMELEN    256
++#define SWEET_FIXVAR_BUFSIZE    8192
++
++static int
++sweet_fixvar_exists(const char *path, int *is_dir)
++{
++	vnode_t vp = NULLVP;
++	int error = vnode_lookup(path, VNODE_LOOKUP_NOFOLLOW, &vp, vfs_context_kernel());
++	if (error == 0) {
++		*is_dir = (vnode_vtype(vp) == VDIR);
++		vnode_put(vp);
++	}
++	return error;
++}
++
++void
++sweet_fixvar(void)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	char (*names)[SWEET_FIXVAR_NAMELEN] = NULL;
++	char *buf = NULL;
++	char *from = NULL, *to = NULL;
++	int nnames = 0, error, isdir = 0, changed = 0;
++	enum vtype vt;
++
++	printf("SWEET FIXVAR: start\n");
++
++	/* is /var a directory, or already the symlink? */
++	error = vnode_lookup("/var", VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
++	if (error) {
++		printf("SWEET FIXVAR: lookup /var failed: %d; stop\n", error);
++		return;
++	}
++	vt = vnode_vtype(vp);
++	if (vt == VLNK) {
++		vnode_put(vp);
++		printf("SWEET FIXVAR: /var is already a symlink; nothing to do\n");
++		return;
++	}
++	if (vt != VDIR) {
++		vnode_put(vp);
++		printf("SWEET FIXVAR: /var is neither a symlink nor a directory (vtype %d); stop\n", (int)vt);
++		return;
++	}
++	if (vnode_mount(vp)->mnt_flag & MNT_RDONLY) {
++		vnode_put(vp);
++		printf("SWEET FIXVAR: root is mounted read-only (need rootrw=1); stop\n");
++		return;
++	}
++	vnode_put(vp);
++	vp = NULLVP;
++	printf("SWEET FIXVAR: /var is a real directory; repairing\n");
++
++	/* /private/var must be a real directory (the data) */
++	error = sweet_fixvar_exists("/private/var", &isdir);
++	if (error || !isdir) {
++		printf("SWEET FIXVAR: /private/var missing or not a directory (error %d); stop\n", error);
++		return;
++	}
++
++	names = kalloc_data(SWEET_FIXVAR_MAXNAMES * SWEET_FIXVAR_NAMELEN, Z_WAITOK | Z_ZERO);
++	buf = kalloc_data(SWEET_FIXVAR_BUFSIZE, Z_WAITOK | Z_ZERO);
++	from = kalloc_data(MAXPATHLEN, Z_WAITOK | Z_ZERO);
++	to = kalloc_data(MAXPATHLEN, Z_WAITOK | Z_ZERO);
++	if (names == NULL || buf == NULL || from == NULL || to == NULL) {
++		printf("SWEET FIXVAR: out of memory; stop\n");
++		goto out;
++	}
++
++	/* 1. enumerate /var (names are collected first, so renames cannot disturb the walk) */
++	error = vnode_open("/var", FREAD, 0, VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
++	if (error) {
++		printf("SWEET FIXVAR: open /var failed: %d; stop\n", error);
++		vp = NULLVP;
++		goto out;
++	}
++	{
++		uio_t auio = uio_create(1, 0, UIO_SYSSPACE, UIO_READ);
++		int eofflag = 0, numdirent = 0;
++		struct direntry *dep;
++		char *end;
++
++		if (auio == NULL) {
++			printf("SWEET FIXVAR: uio_create failed; stop\n");
++			goto out;
++		}
++		uio_addiov(auio, CAST_USER_ADDR_T(buf), SWEET_FIXVAR_BUFSIZE);
++		error = vnode_readdir64(vp, auio, VNODE_READDIR_EXTENDED, &eofflag, &numdirent, ctx);
++		end = buf + (SWEET_FIXVAR_BUFSIZE - uio_resid(auio));
++		uio_free(auio);
++		if (error) {
++			printf("SWEET FIXVAR: readdir /var failed: %d; stop\n", error);
++			goto out;
++		}
++		if (!eofflag) {
++			printf("SWEET FIXVAR: /var has more entries than expected (no EOF in first read); stop\n");
++			goto out;
++		}
++		for (dep = (struct direntry *)buf; (char *)dep < end;
++		    dep = (struct direntry *)((char *)dep + dep->d_reclen)) {
++			if ((char *)dep + offsetof(struct direntry, d_name) > end || dep->d_reclen == 0 ||
++			    (char *)dep + dep->d_reclen > end) {
++				printf("SWEET FIXVAR: malformed directory buffer; stop\n");
++				goto out;
++			}
++			if (dep->d_ino == 0) {
++				continue;
++			}
++			if ((dep->d_namlen == 1 && dep->d_name[0] == '.') ||
++			    (dep->d_namlen == 2 && dep->d_name[0] == '.' && dep->d_name[1] == '.')) {
++				continue;
++			}
++			if (dep->d_namlen == 0 || dep->d_namlen > 200 || nnames >= SWEET_FIXVAR_MAXNAMES) {
++				printf("SWEET FIXVAR: unexpected /var entry (namlen %d, already %d names); stop\n",
++				    (int)dep->d_namlen, nnames);
++				goto out;
++			}
++			strlcpy(names[nnames], dep->d_name, SWEET_FIXVAR_NAMELEN);
++			printf("SWEET FIXVAR: /var entry %d: %s (type %d)\n", nnames, names[nnames], (int)dep->d_type);
++			nnames++;
++		}
++	}
++	vnode_close(vp, FREAD, ctx);
++	vp = NULLVP;
++	printf("SWEET FIXVAR: %d entries to move\n", nnames);
++
++	/* 2. move every entry into /private/var, never overwriting */
++	for (int i = 0; i < nnames; i++) {
++		snprintf(from, MAXPATHLEN, "/var/%s", names[i]);
++		snprintf(to, MAXPATHLEN, "/private/var/%s", names[i]);
++		error = sweet_fixvar_exists(to, &isdir);
++		if (error == 0) {
++			snprintf(to, MAXPATHLEN, "/private/var/%s.fromvar", names[i]);
++			printf("SWEET FIXVAR: target exists, using %s\n", to);
++			error = sweet_fixvar_exists(to, &isdir);
++			if (error == 0) {
++				printf("SWEET FIXVAR: %s exists too; stop\n", to);
++				goto out;
++			}
++		}
++		if (error != ENOENT) {
++			printf("SWEET FIXVAR: lookup of %s failed: %d; stop\n", to, error);
++			goto out;
++		}
++		error = renameat_internal(ctx, AT_FDCWD, CAST_USER_ADDR_T(from), AT_FDCWD,
++		    CAST_USER_ADDR_T(to), UIO_SYSSPACE, 0);
++		printf("SWEET FIXVAR: rename %s -> %s: %d\n", from, to, error);
++		if (error) {
++			goto out;
++		}
++		changed = 1;
++	}
++
++	/* 3. remove the now-empty directory (fails with ENOTEMPTY if anything is left) */
++	error = rmdirat_internal(ctx, AT_FDCWD, CAST_USER_ADDR_T("/var"), UIO_SYSSPACE, 0);
++	printf("SWEET FIXVAR: rmdir /var: %d\n", error);
++	if (error) {
++		goto out;
+ 	}
++
++	/* 4. /var -> private/var */
++	error = symlinkat_internal(ctx, CAST_USER_ADDR_T("private/var"), AT_FDCWD,
++	    CAST_USER_ADDR_T("/var"), UIO_SYSSPACE);
++	printf("SWEET FIXVAR: symlink /var -> private/var: %d\n", error);
++	if (error) {
++		goto out;
++	}
++
++	/* 5. owner root:admin (0:80) */
++	error = vnode_lookup("/var", VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
++	if (error) {
++		printf("SWEET FIXVAR: lookup of new /var failed: %d\n", error);
++		vp = NULLVP;
++	} else {
++		struct vnode_attr va;
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_uid, 0);
++		VATTR_SET(&va, va_gid, 80);
++		error = vnode_setattr(vp, &va, ctx);
++		printf("SWEET FIXVAR: chown /var 0:80: %d\n", error);
++		vnode_put(vp);
++		vp = NULLVP;
++	}
++
++	printf("SWEET FIXVAR: done; /var is now a symlink (drop sweetfixvar=1 from the boot-args)\n");
++
++out:
++	/* flush the volume if anything was changed (also after a partial run) */
++	if (changed) {
++		error = VFS_SYNC(rootvnode->v_mount, MNT_WAIT, ctx);
++		printf("SWEET FIXVAR: sync root: %d\n", error);
++	}
++	if (vp != NULLVP) {
++		vnode_close(vp, FREAD, ctx);
++	}
++	if (names) {
++		kfree_data(names, SWEET_FIXVAR_MAXNAMES * SWEET_FIXVAR_NAMELEN);
++	}
++	if (buf) {
++		kfree_data(buf, SWEET_FIXVAR_BUFSIZE);
++	}
++	if (from) {
++		kfree_data(from, MAXPATHLEN);
++	}
++	if (to) {
++		kfree_data(to, MAXPATHLEN);
++	}
+ }
+ 
+ #define GETDIRENTRIES_MAXBUFSIZE        (128 * 1024 * 1024U)
