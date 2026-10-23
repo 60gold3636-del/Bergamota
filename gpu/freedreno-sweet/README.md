@@ -1,6 +1,6 @@
 # freedreno on SweetAdreno630 (winsys for the Heartwood kernel ABI)
 
-Status: `sweet_drm.c` compiles (arm64e, no warnings); **never run, never linked into a Mesa**. Kernel side: `docs/GPU_KERNEL.md`.
+Status: `sweet_drm.c` compiles (arm64e) and is **linked into a Mesa 25.0.7 freedreno build** (see `docs/GPU_EAGL.md`, phase E); never run against the GPU yet. Kernel side: `docs/GPU_KERNEL.md`.
 
 ## Approach: a libdrm stand-in, no Mesa source change
 

@@ -130,6 +130,9 @@ sel_size(uint32_t sel)
 	case SWEET_GPU_SEL_GEM_MADVISE: return sizeof(struct sweet_msm_gem_madvise);
 	case SWEET_GPU_SEL_SUBMITQUEUE_NEW: return sizeof(struct sweet_msm_submitqueue);
 	case SWEET_GPU_SEL_SUBMITQUEUE_CLOSE: return sizeof(uint32_t);
+	case SWEET_GPU_SEL_INFO: return sizeof(struct sweet_gpu_info);
+	case SWEET_GPU_SEL_SURFACE_BO: return sizeof(struct sweet_gpu_surface_bo);
+	case SWEET_GPU_SEL_BO_SYNC: return sizeof(struct sweet_gpu_bo_sync);
 	default: return 0;
 	}
 }
@@ -166,6 +169,10 @@ sweet_call(uint32_t sel, void *data, size_t size)
 	}
 	memset(in, 0, sizeof(in));
 	memcpy(in, data, size < want ? size : want);
+	if (sel == SWEET_GPU_SEL_GEM_SUBMIT) {
+		/* msm keeps the pipe id (MSM_PIPE_3D0 = 0x10) in the low bits of submit.flags; this kernel wants only NO_IMPLICIT there */
+		((struct sweet_msm_gem_submit *)in)->flags &= ~0xffffu;
+	}
 	if (sel == SWEET_GPU_SEL_WAIT_FENCE) {
 		rel_timeout(&((struct sweet_msm_wait_fence *)in)->timeout);
 	} else if (sel == SWEET_GPU_SEL_GEM_CPU_PREP) {
@@ -236,7 +243,10 @@ drmGetVersion(int fd)
 		return NULL;
 	}
 	v->version_major = 1;
-	v->version_minor = 3;   /* FD_VERSION_SUBMIT_QUEUES/GMEM_BASE/BO_IOVA; < SOFTPIN on purpose (see above) */
+	/* 1.4 = FD_VERSION_SOFTPIN. Mesa 25.0.7's legacy (< 1.4) ringbuffer lacks attach_bo (NULL call in fd_batch_create, found on the phone), so the
+	 * "sp" submit/ringbuffer path is the only one that works; gallium freedreno still takes the iova of every BO from GEM_INFO(GET_IOVA)
+	 * (kernel-assigned) and passes it as `presumed`, which the kernel ignores. No relocations are emitted in this mode. */
+	v->version_minor = 4;
 	v->name = strdup("msm");
 	v->name_len = 3;
 	v->date = strdup("20261023");
@@ -297,9 +307,22 @@ EXPORT int drmSyncobjCreate(int fd, uint32_t flags, uint32_t *handle) { (void)fd
 EXPORT int drmSyncobjDestroy(int fd, uint32_t handle) { (void)fd; (void)handle; return -ENOSYS; }
 EXPORT int drmSyncobjWait(int fd, uint32_t *h, unsigned n, int64_t t, unsigned f, uint32_t *first) { (void)fd; (void)h; (void)n; (void)t; (void)f; (void)first; return -ENOSYS; }
 EXPORT int drmSyncobjSignal(int fd, const uint32_t *h, uint32_t n) { (void)fd; (void)h; (void)n; return -ENOSYS; }
+EXPORT int drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd) { (void)fd; (void)handle; (void)sync_file_fd; return -ENOSYS; }
+EXPORT int drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd) { (void)fd; (void)handle; (void)sync_file_fd; return -ENOSYS; }
+EXPORT int drmSyncobjFDToHandle(int fd, int obj_fd, uint32_t *handle) { (void)fd; (void)obj_fd; (void)handle; return -ENOSYS; }
 EXPORT int drmSyncobjReset(int fd, const uint32_t *h, uint32_t n) { (void)fd; (void)h; (void)n; return -ENOSYS; }
 
 /* ---- mmap of a BO: offset = BO handle (GEM_INFO GET_OFFSET) ---- */
+
+static void *sweet_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off);
+static int sweet_munmap(void *addr, size_t len);
+
+/* Direct entry points: the Mesa patch (freedreno_bo.c) calls these instead of relying on dyld interposing. */
+EXPORT void *
+sweet_drm_mmap(int fd, size_t len, uint64_t off)
+{
+	return sweet_mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)off);
+}
 
 static void *
 sweet_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)
@@ -350,6 +373,36 @@ sweet_munmap(void *addr, size_t len)
 		return IOConnectUnmapMemory64(g_conn, handle, mach_task_self(), (mach_vm_address_t)(uintptr_t)addr) == KERN_SUCCESS ? 0 : -1;
 	}
 	return munmap(addr, len);
+}
+
+EXPORT int
+sweet_drm_munmap(void *addr, size_t len)
+{
+	return sweet_munmap(addr, len);
+}
+
+/* Heartwood additions (not msm): IOSurface memory as a BO, cache maintenance, device info. */
+EXPORT int
+sweet_drm_surface_bo(int fd, struct sweet_gpu_surface_bo *io)
+{
+	(void)fd;
+	return sweet_call(SWEET_GPU_SEL_SURFACE_BO, io, sizeof(*io));
+}
+
+EXPORT int
+sweet_drm_bo_sync(int fd, uint32_t handle, uint64_t offset, uint64_t size)
+{
+	struct sweet_gpu_bo_sync a = { .handle = handle, .offset = offset, .size = size };
+
+	(void)fd;
+	return sweet_call(SWEET_GPU_SEL_BO_SYNC, &a, sizeof(a));
+}
+
+EXPORT int
+sweet_drm_info(int fd, struct sweet_gpu_info *out)
+{
+	(void)fd;
+	return sweet_call(SWEET_GPU_SEL_INFO, out, sizeof(*out));
 }
 
 struct interpose_tuple { const void *replacement, *replacee; };
