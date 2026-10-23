@@ -162,7 +162,12 @@ static BOOL mapping_writable(const void *p, size_t len) {
         mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
         mach_port_t obj;
         if (vm_region_64(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) return NO;
-        if (addr > cur || !(info.protection & VM_PROT_WRITE)) return NO;
+        if (addr > cur) return NO;
+        if (!(info.protection & VM_PROT_WRITE)) {
+            // read-only now, but the mapping may allow write (max protection): raise it. Client-memory surfaces of other processes (the Control
+            // Center modules' render targets) arrive this way; skipping their sync left them black.
+            if (!(info.max_protection & VM_PROT_WRITE) || vm_protect(mach_task_self(), addr > cur ? addr : cur, size - (cur - addr), FALSE, info.protection | VM_PROT_WRITE) != KERN_SUCCESS) return NO;
+        }
         cur = addr + size;
     }
     return YES;
@@ -391,7 +396,7 @@ static void update_cur_target(EAGLContext *c) {
     glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
     if (type != GL_TEXTURE && type != GL_RENDERBUFFER) return;
     for (int i = 0; i < p->natt; i++) if ((GLint)p->att[i].name == name && att_is_tex(&p->att[i]) == (type == GL_TEXTURE)) { p->cur_att = i; break; }
-    if (g_debug) { static int n; if (n++ < 60) fprintf(stderr, "EAGL(shim): FBO %d colour0 type 0x%x name %d -> attachment %d (of %d)\n", fb, type, name, p->cur_att, p->natt); }
+    if (g_debug) { static int n; if (n++ < 60) fprintf(stderr, "EAGL(shim): [ctx %p] FBO %d colour0 type 0x%x name %d -> attachment %d (of %d)\n", c, fb, type, name, p->cur_att, p->natt); }
 }
 static inline void mark_cur_dirty(void) { EAGLContext *c = cur_ctx(); if (c && c->_private->cur_att >= 0 && c->_private->cur_att < c->_private->natt) { c->_private->att[c->_private->cur_att].dirty = 1; g_mark_hit++; } else g_mark_miss++; g_draw_seen++; }
 static void (*o_DrawArrays)(GLenum, GLint, GLsizei);
@@ -428,6 +433,11 @@ static void (*o_CopyTexSubImage2D)(GLenum, GLint, GLint, GLint, GLint, GLint, GL
 static void h_CopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h) { o_CopyTexSubImage2D(a, b, c, d, e, f, g, h); mark_bound_texture_dirty(); }
 static void (*o_TexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
 static void h_TexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const void *i) { o_TexSubImage2D(a, b, c, d, e, f, g, h, i); mark_bound_texture_dirty(); }
+static void (*o_DeleteTextures)(GLsizei, const GLuint *);
+static void h_DeleteTextures(GLsizei n, const GLuint *t) {
+    if (g_debug) { EAGLContext *c = cur_ctx(); if (c) for (GLsizei i = 0; i < n; i++) for (int k = 0; k < c->_private->natt; k++) if (c->_private->att[k].name == t[i] && att_is_tex(&c->_private->att[k])) fprintf(stderr, "EAGL(shim): [ctx %p] glDeleteTextures(%u) deletes a display attachment (surface %u)\n", c, t[i], IOSurfaceGetID(c->_private->att[k].surf)); }
+    o_DeleteTextures(n, t);
+}
 static void (*o_BindFramebuffer)(GLenum, GLuint);
 static void h_BindFramebuffer(GLenum t, GLuint f) { o_BindFramebuffer(t, f); EAGLContext *c = cur_ctx(); if (c) update_cur_target(c); }
 static void (*o_FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
@@ -443,6 +453,7 @@ static const struct { const char *name; void **orig; void *hook; } g_dirty_hooks
     { "glClearBufferiv", (void **)&o_ClearBufferiv, h_ClearBufferiv }, { "glClearBufferuiv", (void **)&o_ClearBufferuiv, h_ClearBufferuiv }, { "glClearBufferfi", (void **)&o_ClearBufferfi, h_ClearBufferfi },
     { "glBlitFramebuffer", (void **)&o_BlitFramebuffer, h_BlitFramebuffer }, { "glCopyTexImage2D", (void **)&o_CopyTexImage2D, h_CopyTexImage2D },
     { "glCopyTexSubImage2D", (void **)&o_CopyTexSubImage2D, h_CopyTexSubImage2D }, { "glTexSubImage2D", (void **)&o_TexSubImage2D, h_TexSubImage2D },
+    { "glDeleteTextures", (void **)&o_DeleteTextures, h_DeleteTextures },
     { "glBindFramebuffer", (void **)&o_BindFramebuffer, h_BindFramebuffer }, { "glFramebufferTexture2D", (void **)&o_FramebufferTexture2D, h_FramebufferTexture2D },
     { "glFramebufferRenderbuffer", (void **)&o_FramebufferRenderbuffer, h_FramebufferRenderbuffer }, { "glDeleteFramebuffers", (void **)&o_DeleteFramebuffers, h_DeleteFramebuffers },
 };
@@ -531,6 +542,7 @@ static void eagl_install_hooks(void) {
         if (p->osm && g->nlive < 64) g->live[g->nlive++] = p->osm;
         pthread_mutex_unlock(&g->lock);
         if (!p->osm) { EAGL_DEBUG("OSMesaCreateContextAttribs failed (api %d)\n", (int)api); [self release]; return nil; }
+        EAGL_DEBUG("context %p created api %d sharegroup %p osm %p shared-with %p\n", self, (int)api, p->sg, p->osm, share);
         p->macro = macro_ctx_new(p);   // rend = our private block; the slots ignore it (Mesa uses the thread's current context)
     }
     return self;
@@ -538,6 +550,7 @@ static void eagl_install_hooks(void) {
 
 - (void)dealloc {
     struct _EAGLContextPrivate *p = _private;
+    EAGL_DEBUG("context %p dealloc (%d attachments, osm %p)\n", self, p ? p->natt : -1, p ? p->osm : NULL);
     if (p) {
         if (cur_ctx() == self) [EAGLContext setCurrentContext:nil];
         for (int i = 0; i < p->nbinds; i++) {
@@ -725,7 +738,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
         p->att[j] = p->att[--p->natt];
     }
     update_cur_target(self);
-    EAGL_DEBUG("attachImage %lu -> %s %u, IOSurface %u (%zux%zu) inverted=%d\n", (unsigned long)image, kind == 2 ? "renderbuffer" : kind == 1 ? "texture" : "object", name,
+    EAGL_DEBUG("[ctx %p] attachImage %lu -> %s %u, IOSurface %u (%zux%zu) inverted=%d\n", self, (unsigned long)image, kind == 2 ? "renderbuffer" : kind == 1 ? "texture" : "object", name,
                IOSurfaceGetID(surface), IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), inverted);
     return YES;
 }
