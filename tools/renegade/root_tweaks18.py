@@ -90,12 +90,14 @@ def launchd(root):
 
 BT_LABEL = 'com.apple.bluetoothd'
 # H4BC over the POSIX driver on the plain kernel control (no Skywalk channel), at the 3 Mbaud the
-# kernel left the controller at. No BT_DEVICE_ADDRESS: bluetoothd 16.7 sscanf()s it and then zeroes
-# the result (main+0x238), exiting with "Not a valid MAC address (all 00s)" / "No bluetooth on this
-# device"; without it, it reads the ADT /arm-io/bluetooth local-mac-address (tools/mkadt.py BT_MAC).
+# kernel left the controller at. No BT_DEVICE_ADDRESS: bluetoothd (16.7 and 18.7.8 alike) sscanf()s it
+# and then zeroes the result (start+0x274 / +0x278 in 18.7.8: STR WZR / STRH WZR right after the sscanf),
+# exiting with "Not a valid MAC address (all 00s)" / "No bluetooth on this device"; without it, it reads
+# the ADT /arm-io/bluetooth local-mac-address (tools/mkadt.py BT_MAC, IOServiceNameMatching "bluetooth").
 BT_ENV = {'BT_HCI_TRANSPORT': 'H4BC:POSIX:com.apple.uart.bluetooth,3000000'}
 BT_ENV_REMOVE = ('BT_DEVICE_ADDRESS',)
-BLUETOOL_STUB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'research', 'sweetnet', 'bluetool-stub')
+BLUETOOL_STUB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'research', 'sweetnet', 'bluetool-stub')
+HCITEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'research', 'sweetnet', 'hcitest')
 
 
 def bluetoothd_env(plist):
@@ -137,6 +139,13 @@ def bluetooth(root):
     os.chown(dst, 0, 0)
     os.chmod(dst, 0o755)
     print('bluetooth: /usr/sbin/BlueTool is the stub')
+    if os.path.exists(HCITEST):
+        h = os.path.join(root, 'usr/local/bin/hcitest')
+        os.makedirs(os.path.dirname(h), exist_ok=True)
+        shutil.copy2(HCITEST, h)
+        os.chown(h, 0, 0)
+        os.chmod(h, 0o755)
+        print('bluetooth: /usr/local/bin/hcitest installed')
 
 
 def containers(root):

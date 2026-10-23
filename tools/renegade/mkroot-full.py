@@ -414,13 +414,15 @@ def stage_tweaks(a, root):
     rt.SSH_OUT = os.path.join(MAIN_CHECKOUT, 'research/ssh-build/out')
     rt.NETCFG = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetnetcfg')
     rt.REBOOT_TOOL = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetreboot')
+    rt.BLUETOOL_STUB = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/bluetool-stub')
+    rt.HCITEST = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/hcitest')
     chowned = {}
 
     def fake_chown(path, uid, gid, **kw):          # no sudo: owners are written into the HFS catalog at seal time
         chowned[os.path.abspath(path)] = (uid, gid)
     rt.os.chown = fake_chown                       # rt.os is the os module: only this process is affected
     try:
-        log('--- launchd.plist (PanicOnCrash, CommCenter), containers, usbnet, netcfg, sweetreboot, ssh')
+        log('--- launchd.plist (PanicOnCrash, CommCenter), containers, usbnet, netcfg, sweetreboot, ssh, bluetooth')
         rt.launchd(root)
         if os.environ.get('SWEET_QUIET') == '1':       # root_tweaks18.quiet(): crash-looping daemons off/throttled
             rt.quiet(root)
@@ -430,6 +432,7 @@ def stage_tweaks(a, root):
         rt.netcfg(root)
         rt.sweetreboot(root)
         rt.ssh(root)
+        rt.bluetooth(root)          # BT_HCI_TRANSPORT for bluetoothd, BlueTool stub, hcitest (NOTES.md, Bluetooth iOS 18)
         rt.audio(root)
         rt.merge_pref(root, 'com.apple.migration', {
             'LastSystemVersion': rt.BUILD, 'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': rt.BUILD}})
