@@ -31,6 +31,12 @@ Symbolication needs no raw image: `tools/ios18/hfsx.py SIMG ls|cat|get|dsc` read
 - 0150: MCM reaches usermanagerd (pid97 0x110b seqno 27). backboardd holds send rights to three launchd-owned ports (0x3e03, 0x16303 with 6 queued each, 0x41517 with 1), seqno 0, knote 0. launchd's receive rights of a job that is not running (crash-loop/throttle: lsd) are not watched, so requests queue; knote 0 can also mean the knote sits on a port set (ip_in_pset) rather than the port.
 - 0151-sweet-sample-launchd-ports.patch (compile-checked, after 0150): per receive right adds `pset`, `sls` (ip_sync_link_state) and the first queued message's id/size; for a sampled `launchd` it lists only ports with queued messages or in a pset. Boot with sweetsample=...,launchd.
 
+### 2026-10-22 0151 result, 0152 launchd kevent/spawn tracer
+
+- 0151: launchd[1] holds ~45 service-port receive rights with 1-6 queued 'w00t' XPC messages each, seqno 0, pset0, knote 0: no demand watch on any of them (5 is the default qlimit, so queues are full and clients block/fail).
+- Static look at launchd 22H352: all mach_port_* calls go through one wrapper cluster at 0x10000b6xx-0x10000b8xx (mach_port_construct, assert_attributes flavor 8, set_attributes, request_notification); dispatch_source_create has 6 callers (timer/signal/proc/vnode-like, not obviously MACH_RECV); dispatch_mach_* are imported but no direct bl call site in __text. Watches are therefore probably set up inside libdispatch/libxpc, i.e. kevent_qos/kevent_id EVFILT_MACHPORT.
+- 0152-sweet-launchd-kevent-spawn-trace.patch (compile-checked, after 0144): for pid 1 logs every kevent/kevent64/kevent_qos/kevent_id change item with filter EVFILT_MACHPORT ("SWEET KQ launchd ...", up to 400 lines, flags/fflags/qos/ext) and every failing posix_spawn with path and psa_flags ("SWEET SPAWN").
+
 ### >>> ios-beryllium: iOS on the Poco F1 (beryllium, SDM845) - read first <<<
 
 This repo is `ry-diffusion/ios-beryllium` (fork of dipa-studio/ios-sweet, remote `upstream`); work on `main`, CI (`xnu.yml`) runs on push. **Commits here carry NO `Co-Authored-By: dipa-studio` trailer**: the trailer instructions further down in this file are upstream sweet's rule for their own repo; the Poco F1 work is not theirs (ios-sweet is credited in README.md). Commits 0082-0097 wrongly carried it (2026-10-19). Kernel patches 0001-0081 are upstream sweet; 0082+ add the Poco F1. One kernel serves both phones: drivers pick the board from the ADT root compatible `xiaomi,beryllium` (`bsd/dev/sweet_board.h`).
