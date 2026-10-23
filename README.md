@@ -70,6 +70,18 @@ brew install --cask android-platform-tools
 brew install aarch64-elf-gcc dtc blacktop/tap/ipsw
 ```
 
+**0. The stock device tree.** Enxerto boots with your phone's own Qualcomm device tree (DTB). On the Poco F1 the ROM's `boot.img` is header v1. Its 21 DTBs are not in a separate section: they are appended to the gzipped kernel (`Image.gz-dtb`), so generic unpackers only give you `kernel`. `tools/extract-dtb.py` gunzips the kernel, splits off the DTBs and picks the one ABL would use:
+
+```sh
+# with the phone in OrangeFox/TWRP (adb root), save the stock boot image and the running device tree
+adb pull /dev/block/by-name/boot backup/boot.img
+adb pull /sys/firmware/fdt dtb/beryllium/live.dtb
+python3 tools/extract-dtb.py backup/boot.img dtb/beryllium --live dtb/beryllium/live.dtb
+# -> dtb/beryllium/rom-0..20.dtb and dtb/beryllium/dtb = "Beryllium MP v2.1" (msm-id 0x141 0x20001, board-id 0x45 0)
+```
+
+Without `--live`, it lists every blob (model, `qcom,msm-id`, `qcom,board-id`) and you choose with `--pick N`. `dtb/` and `backup/` are git-ignored, because they hold your phone's serial and calibration data. Enxerto's `build.sh` reads `dtb/beryllium/dtb`, or takes the path from `DTB=`.
+
 **1. Heartwood.** The kernel builds on GitHub's macOS runners:
 
 ```sh
@@ -120,6 +132,7 @@ It does this for every Mach-O in the root and for all of the dyld shared cache. 
 | `enxerto/` | Enxerto, the bare-metal bootloader (C + asm): loader, inflate, UFS, USB/DWC3, fastboot, PMIC, boot UI |
 | `xnu/patches-11215/` | Heartwood, the XNU patch series (xnu-11215), applied in order by `.github/workflows/xnu.yml`; `xnu/patches/` is the older xnu-8796 series |
 | `tools/renegade/` | Renegade: `pacstrip*`, `fips_rehmac`, root build, HFS+ and sparse-image tools, `dsctools` (shared-cache symbolication) |
+| `tools/extract-dtb.py` | Extracts the stock DTBs from a boot.img (also the Poco F1's appended Image.gz-dtb) and picks yours |
 | `tools/mkadt.py`, `mkpayload.py` | Apple Device Tree generator; kernel + ADT + boot-args payload packer |
 | `tools/sweetnet/` | Small on-device tools (`sweetps`, `sweetprefs`, `sweetuicache`, …) |
 | `tools/assets/`, `mk*art.py`, `mkbootlogo.py`, `mksplash.py` | Bergamota artwork for Enxerto and the ABL splash (`logo` partition) |
