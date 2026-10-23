@@ -463,10 +463,10 @@ index 25985dd..f7d01b1 100644
      */
 diff --git a/src/gallium/targets/osmesa/sweet_hw.c b/src/gallium/targets/osmesa/sweet_hw.c
 new file mode 100644
-index 0000000..da3f289
+index 0000000..3e7326f
 --- /dev/null
 +++ b/src/gallium/targets/osmesa/sweet_hw.c
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,344 @@
 +/*
 + * SPDX-License-Identifier: MIT
 + * Bergamota: hardware (freedreno / Adreno 630) pipe_screen for the OSMesa target, over the libdrm stand-in
@@ -749,7 +749,13 @@ index 0000000..da3f289
 +      memset(&sb, 0, sizeof(sb));
 +      sb.surface_id = surface_id;
 +      sb.flags = SWEET_SBO_IN_WRITABLE_ALIAS | SWEET_SBO_IN_SYNC;
++      struct sweet_gpu_surface_bo dsc;   /* describe first, only to log the geometry the kernel refuses */
++      memset(&dsc, 0, sizeof(dsc));
++      dsc.surface_id = surface_id; dsc.handle = 0xffffffffu;
++      int dr = sweet_drm_surface_bo(g_fd, &dsc);
 +      int r = sweet_drm_surface_bo(g_fd, &sb);
++      if (r != 0 && getenv("SWEET_GPU_DEBUG"))
++         fprintf(stderr, "OSMesa/sweet: alias request for surface %u failed %d; describe %d: %ux%u bpr %u size %llu offset %u fmt %08x flags %x\n", surface_id, r, dr, dsc.width, dsc.height, dsc.bytes_per_row, (unsigned long long)dsc.size, dsc.offset, dsc.pixel_format, dsc.flags);
 +      if (r != 0 || !(sb.flags & SWEET_SBO_ALIAS) || !sb.alias_addr || sb.planes > 1 || sb.bytes_per_row < sb.width * 4) {
 +         if (getenv("SWEET_GPU_DEBUG"))
 +            fprintf(stderr, "OSMesa/sweet: no writable alias for surface %u (r %d flags %x planes %u bpr %u w %u)\n", surface_id, r, sb.flags, sb.planes, sb.bytes_per_row, sb.width);

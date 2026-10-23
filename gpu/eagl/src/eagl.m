@@ -839,6 +839,12 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
                     width:(uint32_t)width height:(uint32_t)height format:(NSUInteger)format type:(NSUInteger)type
                     plane:(uint32_t)plane invert:(BOOL)invert {
     if (ioSurface) EAGL_DEBUG("texImageIOSurface source: surface %u fourcc %08x planes %zu %zux%zu bpr %zu\n", IOSurfaceGetID(ioSurface), (unsigned)IOSurfaceGetPixelFormat(ioSurface), IOSurfaceGetPlaneCount(ioSurface), IOSurfaceGetWidth(ioSurface), IOSurfaceGetHeight(ioSurface), IOSurfaceGetBytesPerRow(ioSurface));
+    if (g_debug && ioSurface && IOSurfaceGetWidth(ioSurface) * IOSurfaceGetHeight(ioSurface) >= 400000 && IOSurfaceLock(ioSurface, kIOSurfaceLockReadOnly, NULL) == KERN_SUCCESS) {
+        const uint8_t *q = IOSurfaceGetBaseAddress(ioSurface); size_t qb = IOSurfaceGetBytesPerRow(ioSurface), qh = IOSurfaceGetHeight(ioSurface), qw = IOSurfaceGetWidth(ioSurface), nz = 0, tot = 0;
+        if (q) { for (size_t y = 3; y < qh; y += 37) for (size_t x = 5; x < qw * 4 && x < qb; x += 41) { tot++; if (q[y * qb + x]) nz++; } }
+        fprintf(stderr, "EAGL(shim): source content: surface %u non-zero samples %zu of %zu (mapped %d) alloc-size %zu\n", IOSurfaceGetID(ioSurface), nz, tot, q != NULL, IOSurfaceGetAllocSize(ioSurface));
+        IOSurfaceUnlock(ioSurface, kIOSurfaceLockReadOnly, NULL);
+    }
     EAGL_DEBUG("texImageIOSurface %p target 0x%lx ifmt 0x%lx %ux%u fmt 0x%lx type 0x%lx invert %d\n", ioSurface, (unsigned long)target, (unsigned long)internalFormat, width, height, (unsigned long)format, (unsigned long)type, invert);
     if (cur_ctx() != self || !ioSurface || plane != 0) do { EAGL_DEBUG("texImageIOSurface: refused (reason 1) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     OSType pf = IOSurfaceGetPixelFormat(ioSurface);
