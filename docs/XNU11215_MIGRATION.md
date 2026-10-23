@@ -74,7 +74,7 @@ diagnostics kept in the same pass, **B** device drivers (display, touch, keys, b
 | 0042-0044, 0047, 0083, 0105 | exec log, console crash log, persistent console log in UFS, root trace, log sync | A-diag | ported |
 | 0144-0147, 0148-0153 | syscall/Mach error tracers, exec env, MCM race delay, process sampler ports, launchd kevent trace, EINVAL sites | A-diag | ported |
 | 0048, 0049, 0051, 0053-0055, 0066, 0080 | /dev/null tee, IOKit trace, crash heap strings, sampler, net trace | A-diag | ported |
-| 0058, 0060-0063, 0071, 0082b, 0085-0088, 0101, 0111-0114 | HID event services, keys/touch (Goodix/NT36672A) drivers | B | ported |
+| 0058, 0060-0063, 0071, 0082b, 0085-0088, 0101, 0111-0114, 0161 | HID event services, keys/touch (Goodix/NT36672A) drivers | B | ported |
 | 0062, 0092, 0095, 0130 | RPMh/SPMI, battery | B | ported |
 | 0072-0077, 0081, 0084, 0087, 0089, 0094, 0098, 0107-0110, 0158 | USB device, ECM, live log, SMMU, configd interface, BPF tap | B | ported |
 | 0046, 0056, 0067, 0068, 0079, 0090, 0091, 0096, 0097, 0100, 0119-0123, 0126, 0127, 0129, 0157, 0159, 0160 | SweetFramebuffer / IOSurface / IOMFB stand-in, MDP page flip, scaler, accelerator stub, IOKit quiesce | B | ported |
