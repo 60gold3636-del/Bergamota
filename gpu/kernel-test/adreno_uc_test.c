@@ -54,6 +54,25 @@ get_param(uint32_t p, uint64_t *v)
 	return kr;
 }
 
+/* Read-only register snapshot of the kernel (SWEET_GPU_SEL_DEBUG); index meaning in sweet_adreno_abi.h. */
+static void
+dump_debug(const char *when)
+{
+	struct sweet_gpu_debug d;
+	memset(&d, 0, sizeof(d));
+	kern_return_t kr = call(SWEET_GPU_SEL_DEBUG, &d, 0, sizeof(d));
+	printf("DEBUG %s (kr %#x): flags %#x (b0 core readable, b1 lost, b2 ready)\n", when, kr, d.w[0]);
+	printf("  GMU: RPMH_POWER_STATE %#x SPTPRAC %#x AHB_FENCE ctrl %#x dropped %#x AO counter %#x%08x KEEPALIVE %u SYSRESET %u HFI %#x HOST_INT %#x\n",
+	    d.w[1], d.w[2], d.w[3], d.w[4], d.w[9], d.w[8], d.w[13], d.w[12], d.w[11], d.w[14]);
+	printf("  gpucc: GX gdscr %#x (b31 on) gfx3d cbcr %#x (b31 off) CX gdscr %#x\n", d.w[5], d.w[7], d.w[6]);
+	printf("  ring: submitted %u completed %u soft WPTR %u\n", d.w[15], d.w[17], d.w[16]);
+	printf("  SMMU CB1: FSR %#x FAR %#x%08x FSYNR0 %#x SCTLR %#x; sGFSR %#x sGFSYNR0 %#x\n", d.w[19], d.w[21], d.w[20], d.w[22], d.w[25], d.w[23], d.w[24]);
+	if (d.w[0] & 1) {
+		printf("  CP: RPTR %u WPTR %u SQE_CNTL %#x STATUS_1 %#x RBBM_STATUS %#x HW_FAULT %#x CP_IRQ %#x PROTECT %#x RBBM_IRQ %#x IB1 %#x%08x rem %u RB_BASE %#x\n",
+		    d.w[26], d.w[27], d.w[33], d.w[28], d.w[29], d.w[30], d.w[31], d.w[34], d.w[32], d.w[36], d.w[35], d.w[37], d.w[39]);
+	}
+}
+
 static struct sweet_msm_timespec
 rel(int sec, int nsec)
 {
@@ -88,6 +107,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 
+	dump_debug("at start (GPU idle since boot)");
 	/* 2 */
 	uint64_t v = 0;
 	kr = get_param(SWEET_MSM_PARAM_CHIP_ID, &v);
@@ -183,6 +203,9 @@ main(int argc, char **argv)
 	struct sweet_msm_wait_fence wf = { .fence = sub.fence, .timeout = rel(2, 0) };
 	kr = call(SWEET_GPU_SEL_WAIT_FENCE, &wf, sizeof(wf), 0);
 	CHECK(kr == 0, "WAIT_FENCE %u kr %#x", sub.fence, kr);
+	if (kr != 0) {
+		dump_debug("after the WAIT_FENCE failed");
+	}
 	cp.op = SWEET_MSM_PREP_READ;
 	kr = call(SWEET_GPU_SEL_GEM_CPU_PREP, &cp, sizeof(cp), 0);
 	CHECK(kr == 0, "CPU_PREP read kr %#x", kr);

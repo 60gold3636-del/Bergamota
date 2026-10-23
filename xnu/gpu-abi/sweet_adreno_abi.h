@@ -44,6 +44,7 @@ enum sweet_gpu_selector {
 	SWEET_GPU_SEL_INFO              = 0x70, /* struct sweet_gpu_info (out) */
 	SWEET_GPU_SEL_SURFACE_BO        = 0x71, /* struct sweet_gpu_surface_bo (in/out): IOSurface memory as a BO */
 	SWEET_GPU_SEL_BO_SYNC           = 0x72, /* struct sweet_gpu_bo_sync: clean+invalidate the CPU alias of a BO */
+	SWEET_GPU_SEL_DEBUG             = 0x73, /* struct sweet_gpu_debug (out): read-only register snapshot, safe when GX is off */
 };
 
 /* Memory mapping: IOConnectMapMemory64(conn, memoryType = BO handle, task, &addr, &size,
@@ -189,6 +190,20 @@ struct sweet_gpu_bo_sync {
 	uint32_t flags;         /* 0 */
 	uint64_t offset;        /* byte range inside the BO; size 0 = to the end */
 	uint64_t size;
+};
+
+/* SWEET_GPU_SEL_DEBUG: word index -> meaning. GPU-core words (26..39) are 0 unless w[0] bit0 is set.
+ *  0 flags: bit0 GPU core readable (GX GDSC on + gfx3d clock on), bit1 lost, bit2 ready
+ *  1 GMU RPMH_POWER_STATE (0xf = hardware slumber)   2 SPTPRAC_PWR_CLK_STATUS   3 AO_AHB_FENCE_CTRL (0 = allow)
+ *  4 AHB_FENCE_STATUS (dropped accesses)   5 gpucc GX GDSCR (bit31 = on)   6 gpucc CX GDSCR   7 gx_gfx3d CBCR (bit31 = off)
+ *  8/9 GMU always-on counter lo/hi (19.2 MHz)   10 GMU2HOST_INTR_INFO   11 HFI_CTRL_STATUS   12 CM3_SYSRESET
+ *  13 PWR_COL_KEEPALIVE   14 AO_HOST_INTERRUPT_STATUS   15 last submitted seqno   16 soft ring WPTR   17 completed seqno (fence word)
+ *  18 CM3_FW_INIT_RESULT   19 SMMU CB1 FSR   20/21 CB1 FAR lo/hi   22 CB1 FSYNR0   23 sGFSR   24 sGFSYNR0   25 CB1 SCTLR
+ *  26 CP_RB_RPTR  27 CP_RB_WPTR  28 CP_STATUS_1  29 RBBM_STATUS  30 CP_HW_FAULT  31 CP_INTERRUPT_STATUS  32 RBBM_INT_0_STATUS
+ *  33 CP_SQE_CNTL  34 CP_PROTECT_STATUS  35/36 CP_IB1_BASE lo/hi  37 CP_IB1_REM_SIZE  38 CP_ALWAYS_ON_COUNTER  39 CP_RB_BASE */
+#define SWEET_GPU_DEBUG_WORDS           40
+struct sweet_gpu_debug {
+	uint32_t w[SWEET_GPU_DEBUG_WORDS];
 };
 
 /* ---- msm constants used above (values of msm_drm.h) ---- */
