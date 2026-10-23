@@ -78,7 +78,7 @@ static int boot_uuid(char *out, size_t n)
 /* The volatile marker holds "MODE UUID [debug]" (MODE soft|1) and is honoured only when UUID is the boot session UUID of THIS boot
  * (kern.bootsessionuuid): a marker left over from an earlier boot can never act, whatever the clock says (the first live test showed that
  * kern.boottime and file times are unreliable early in boot: the RTC is set only later). Returns 1 and the mode in val. */
-static int g_marker_debug, g_marker_nohook;
+static int g_marker_debug, g_marker_nohook, g_marker_frames, g_marker_dirty;
 static int marker_mode(char *val, size_t vlen)
 {
 	char line[256], uuid[64] = "", cur[64] = "";
@@ -98,14 +98,24 @@ static int marker_mode(char *val, size_t vlen)
 	dbg = strtok_r(NULL, " \r\n", &save);
 	if (!mode || !u)
 		return 0;
-	if (dbg && !strcmp(dbg, "nohook")) { g_marker_nohook = 1; dbg = NULL; }
-	if (dbg && !strcmp(dbg, "debug")) {                  /* further words: debug, nohook in any order */
-		char *w = strtok_r(NULL, " \r\n", &save);
-		if (w && !strcmp(w, "nohook")) g_marker_nohook = 1;
+	/* words after the uuid, any order: debug, frames (debug + per-frame luminance/thumbnails), nohook, dirty (copy only display buffers drawn into) */
+	{
+		char *w = dbg;
+		int debug = 0;
+		while (w) {
+			if (!strcmp(w, "nohook")) g_marker_nohook = 1;
+			else if (!strcmp(w, "debug")) debug = 1;
+			else if (!strcmp(w, "frames")) { debug = 1; g_marker_frames = 1; }
+			else if (!strcmp(w, "dirty")) g_marker_dirty = 1;
+			w = strtok_r(NULL, " \r\n", &save);
+		}
+		dbg = debug ? "debug" : NULL;
 	}
 	snprintf(uuid, sizeof uuid, "%s", u);
-	if (strcmp(uuid, cur) != 0)
+	if (strcmp(uuid, cur) != 0) {   /* a marker of another boot grants nothing */
+		g_marker_nohook = g_marker_frames = g_marker_dirty = 0;
 		return 0;
+	}
 	g_marker_debug = dbg && !strcmp(dbg, "debug");
 	snprintf(val, vlen, "%s", mode);
 	return 1;
@@ -190,9 +200,11 @@ int main(int argc, char **argv)
 				setenv("BGL_CA_HOOK", "1", 1);
 		}
 		if ((has_arg(args, "bgldebug", dbg, sizeof dbg) && !strcmp(dbg, "1")) || g_marker_debug) {
-			setenv("EAGL_SHIM_DEBUG", "1", 1);
+			setenv("EAGL_SHIM_DEBUG", g_marker_frames ? "2" : "1", 1);
 			setenv("SWEET_GPU_DEBUG", "1", 1);
+			setenv("MESA_DEBUG", "1", 1);   /* GL errors and shader compile/link failures on stderr */
 		}
+		if (g_marker_dirty) setenv("BGL_DIRTY", "1", 1);
 		if (stat(LOG_PATH, &st) == 0 && st.st_size > (1 << 20))
 			unlink(LOG_PATH);
 		int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);

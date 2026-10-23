@@ -44,7 +44,9 @@
 #endif
 
 #define EAGL_DEBUG(...) do { if (g_debug) fprintf(stderr, "EAGL(shim): " __VA_ARGS__); } while (0)
-static int g_debug;
+extern void gl_unimpl(void);
+static int g_dirty_track = 0;       // BGL_DIRTY=1 (marker word "dirty"): copy display-size attachments only when drawn into; default: copy every attachment at every flush
+static int g_debug, g_debug_frames;   // EAGL_SHIM_DEBUG=1: log + PIPE statistics; =2 also per-frame luminance and thumbnails
 static volatile int g_target_attach;      // set once attachImage:<target> was used: the render server's convention (see texImageIOSurface)
 
 #pragma GCC visibility push(default)
@@ -93,6 +95,7 @@ typedef struct {                    // attachImage:toCoreSurface:invertedRender:
     int kind;                       // 0 = a GL object name was given, 1 = texture bound at the given target, 2 = renderbuffer
     IOSurfaceRef surf;              // retained
     BOOL inverted;
+    int dirty;                      // drawn into (or newly attached) since the last sync: display-size attachments are copied only when dirty
 } Attach;
 
 struct _EAGLSharegroupPrivate {
@@ -112,6 +115,7 @@ struct _EAGLContextPrivate {
     int params[64];
     DrawBind binds[MAX_BIND]; int nbinds;
     Attach att[MAX_BIND]; int natt;
+    int cur_att;                    // index of the attachment the bound draw framebuffer renders into (colour 0), -1 = none
     GLuint tmpfbo;
     EAGLMacroContext *macro;
 };
@@ -273,7 +277,7 @@ static double now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return 
 static void frame_stats(Attach *a, double t_start, double t_end, int gpu) {
     static double last_t, t0; static int n;
     size_t w = IOSurfaceGetWidth(a->surf), h = IOSurfaceGetHeight(a->surf);
-    if (w < 1000 || h < 2000 || n > 3000) return;
+    if (w < 1000 || h < 2000 || n > 3000 || !g_debug_frames) return;
     if (!t0) t0 = t_start;
     double lum = -1, black = -1;
     kern_return_t lk = IOSurfaceLock(a->surf, kIOSurfaceLockReadOnly, NULL);
@@ -307,11 +311,29 @@ static void frame_stats(Attach *a, double t_start, double t_end, int gpu) {
     last_t = t_start;
 }
 
+// Pipeline statistics (EAGL_SHIM_DEBUG): per interval of 60 display-size syncs, where the time goes. glflush = time inside Mesa's glFlush (batch
+// submit), blit = enqueue / render-wait (GPU time of the client's drawing, forced by a finish) / copy-wait (GPU time of the blit) / BO_SYNC,
+// cpu = surfaces copied through the CPU (read_image + rgba_to_surface). In this mode the extra finish makes frames slower than they are normally.
+static unsigned g_mark_hit, g_mark_miss;
+static double g_ps_flush_ms, g_ps_cpu_ms; static int g_ps_cpu_n, g_ps_syncs, g_ps_skipped;
+static void pipe_stats_report(void) {
+    static double last[8], last_flush, last_cpu, last_t; static int last_cpu_n, last_syncs;
+    double st[8]; osm_sweet_stats(st, 8);
+    double now = now_ms(), dn = g_ps_syncs - last_syncs; if (dn < 1) return;
+    fprintf(stderr, "EAGL(shim): PIPE %d syncs in %.0f ms (%.1f ms/sync): glFlush %.2f | gpu blits %.0f refused %.0f | render-wait %.2f enqueue %.2f copy-wait %.2f bo_sync %.2f lookup %.2f | cpu copies %d %.2f ms (per sync) | display copies skipped (clean) %d | draws marking an attachment %u, other draws %u\n",
+            (int)dn, now - last_t, (now - last_t) / dn, (g_ps_flush_ms - last_flush) / dn, st[0] - last[0], st[6] - last[6],
+            (st[1] - last[1]) / dn, (st[2] - last[2]) / dn, (st[3] - last[3]) / dn, (st[4] - last[4]) / dn, (st[5] - last[5]) / dn,
+            g_ps_cpu_n - last_cpu_n, (g_ps_cpu_ms - last_cpu) / dn, g_ps_skipped, g_mark_hit, g_mark_miss);
+    memcpy(last, st, sizeof st); last_flush = g_ps_flush_ms; last_cpu = g_ps_cpu_ms; last_t = now; last_cpu_n = g_ps_cpu_n; last_syncs = g_ps_syncs;
+}
+
 // Flush every attachImage: association of this context into its IOSurface.
 static void sync_attached(EAGLContext *c) {
     struct _EAGLContextPrivate *p = c->_private;
     for (int i = 0; i < p->natt; i++) {
         Attach *a = &p->att[i];
+        if (g_dirty_track && !a->dirty && IOSurfaceGetWidth(a->surf) * IOSurfaceGetHeight(a->surf) >= 1000000) { g_ps_skipped++; continue; }   // display buffer nobody drew into
+        a->dirty = 0;
         BOOL isTex = a->kind ? (a->kind == 1) : (glIsTexture(a->name) && !glIsRenderbuffer(a->name));
         // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
         double t_start = g_debug ? now_ms() : 0;
@@ -321,20 +343,75 @@ static void sync_attached(EAGLContext *c) {
             continue;
         }
         uint32_t w, h;
+        double t_cpu0 = g_debug ? now_ms() : 0;
         uint8_t *buf = read_image(c, a->name, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), &w, &h);
         if (buf) {
             // GL rows are bottom-up; a "normal" surface is top-down. invertedRender means CA already drew it flipped.
             rgba_to_surface(buf, w, h, a->surf, flip, NO);
             free(buf);
         }
+        if (g_debug) { g_ps_cpu_ms += now_ms() - t_cpu0; g_ps_cpu_n++; }
         if (g_debug) { frame_stats(a, t_start, now_ms(), 0); maybe_dump(c, i, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), NO); }
     }
 }
 
 // glFlush / glFinish wrappers installed over the Mesa entry points (see eagl_install_hooks).
 static void (*mesa_glFlush)(void), (*mesa_glFinish)(void);
-static void shim_glFlush(void) { mesa_glFlush(); EAGLContext *c = cur_ctx(); if (c && c->_private->natt) sync_attached(c); }
-static void shim_glFinish(void) { mesa_glFinish(); EAGLContext *c = cur_ctx(); if (c && c->_private->natt) sync_attached(c); }
+static void pipe_count_sync(EAGLContext *c) {
+    if (!g_debug || !c->_private->natt) return;
+    size_t w = 0, h = 0; for (int i = 0; i < c->_private->natt; i++) { size_t aw = IOSurfaceGetWidth(c->_private->att[i].surf); if (aw > w) { w = aw; h = IOSurfaceGetHeight(c->_private->att[i].surf); } }
+    if (w >= 1000 && h >= 2000 && ++g_ps_syncs % 60 == 0) pipe_stats_report();
+}
+static void shim_glFlush(void) { double t = g_debug ? now_ms() : 0; mesa_glFlush(); if (g_debug) g_ps_flush_ms += now_ms() - t; EAGLContext *c = cur_ctx(); if (c && c->_private->natt) { sync_attached(c); pipe_count_sync(c); } }
+static void shim_glFinish(void) { double t = g_debug ? now_ms() : 0; mesa_glFinish(); if (g_debug) g_ps_flush_ms += now_ms() - t; EAGLContext *c = cur_ctx(); if (c && c->_private->natt) { sync_attached(c); pipe_count_sync(c); } }
+
+// Dirty tracking of the display-size attachments: the render server draws into one texture per frame (through an FBO) and flushes; copying both of its
+// double-buffered display textures at every flush doubled the cost of a frame. Draw/clear entry points mark the attachment the bound FBO renders into,
+// FBO binding changes recompute which attachment that is, and sync_attached copies display-size attachments only when marked.
+static BOOL att_is_tex(Attach *a) { return a->kind ? a->kind == 1 : (glIsTexture(a->name) && !glIsRenderbuffer(a->name)); }
+static void update_cur_target(EAGLContext *c) {
+    struct _EAGLContextPrivate *p = c->_private;
+    p->cur_att = -1;
+    if (!p->natt) return;
+    GLint fb = 0, type = 0, name = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    if (!fb) { if (g_debug) { static int n; if (n++ < 20) fprintf(stderr, "EAGL(shim): FBO tracking: no framebuffer bound (%d attachments)\n", p->natt); } return; }
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
+    if (type != GL_TEXTURE && type != GL_RENDERBUFFER) return;
+    for (int i = 0; i < p->natt; i++) if ((GLint)p->att[i].name == name && att_is_tex(&p->att[i]) == (type == GL_TEXTURE)) { p->cur_att = i; break; }
+    if (g_debug) { static int n; if (n++ < 60) fprintf(stderr, "EAGL(shim): FBO %d colour0 type 0x%x name %d -> attachment %d (of %d)\n", fb, type, name, p->cur_att, p->natt); }
+}
+static inline void mark_cur_dirty(void) { EAGLContext *c = cur_ctx(); if (c && c->_private->cur_att >= 0 && c->_private->cur_att < c->_private->natt) { c->_private->att[c->_private->cur_att].dirty = 1; g_mark_hit++; } else g_mark_miss++; }
+static void (*o_DrawArrays)(GLenum, GLint, GLsizei);
+static void h_DrawArrays(GLenum a, GLint b, GLsizei c) { mark_cur_dirty(); o_DrawArrays(a, b, c); }
+static void (*o_DrawElements)(GLenum, GLsizei, GLenum, const void *);
+static void h_DrawElements(GLenum a, GLsizei b, GLenum c, const void *d) { mark_cur_dirty(); o_DrawElements(a, b, c, d); }
+static void (*o_DrawArraysInstanced)(GLenum, GLint, GLsizei, GLsizei);
+static void h_DrawArraysInstanced(GLenum a, GLint b, GLsizei c, GLsizei d) { mark_cur_dirty(); o_DrawArraysInstanced(a, b, c, d); }
+static void (*o_DrawElementsInstanced)(GLenum, GLsizei, GLenum, const void *, GLsizei);
+static void h_DrawElementsInstanced(GLenum a, GLsizei b, GLenum c, const void *d, GLsizei e) { mark_cur_dirty(); o_DrawElementsInstanced(a, b, c, d, e); }
+static void (*o_DrawRangeElements)(GLenum, GLuint, GLuint, GLsizei, GLenum, const void *);
+static void h_DrawRangeElements(GLenum a, GLuint b, GLuint c, GLsizei d, GLenum e, const void *f) { mark_cur_dirty(); o_DrawRangeElements(a, b, c, d, e, f); }
+static void (*o_Clear)(GLbitfield);
+static void h_Clear(GLbitfield m) { mark_cur_dirty(); o_Clear(m); }
+static void (*o_ClearBufferfv)(GLenum, GLint, const GLfloat *);
+static void h_ClearBufferfv(GLenum a, GLint b, const GLfloat *c) { mark_cur_dirty(); o_ClearBufferfv(a, b, c); }
+static void (*o_BindFramebuffer)(GLenum, GLuint);
+static void h_BindFramebuffer(GLenum t, GLuint f) { o_BindFramebuffer(t, f); EAGLContext *c = cur_ctx(); if (c) update_cur_target(c); }
+static void (*o_FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+static void h_FramebufferTexture2D(GLenum a, GLenum b, GLenum c, GLuint d, GLint e) { o_FramebufferTexture2D(a, b, c, d, e); EAGLContext *x = cur_ctx(); if (x) update_cur_target(x); }
+static void (*o_FramebufferRenderbuffer)(GLenum, GLenum, GLenum, GLuint);
+static void h_FramebufferRenderbuffer(GLenum a, GLenum b, GLenum c, GLuint d) { o_FramebufferRenderbuffer(a, b, c, d); EAGLContext *x = cur_ctx(); if (x) update_cur_target(x); }
+static void (*o_DeleteFramebuffers)(GLsizei, const GLuint *);
+static void h_DeleteFramebuffers(GLsizei n, const GLuint *f) { o_DeleteFramebuffers(n, f); EAGLContext *x = cur_ctx(); if (x) update_cur_target(x); }
+static const struct { const char *name; void **orig; void *hook; } g_dirty_hooks[] = {
+    { "glDrawArrays", (void **)&o_DrawArrays, h_DrawArrays }, { "glDrawElements", (void **)&o_DrawElements, h_DrawElements },
+    { "glDrawArraysInstanced", (void **)&o_DrawArraysInstanced, h_DrawArraysInstanced }, { "glDrawElementsInstanced", (void **)&o_DrawElementsInstanced, h_DrawElementsInstanced },
+    { "glDrawRangeElements", (void **)&o_DrawRangeElements, h_DrawRangeElements }, { "glClear", (void **)&o_Clear, h_Clear }, { "glClearBufferfv", (void **)&o_ClearBufferfv, h_ClearBufferfv },
+    { "glBindFramebuffer", (void **)&o_BindFramebuffer, h_BindFramebuffer }, { "glFramebufferTexture2D", (void **)&o_FramebufferTexture2D, h_FramebufferTexture2D },
+    { "glFramebufferRenderbuffer", (void **)&o_FramebufferRenderbuffer, h_FramebufferRenderbuffer }, { "glDeleteFramebuffers", (void **)&o_DeleteFramebuffers, h_DeleteFramebuffers },
+};
 
 static void eagl_install_hooks(void) {
     static dispatch_once_t once;
@@ -344,9 +421,15 @@ static void eagl_install_hooks(void) {
             if (!strcmp(gl_names[i], "glFlush")) { mesa_glFlush = gl_tab[i]; gl_tab[i] = (void *)shim_glFlush; }
             if (!strcmp(gl_names[i], "glFinish")) { mesa_glFinish = gl_tab[i]; gl_tab[i] = (void *)shim_glFinish; }
         }
-        g_debug = getenv("EAGL_SHIM_DEBUG") != NULL;
+        g_dirty_track = getenv("BGL_DIRTY") != NULL && !getenv("BGL_SYNC_ALL");
+        if (g_dirty_track) {
+            for (int i = 0; i < gl_nfuncs; i++)
+                for (unsigned k = 0; k < sizeof g_dirty_hooks / sizeof g_dirty_hooks[0]; k++)
+                    if (!strcmp(gl_names[i], g_dirty_hooks[k].name) && gl_tab[i] != (void *)gl_unimpl) { *g_dirty_hooks[k].orig = gl_tab[i]; gl_tab[i] = g_dirty_hooks[k].hook; }
+            for (unsigned k = 0; k < sizeof g_dirty_hooks / sizeof g_dirty_hooks[0]; k++) if (!*g_dirty_hooks[k].orig) g_dirty_track = 0;   // an entry point missing: cannot track reliably
+        }
+        g_debug = getenv("EAGL_SHIM_DEBUG") != NULL; g_debug_frames = g_debug && !strcmp(getenv("EAGL_SHIM_DEBUG"), "2");
         if (g_debug) {                  // list the exported entry points Mesa could not provide
-            extern void gl_unimpl(void);
             int n = 0;
             for (int i = 0; i < gl_nfuncs; i++) if (gl_tab[i] == (void *)gl_unimpl) { fprintf(stderr, "EAGL(shim): unresolved %s\n", gl_names[i]); n++; }
             fprintf(stderr, "EAGL(shim): %d/%d entry points forwarded to Mesa, %d unresolved\n", gl_nfuncs - n, gl_nfuncs, n);
@@ -579,14 +662,15 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     int idx = -1;
     for (int i = 0; i < p->natt; i++) if (p->att[i].name == name && p->att[i].kind == kind) idx = i;
     if (!surface) {                                     // detach
-        if (idx >= 0) { osm_sweet_forget(IOSurfaceGetID(p->att[idx].surf)); CFRelease(p->att[idx].surf); p->att[idx] = p->att[--p->natt]; }
+        if (idx >= 0) { osm_sweet_forget(IOSurfaceGetID(p->att[idx].surf)); CFRelease(p->att[idx].surf); p->att[idx] = p->att[--p->natt]; update_cur_target(self); }
         return YES;
     }
     if (idx < 0) {
         if (p->natt >= MAX_BIND) return NO;
         idx = p->natt++;
     } else { osm_sweet_forget(IOSurfaceGetID(p->att[idx].surf)); CFRelease(p->att[idx].surf); }
-    p->att[idx].name = name; p->att[idx].kind = kind; p->att[idx].surf = (IOSurfaceRef)CFRetain(surface); p->att[idx].inverted = inverted;
+    p->att[idx].name = name; p->att[idx].kind = kind; p->att[idx].surf = (IOSurfaceRef)CFRetain(surface); p->att[idx].inverted = inverted; p->att[idx].dirty = 1;
+    update_cur_target(self);
     EAGL_DEBUG("attachImage %lu -> %s %u, IOSurface %u (%zux%zu) inverted=%d\n", (unsigned long)image, kind == 2 ? "renderbuffer" : kind == 1 ? "texture" : "object", name,
                IOSurfaceGetID(surface), IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), inverted);
     return YES;

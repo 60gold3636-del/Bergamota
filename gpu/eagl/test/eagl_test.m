@@ -313,6 +313,26 @@ static void test_sampling(void) {
     [EAGLContext setCurrentContext:nil]; [ctx release];
 }
 
+// Which compressed texture formats does the GL under the shim accept? (the render server uploads the wallpaper as ASTC 4x4)
+static void test_compressed_formats(void) {
+    EAGLContext *ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
+    [EAGLContext setCurrentContext:ctx];
+    const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+    printf("      ASTC ldr advertised: %s, PVRTC: %s, ETC2 (core ES3): yes\n", ext && strstr(ext, "astc_ldr") ? "yes" : "NO", ext && strstr(ext, "pvrtc") ? "yes" : "NO");
+    static const struct { GLenum fmt; const char *name; int bw, bh, bytes; } f[] = {
+        { 0x93B0, "ASTC 4x4", 4, 4, 16 }, { 0x93B4, "ASTC 6x6", 6, 6, 16 }, { 0x93B7, "ASTC 8x8", 8, 8, 16 }, { 0x9274, "ETC2 RGB8", 4, 4, 8 },
+        { 0x8C01, "PVRTC 4bpp RGB", 8, 8, 32 }, { 0x8C02, "PVRTC 2bpp RGBA", 8, 8, 32 } };
+    uint8_t zero[256]; memset(zero, 0, sizeof zero);
+    GLuint t; glGenTextures(1, &t); glBindTexture(GL_TEXTURE_2D, t);
+    for (unsigned i = 0; i < sizeof f / sizeof *f; i++) {
+        glGetError();
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, f[i].fmt, f[i].bw, f[i].bh, 0, f[i].bytes, zero);
+        GLenum e = glGetError();
+        printf("      glCompressedTexImage2D %-16s -> GL error 0x%x%s\n", f[i].name, e, e ? "  (REJECTED)" : "");
+    }
+    [EAGLContext setCurrentContext:nil]; [ctx release];
+}
+
 static void bench(void) {
     EAGLContext *ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
     [EAGLContext setCurrentContext:ctx];
@@ -359,6 +379,7 @@ int main(int argc, char **argv) {
         test_attach_and_texture();
         test_macro_context();
         test_sampling();
+        test_compressed_formats();
         {   // OpenGL ES 1.1 context (fixed function): creation and one fixed-function call
             EAGLContext *c1 = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES1];
             CHECK(c1 != nil && [EAGLContext setCurrentContext:c1], "[ES1] context");

@@ -12,4 +12,5 @@ void *osm_getproc(const char *name);
 int osm_sweet_active(void);
 int osm_sweet_blit(unsigned name, int is_texture, unsigned surface_id, int flip, int opaque);
 void osm_sweet_forget(unsigned surface_id);
+void osm_sweet_stats(double *out, int n);   // cumulative ms per phase of the blit (debug), see OSMesaSweetStats in the Mesa patch
 #endif

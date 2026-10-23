@@ -1,18 +1,3 @@
-diff --git a/meson.build b/meson.build
-index 095aec5..56e66e7 100644
---- a/meson.build
-+++ b/meson.build
-@@ -128,6 +128,10 @@ with_any_opengl = with_opengl or with_gles1 or with_gles2
- with_shared_glapi = with_shared_glapi and with_any_opengl
- 
- system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android', 'managarm'].contains(host_machine.system())
-+# Bergamota: iOS has no DRM, but the freedreno msm backend runs over a libdrm stand-in (gpu/freedreno-sweet) with the same request set
-+if host_machine.system() == 'darwin' and host_machine.subsystem() == 'ios' and get_option('gallium-drivers').contains('freedreno')
-+  system_has_kms_drm = true
-+endif
- 
- gallium_drivers = get_option('gallium-drivers')
- if gallium_drivers.contains('auto')
 diff --git a/src/freedreno/drm/freedreno_bo.c b/src/freedreno/drm/freedreno_bo.c
 index 1f99f36..ca38562 100644
 --- a/src/freedreno/drm/freedreno_bo.c
@@ -50,25 +35,59 @@ index 1f99f36..ca38562 100644
  
  /* For internal use only, does not check FD_BO_NOMAP: */
 diff --git a/src/freedreno/ir3/ir3_disk_cache.c b/src/freedreno/ir3/ir3_disk_cache.c
-index 1d35b43..badf693 100644
+index 1d35b43..59a7120 100644
 --- a/src/freedreno/ir3/ir3_disk_cache.c
 +++ b/src/freedreno/ir3/ir3_disk_cache.c
-@@ -33,6 +33,7 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
-    if (ir3_shader_debug & IR3_DBG_NOCACHE)
+@@ -3,6 +3,10 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#ifdef __APPLE__
++#include <dlfcn.h>
++#include <mach-o/loader.h>
++#endif
+ #include "nir_serialize.h"
+ 
+ #include "ir3_compiler.h"
+@@ -34,6 +38,28 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
        return;
  
-+#ifndef __APPLE__   /* Bergamota: no ELF build-id on Mach-O, no shader disk cache */
     const char *renderer = fd_dev_name(compiler->dev_id);
++   char timestamp[41];
++#ifdef __APPLE__
++   /* Bergamota: no ELF build-id on Mach-O. The cache key is the LC_UUID of the image holding this code (changes with every
++    * build of libOSMesa), so a new Mesa never reads shaders compiled by an old one. */
++   {
++      Dl_info info;
++      const uint8_t *uuid = NULL;
++      if (dladdr((const void *)ir3_disk_cache_init, &info) && info.dli_fbase) {
++         const struct mach_header_64 *mh = info.dli_fbase;
++         const struct load_command *lc = (const struct load_command *)(mh + 1);
++         for (uint32_t i = 0; i < mh->ncmds; i++) {
++            if (lc->cmd == LC_UUID) { uuid = ((const struct uuid_command *)lc)->uuid; break; }
++            lc = (const struct load_command *)((const char *)lc + lc->cmdsize);
++         }
++      }
++      if (!uuid)
++         return;
++      uint8_t sha1[20];
++      _mesa_sha1_compute(uuid, 16, sha1);
++      _mesa_sha1_format(timestamp, sha1);
++   }
++#else
     const struct build_id_note *note =
        build_id_find_nhdr_for_addr(ir3_disk_cache_init);
-@@ -46,6 +47,7 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
+    assert(note && build_id_length(note) == 20); /* sha1 */
+@@ -41,8 +67,8 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
+    const uint8_t *id_sha1 = build_id_data(note);
+    assert(id_sha1);
+ 
+-   char timestamp[41];
+    _mesa_sha1_format(timestamp, id_sha1);
++#endif
  
     uint64_t driver_flags = ir3_shader_debug_hash_key();
     compiler->disk_cache = disk_cache_create(renderer, timestamp, driver_flags);
-+#endif
- }
- 
- void
 diff --git a/src/freedreno/meson.build b/src/freedreno/meson.build
 index 29e1bc4..e3d4279 100644
 --- a/src/freedreno/meson.build
@@ -136,10 +155,16 @@ index e41699a..bc326aa 100644
     DBG("Pipe Info:");
     DBG(" GPU-id:          %s", fd_dev_name(screen->dev_id));
 diff --git a/src/gallium/frontends/osmesa/osmesa.c b/src/gallium/frontends/osmesa/osmesa.c
-index 6d61677..8119358 100644
+index 6d61677..6f009a6 100644
 --- a/src/gallium/frontends/osmesa/osmesa.c
 +++ b/src/gallium/frontends/osmesa/osmesa.c
-@@ -64,6 +64,10 @@
+@@ -59,11 +59,16 @@
+ #include "GL/osmesa.h"
+ 
+ #include <stdio.h>
++#include "util/os_time.h"
+ #include <c11/threads.h>
+ 
  #include "state_tracker/st_context.h"
  
  #include "glapi/glapi.h"  /* for OSMesaGetProcAddress below */
@@ -150,7 +175,7 @@ index 6d61677..8119358 100644
  
  #include "pipe/p_context.h"
  #include "pipe/p_screen.h"
-@@ -615,7 +619,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
+@@ -615,7 +620,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
        case OSMESA_PROFILE:
           profile = attribList[i+1];
           if (profile != OSMESA_CORE_PROFILE &&
@@ -160,7 +185,7 @@ index 6d61677..8119358 100644
              return NULL;
           break;
        case OSMESA_CONTEXT_MAJOR_VERSION:
-@@ -664,6 +669,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
+@@ -664,6 +670,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
     memset(&attribs, 0, sizeof(attribs));
     attribs.profile = (profile == OSMESA_CORE_PROFILE)
        ? API_OPENGL_CORE : API_OPENGL_COMPAT;
@@ -169,7 +194,7 @@ index 6d61677..8119358 100644
     attribs.major = version_major;
     attribs.minor = version_minor;
     attribs.flags = 0;  /* ST_CONTEXT_FLAG_x */
-@@ -1027,3 +1034,80 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
+@@ -1027,3 +1035,132 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
        debug_warning("Calling OSMesaPostprocess() after OSMesaMakeCurrent()\n");
     }
  }
@@ -184,6 +209,32 @@ index 6d61677..8119358 100644
 +GLAPI int GLAPIENTRY OSMesaSweetActive(void);
 +GLAPI void GLAPIENTRY OSMesaSweetForgetSurface(uint32_t surface_id);
 +GLAPI int GLAPIENTRY OSMesaSweetBlit(GLuint name, int is_texture, uint32_t surface_id, int flip, int opaque);
++GLAPI void GLAPIENTRY OSMesaSweetStats(double *out, int n);
++
++/* Frame pipeline statistics (EAGL_SHIM_DEBUG / SWEET_GPU_STATS set): cumulative milliseconds per phase of OSMesaSweetBlit.
++ * 0 blits, 1 render-wait (st_finish before the blit: GPU time of everything the client drew), 2 blit enqueue (CPU),
++ * 3 blit wait (st_finish after it: GPU time of the copy), 4 BO_SYNC (cache clean+invalidate), 5 surface lookup / first-use setup, 6 refused blits */
++static double g_sweet_stats[8];
++static int
++sweet_stats_on(void)
++{
++   static int v = -1;
++   if (v < 0)
++      v = getenv("EAGL_SHIM_DEBUG") != NULL || getenv("SWEET_GPU_STATS") != NULL;
++   return v;
++}
++static double
++sweet_ms(void)
++{
++   return (double)os_time_get_nano() / 1e6;
++}
++
++GLAPI void GLAPIENTRY
++OSMesaSweetStats(double *out, int n)
++{
++   for (int i = 0; i < n && i < 8; i++)
++      out[i] = g_sweet_stats[i];
++}
 +
 +/** 1 when the contexts run on the GPU (freedreno), 0 for softpipe. */
 +GLAPI int GLAPIENTRY
@@ -216,7 +267,13 @@ index 6d61677..8119358 100644
 +   struct gl_context *ctx = st->ctx;
 +   struct pipe_context *pipe = st->pipe;
 +
++   const int stats = sweet_stats_on();
++   double t0 = stats ? sweet_ms() : 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0, t5 = 0;
 +   FLUSH_VERTICES(ctx, 0, 0);
++   if (stats) {
++      st_finish(st);   /* debug only: separates the GPU time of the client's drawing from the time of the copy */
++      t1 = sweet_ms();
++   }
 +   if (is_texture) {
 +      struct gl_texture_object *t = _mesa_lookup_texture(ctx, name);
 +      if (t)
@@ -228,9 +285,16 @@ index 6d61677..8119358 100644
 +   }
 +   if (!src)
 +      return 0;
++   if (stats)
++      t2 = sweet_ms();
 +   dst = sweet_hw_surface_resource(surface_id, opaque, &dw, &dh);
-+   if (!dst)
++   if (!dst) {
++      if (stats)
++         g_sweet_stats[6] += 1;
 +      return 0;
++   }
++   if (stats)
++      t3 = sweet_ms();
 +
 +   unsigned w = MIN2(src->width0, dw), h = MIN2(src->height0, dh);
 +   struct pipe_blit_info b;
@@ -246,8 +310,21 @@ index 6d61677..8119358 100644
 +   b.mask = PIPE_MASK_RGBA;
 +   b.filter = PIPE_TEX_FILTER_NEAREST;
 +   pipe->blit(pipe, &b);
++   if (stats)
++      t4 = sweet_ms();
 +   st_finish(st);
++   if (stats)
++      t5 = sweet_ms();
 +   sweet_hw_surface_sync(surface_id);
++   if (stats) {
++      double t6 = sweet_ms();
++      g_sweet_stats[0] += 1;
++      g_sweet_stats[1] += t1 - t0;
++      g_sweet_stats[2] += t4 - t3;
++      g_sweet_stats[3] += t5 - t4;
++      g_sweet_stats[4] += t6 - t5;
++      g_sweet_stats[5] += t3 - t2;
++   }
 +   return 1;
 +}
 diff --git a/src/gallium/targets/osmesa/meson.build b/src/gallium/targets/osmesa/meson.build
@@ -309,10 +386,10 @@ index 25985dd..f7d01b1 100644
      */
 diff --git a/src/gallium/targets/osmesa/sweet_hw.c b/src/gallium/targets/osmesa/sweet_hw.c
 new file mode 100644
-index 0000000..7d85eee
+index 0000000..54246e5
 --- /dev/null
 +++ b/src/gallium/targets/osmesa/sweet_hw.c
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,258 @@
 +/*
 + * SPDX-License-Identifier: MIT
 + * Bergamota: hardware (freedreno / Adreno 630) pipe_screen for the OSMesa target, over the libdrm stand-in
@@ -337,13 +414,24 @@ index 0000000..7d85eee
 +
 +/* libdrm stand-in extras (gpu/freedreno-sweet/sweet_drm.c) */
 +extern int drmOpenWithType(const char *name, const char *busid, int type);
-+struct sweet_gpu_surface_bo {
++struct sweet_gpu_surface_plane { uint32_t offset, stride, width, height; };
++struct sweet_gpu_surface_bo {   /* xnu/gpu-abi/sweet_adreno_abi.h; the stand-in sends only the first 48 bytes to a minor-0 kernel */
 +   uint32_t surface_id, handle;
 +   uint64_t size, iova;
 +   uint32_t offset, bytes_per_row, width, height, pixel_format, planes;
++   uint32_t flags, tiling, ubwc, reserved;      /* minor 1 */
++   struct sweet_gpu_surface_plane plane[3];
 +};
++#define SWEET_SBO_READONLY 0x1   /* out flags (minor 1): GPU mapping is read-only (client-memory surface): usable as a texture source ONLY */
++#define SWEET_SBO_WRAPPED  0x4
 +extern int sweet_drm_surface_bo(int fd, struct sweet_gpu_surface_bo *io);
 +extern int sweet_drm_bo_sync(int fd, uint32_t handle, uint64_t offset, uint64_t size);
++struct sweet_gpu_info_abi {   /* xnu/gpu-abi/sweet_adreno_abi.h struct sweet_gpu_info */
++   uint32_t abi_version, flags, gpu_id, chip_id;
++   uint64_t va_start, va_size;
++   uint32_t last_fence, abi_minor;
++};
++extern int sweet_drm_info(int fd, struct sweet_gpu_info_abi *out);
 +
 +struct pipe_screen *sweet_hw_create_screen(void);
 +int sweet_hw_active(void);
@@ -358,6 +446,8 @@ index 0000000..7d85eee
 +
 +static int g_fd = -1;
 +static struct pipe_screen *g_hw_screen;
++static int g_zc_wrapped;   /* INFO.abi_minor >= 1: SURFACE_BO imports wrapped (client-memory) IOSurfaces, READ-ONLY for the GPU. SURFACE_BO is always tried first for every surface, so such surfaces are used
++                              zero-copy automatically (no CPU fallback) once the kernel accepts them; this only drives the log line. BGL_ZEROCOPY overrides it. */
 +
 +static struct pipe_screen *
 +sweet_hw_try_create(void)
@@ -383,6 +473,17 @@ index 0000000..7d85eee
 +   if (!screen) {
 +      fprintf(stderr, "OSMesa/sweet: freedreno screen creation failed, using softpipe\n");
 +      return NULL;
++   }
++   {
++      struct sweet_gpu_info_abi inf;
++      memset(&inf, 0, sizeof(inf));
++      const char *z = getenv("BGL_ZEROCOPY");
++      if (sweet_drm_info(g_fd, &inf) == 0)
++         g_zc_wrapped = inf.abi_minor >= 1;
++      if (z)
++         g_zc_wrapped = z[0] != '0';
++      if (getenv("SWEET_GPU_DEBUG") || getenv("EAGL_SHIM_DEBUG"))
++         fprintf(stderr, "OSMesa/sweet: kernel info abi %u.%u flags 0x%x, zero-copy of wrapped IOSurfaces: %s\n", inf.abi_version, inf.abi_minor, inf.flags, g_zc_wrapped ? "yes" : "no (CPU copy for those)");
 +   }
 +   if (getenv("SWEET_GPU_DEBUG"))
 +      fprintf(stderr, "OSMesa/sweet: freedreno screen: %s / %s\n", screen->get_name(screen), screen->get_vendor(screen));
@@ -414,6 +515,26 @@ index 0000000..7d85eee
 +} g_surf[MAX_SURF];
 +static pthread_mutex_t g_surf_lock = PTHREAD_MUTEX_INITIALIZER;
 +
++/* Surfaces the kernel/GPU path refused (wrapped client memory on an older kernel, odd geometry): remembered so the blit does not repeat the
++ * SURFACE_BO call on every flush; the caller takes the CPU copy. Cleared when the surface is forgotten. */
++#define MAX_REFUSED 256
++static uint32_t g_refused[MAX_REFUSED];
++static int g_nrefused;
++static int
++refused_has(uint32_t id)
++{
++   for (int i = 0; i < g_nrefused; i++)
++      if (g_refused[i] == id)
++         return 1;
++   return 0;
++}
++static void
++refused_add(uint32_t id)
++{
++   if (g_nrefused < MAX_REFUSED)
++      g_refused[g_nrefused++] = id;
++}
++
 +/* Resource for the memory of IOSurface `surface_id` (BGRA, linear), or NULL (geometry the GPU path cannot use). */
 +struct pipe_resource *
 +sweet_hw_surface_resource(uint32_t surface_id, int opaque, unsigned *w, unsigned *h)
@@ -433,16 +554,29 @@ index 0000000..7d85eee
 +      if (!g_surf[i].res && free_slot < 0)
 +         free_slot = i;
 +   }
-+   if (free_slot < 0)
++   if (free_slot < 0 || refused_has(surface_id))
 +      goto out;
 +   {
 +      struct sweet_gpu_surface_bo sb = { .surface_id = surface_id, .handle = 0 };
++      int src;
++      if (g_zc_wrapped) {
++         /* minor-1 kernel imports ANY surface, client-memory ones READ-ONLY and pinned until GEM_CLOSE: describe first (no BO is made) and keep
++          * those on the CPU copy path (a GPU write into them is an SMMU fault + GPU recovery). They are texture sources only. */
++         sb.handle = 0xffffffffu;
++         src = sweet_drm_surface_bo(g_fd, &sb);
++         if (src == 0 && (sb.flags & (SWEET_SBO_READONLY | SWEET_SBO_WRAPPED))) {
++            refused_add(surface_id);
++            goto out;
++         }
++         sb.handle = 0;
++      }
 +      /* BGRA, or no pixel format at all (CoreAnimation's offscreen/backdrop surfaces are created without one) with 4 bytes per pixel */
-+      int src = sweet_drm_surface_bo(g_fd, &sb);
++      src = sweet_drm_surface_bo(g_fd, &sb);
 +      if (src != 0 && getenv("SWEET_GPU_DEBUG"))
 +         fprintf(stderr, "OSMesa/sweet: SURFACE_BO(%u) failed: %d\n", surface_id, src);
 +      if (src != 0 || sb.planes > 1 ||
 +          !((sb.pixel_format == 0x42475241 /* BGRA */) || (sb.pixel_format == 0 && sb.bytes_per_row >= sb.width * 4 && sb.bytes_per_row < sb.width * 8))) {
++         refused_add(surface_id);
 +         if (getenv("SWEET_GPU_DEBUG"))
 +            fprintf(stderr, "OSMesa/sweet: surface %u not usable (planes %u fmt %08x, %ux%u bpr %u)\n", surface_id, sb.planes, sb.pixel_format, sb.width, sb.height, sb.bytes_per_row);
 +         goto out;
@@ -469,6 +603,7 @@ index 0000000..7d85eee
 +      if (!res) {
 +         if (getenv("SWEET_GPU_DEBUG"))
 +            fprintf(stderr, "OSMesa/sweet: resource_from_handle failed for surface %u (%ux%u stride %u)\n", surface_id, sb.width, sb.height, sb.bytes_per_row);
++         refused_add(surface_id);
 +         goto out;
 +      }
 +      /* Clean dirty CPU cache lines of the surface BEFORE the GPU first writes it (the CPU zeroed/painted it): the post-blit BO_SYNC is a
@@ -501,6 +636,11 @@ index 0000000..7d85eee
 +sweet_hw_surface_forget(uint32_t surface_id)
 +{
 +   pthread_mutex_lock(&g_surf_lock);
++   for (int i = 0; i < g_nrefused; i++)
++      if (g_refused[i] == surface_id) {
++         g_refused[i] = g_refused[--g_nrefused];
++         break;
++      }
 +   for (int i = 0; i < MAX_SURF; i++)
 +      if (g_surf[i].res && g_surf[i].id == surface_id) {
 +         pipe_resource_reference(&g_surf[i].res, NULL);

@@ -114,6 +114,8 @@ is_ours(int fd)
 	return S_ISCHR(st.st_mode) && st.st_rdev == g_null_rdev;
 }
 
+static size_t g_sbo_size = SWEET_GPU_SURFACE_BO_V1_SIZE;   /* minor 0 layout until INFO says abi_minor >= 1 */
+
 /* Sizes of the kernel structures (what the user client requires at least). */
 static size_t
 sel_size(uint32_t sel)
@@ -131,7 +133,7 @@ sel_size(uint32_t sel)
 	case SWEET_GPU_SEL_SUBMITQUEUE_NEW: return sizeof(struct sweet_msm_submitqueue);
 	case SWEET_GPU_SEL_SUBMITQUEUE_CLOSE: return sizeof(uint32_t);
 	case SWEET_GPU_SEL_INFO: return sizeof(struct sweet_gpu_info);
-	case SWEET_GPU_SEL_SURFACE_BO: return sizeof(struct sweet_gpu_surface_bo);
+	case SWEET_GPU_SEL_SURFACE_BO: return g_sbo_size;
 	case SWEET_GPU_SEL_BO_SYNC: return sizeof(struct sweet_gpu_bo_sync);
 	default: return 0;
 	}
@@ -385,8 +387,16 @@ sweet_drm_munmap(void *addr, size_t len)
 EXPORT int
 sweet_drm_surface_bo(int fd, struct sweet_gpu_surface_bo *io)
 {
+	static int minor = -1;   /* INFO.abi_minor: the 112-byte (minor 1) struct only when the kernel has it, the 48-byte V1 struct otherwise */
 	(void)fd;
-	return sweet_call(SWEET_GPU_SEL_SURFACE_BO, io, sizeof(*io));
+	if (minor < 0) {
+		struct sweet_gpu_info inf;
+		memset(&inf, 0, sizeof(inf));
+		minor = sweet_call(SWEET_GPU_SEL_INFO, &inf, sizeof(inf)) == 0 ? (int)inf.abi_minor : 0;
+		if (minor >= 1)
+			g_sbo_size = sizeof(struct sweet_gpu_surface_bo);
+	}
+	return sweet_call(SWEET_GPU_SEL_SURFACE_BO, io, g_sbo_size);
 }
 
 EXPORT int
