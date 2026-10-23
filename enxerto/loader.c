@@ -282,6 +282,7 @@ const char *loader_boot_payload(uintptr_t rd_start, uintptr_t rd_end, int verify
 	con_hex("JUMP", entry_pa);
 	bootui_progress(1000, "STARTING IOS");
 	con_str("XNU", "jumping (fbcon clears screen)");
+	bootui_handoff();
 
 	/* Clean to memory, MMU and caches off, invalidate, jump (also right when mmu_rc failed). */
 #ifdef BOOT_PAUSE_MS
