@@ -110,6 +110,20 @@ apps/Bergamota/scripts/bergamota flash-userdata research/ios18/ios18-root-full.s
 
 The first boot takes a few minutes. Then `ssh root@192.168.7.2`.
 
+## Troubleshooting
+
+**"I unpacked the boot image but there is no DTB."** The Poco F1 boot.img appends the DTBs to the gzipped kernel, so unpackers don't show them. Pull the latest `develop` and, with the phone in OrangeFox:
+
+```sh
+adb pull /dev/block/by-name/boot backup/boot.img
+adb pull /sys/firmware/fdt dtb/beryllium/live.dtb
+python3 tools/extract-dtb.py backup/boot.img dtb/beryllium --live dtb/beryllium/live.dtb
+```
+
+That writes `dtb/beryllium/dtb`, which Enxerto's `build.sh` uses.
+
+**Bergamota shows "REMOTE HOST IDENTIFICATION HAS CHANGED".** Every new iOS root generates a new SSH host key for `192.168.7.2`, so the old entry in `~/.ssh/known_hosts` no longer matches. Remove it with `ssh-keygen -R 192.168.7.2`. If you switch between roots often, keep a separate file instead (`-o UserKnownHostsFile=~/.ssh/known_hosts_ios18`).
+
 ## Renegade, briefly
 
 On iOS 18 every system binary is **arm64e**, but the Snapdragon 845 (ARMv8.2) has no pointer authentication. Renegade rewrites the code 4 bytes for 4 bytes, so no offset, branch, unwind table or fixup chain moves:
