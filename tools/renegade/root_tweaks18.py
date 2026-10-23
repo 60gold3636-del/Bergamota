@@ -640,7 +640,8 @@ def event_timing(root):
 #
 # All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER, BGLRENDER) or the
 # --no-<feature> flags of `renegade root` and `renegade update`, which set the same variables.
-# Opt-in (off by default): RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd, cryptexd(): fallback that removes the
+# Opt-in (off by default): RENEGADE_BGMTL=1 (bgmtl(): the Bergamota Metal device linked into MercuryPosterExtension only, inert until armed);
+# RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd, cryptexd(): fallback that removes the
 # crash-looping cryptexd job.
 # Every function is idempotent: `renegade update` runs them again on a finished image.
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -796,6 +797,59 @@ def posterboard(root):
         shutil.rmtree(tmpd, ignore_errors=True)
     print('posterboard: PosterBoard links', SWEETFP_PATH, '(re-signed ad hoc as %s, %d entitlements kept)' % (
         ident[0], len(ents or {})))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# bgmtl (OPT-IN, off by default: RENEGADE_BGMTL=1): the Bergamota Metal device for the stock iOS 18 wallpaper poster ONLY.
+# gpu/metal/inject (branch metal): bgmtl-inject.dylib + libbgair.dylib + libdrm.2.dylib (arm64e, pacstrip --sign) go to /usr/local/lib/bgmtl and
+# the dylib is linked into MercuryPosterExtension.appex's executable as an extra LC_LOAD_DYLIB (like sweetfp.dylib into PosterBoard), the binary
+# re-signed ad hoc keeping identifier and entitlements. The dylib is INERT until /private/var/tmp/bgmtl.arm exists, honours the kill switch
+# /private/var/tmp/bgmtl.off and carries its own dead-man (see gpu/metal/inject/bgmtl_inject.m); no other process is touched.
+# Build output directory: RENEGADE_BGMTL_DIR (default research/bgmtl). Undo: delete the three files and restore the extension binary.
+BGMTL_DIR_DEFAULT = os.path.join(REPO, 'research/bgmtl')
+BGMTL_LIB_DIR = '/usr/local/lib/bgmtl'
+BGMTL_INJECT = BGMTL_LIB_DIR + '/bgmtl-inject.dylib'
+MERCURY_BIN = 'System/Library/ExtensionKit/Extensions/MercuryPosterExtension.appex/MercuryPosterExtension'
+
+
+def bgmtl(root):
+    import subprocess, tempfile
+    sys.path.insert(0, HERE)
+    import pacstrip
+    binp = os.path.join(root, MERCURY_BIN)
+    if not os.path.exists(binp):
+        print('bgmtl: no', MERCURY_BIN, 'in the image: skipped')
+        return
+    src = os.environ.get('RENEGADE_BGMTL_DIR') or BGMTL_DIR_DEFAULT
+    names = ('bgmtl-inject.dylib', 'libbgair.dylib', 'libdrm.2.dylib')
+    if not all(os.path.exists(os.path.join(src, n)) for n in names):
+        print('bgmtl: %s not built (gpu/metal/build-probe.sh; copy the three dylibs there): skipped, Mercury left alone' % src)
+        note_skip('bgmtl', 'bgmtl dylibs not found in ' + src + '; MercuryPosterExtension left alone')
+        return
+    for n in names:                                        # first: the binary must never name a missing dylib
+        install_file(os.path.join(src, n), os.path.join(root, BGMTL_LIB_DIR.lstrip('/'), n), 0o755)
+    print('bgmtl: dylibs installed in', BGMTL_LIB_DIR)
+    if macho_has_dylib(binp, BGMTL_INJECT):
+        print('bgmtl: MercuryPosterExtension already links', BGMTL_INJECT)
+        return
+    mode = os.stat(binp).st_mode & 0o7777
+    tmpd = tempfile.mkdtemp(prefix='renegade-bgmtl-')
+    try:
+        tmp = os.path.join(tmpd, 'MercuryPosterExtension')
+        shutil.copyfile(binp, tmp)
+        os.chmod(tmp, 0o755)
+        ents, ident = entitlements_of(tmp), pacstrip.cs_identity(tmp)
+        subprocess.run([sys.executable, '-I', ADDLC, tmp, BGMTL_INJECT], check=True)
+        pacstrip.sign(tmp)
+        if entitlements_of(tmp) != ents or pacstrip.cs_identity(tmp)[:2] != ident[:2]:
+            sys.exit('bgmtl: entitlements or identifier changed by the re-sign: MercuryPosterExtension left alone')
+        if not macho_has_dylib(tmp, BGMTL_INJECT):
+            sys.exit('bgmtl: LC_LOAD_DYLIB missing after addlc.py')
+        install_file(tmp, binp, mode)
+    finally:
+        shutil.rmtree(tmpd, ignore_errors=True)
+    print('bgmtl: MercuryPosterExtension links %s (re-signed ad hoc as %s, %d entitlements kept); inert until /private/var/tmp/bgmtl.arm exists' % (
+        BGMTL_INJECT, ident[0], len(ents or {})))
 
 
 FIRSTBOOT_LABEL = 'org.bergamota.renegade-firstboot'
@@ -1206,6 +1260,8 @@ def auto(root):
         bglrender(root)
     if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':      # opt-in, off by default
         cryptexd(root)
+    if os.environ.get('RENEGADE_BGMTL') == '1':                 # opt-in, off by default: the Metal device for the Mercury poster only
+        bgmtl(root)
 
 
 def main():
