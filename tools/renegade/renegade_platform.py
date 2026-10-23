@@ -381,9 +381,12 @@ class Linux(Backend):
 
     def attach_ipsw(self, dmg, mnt, owners=False):
         """The IPSW volumes are APFS: apfs-fuse, read-only. As root every file is readable and the real owners show,
-        so one mount serves both the owner map and the copy."""
+        so one mount serves both the owner map and the copy. apfs-fuse shows the volume under root/ (next to
+        private-dir/), so it mounts at MNT.apfs and MNT is a bind mount of MNT.apfs/root: MNT is the volume root."""
+        fmnt = mnt.rstrip('/') + '.apfs'
         if not self.dry:
             os.makedirs(mnt, exist_ok=True)
+            os.makedirs(fmnt, exist_ok=True)
         if ',' in dmg:
             # apfs-fuse hands the device path to FUSE inside a comma-separated -o list (fsname=...), so a comma in it
             # ("22H352__iPhone11,8") splits the option: give it a comma-free symlink next to the mount point
@@ -393,27 +396,34 @@ class Linux(Backend):
                     os.remove(link)
                 os.symlink(os.path.abspath(dmg), link)
             dmg = link
-        r = self.run(self.apfs_fuse_cmd(dmg, mnt), fake='', check=False)
+        r = self.run(self.apfs_fuse_cmd(dmg, fmnt), fake='', check=False)
         if r.returncode and not self.dry:
             # apfs-fuse says nothing without -d: run it again with debug output so the reason shows
-            mounted = [l for l in open('/proc/mounts').read().splitlines() if f' {mnt} ' in l]
-            d = self.run(['apfs-fuse', '-d', '1'] + self.apfs_fuse_cmd(dmg, mnt)[1:], check=False, capture_output=True, text=True)
+            mounted = [l for l in open('/proc/mounts').read().splitlines() if f' {fmnt} ' in l or f' {mnt} ' in l]
+            d = self.run(['apfs-fuse', '-d', '1'] + self.apfs_fuse_cmd(dmg, fmnt)[1:], check=False, capture_output=True, text=True)
             if d.returncode == 0:
                 pass                                   # the retry mounted it
             else:
                 tail = '\n'.join(((d.stderr or '') + (d.stdout or '')).strip().splitlines()[-15:])
-                raise SystemExit(f'apfs-fuse could not mount {dmg} at {mnt} (exit {r.returncode}).\n'
-                                 + (f'{mnt} is still mounted from an earlier run: `umount -l {mnt}` (or fusermount3 -u) and retry.\n'
-                                    if mounted else '')
+                raise SystemExit(f'apfs-fuse could not mount {dmg} at {fmnt} (exit {r.returncode}).\n'
+                                 + (f'{fmnt} or {mnt} is still mounted from an earlier run: `umount -l {mnt}; umount -l {fmnt}` '
+                                    '(or fusermount3 -u) and retry.\n' if mounted else '')
                                  + f'apfs-fuse -d 1 says:\n{tail}\n'
                                  'Check: /dev/fuse exists (modprobe fuse, package fuse3); a current apfs-fuse from git master; '
                                  'RENEGADE_APFS_VOLUME=N if the container has several volumes.')
         if not self.dry:
             t0 = time.time()
-            while not os.path.ismount(mnt):
+            while not os.path.ismount(fmnt):
                 if time.time() - t0 > self.FUSE_WAIT:
-                    raise SystemExit(f'apfs-fuse did not mount {dmg} at {mnt} within {self.FUSE_WAIT}s')
+                    raise SystemExit(f'apfs-fuse did not mount {dmg} at {fmnt} within {self.FUSE_WAIT}s')
                 time.sleep(0.5)
+        src = os.path.join(fmnt, 'root')
+        if not self.dry and not os.path.isdir(src):
+            src = fmnt                                 # an apfs-fuse that shows the volume at the top
+        r = self.run(['mount', '--bind', src, mnt], check=False)
+        if r.returncode and not self.dry:
+            self.run(['umount', fmnt], check=False)
+            raise SystemExit(f'bind mount of {src} at {mnt} failed: {(r.stderr or r.stdout).strip()}')
         return 'fuse:' + mnt
 
     def _mounts_of(self, dev):
@@ -425,9 +435,11 @@ class Linux(Backend):
         last = subprocess.CompletedProcess([], 0, '', '')
         if target.startswith('fuse:'):
             mnt = target[5:]
-            last = self.run(['umount'] + (['-l'] if force else []) + [mnt], check=False)
+            fmnt = mnt.rstrip('/') + '.apfs'
+            self.run(['umount'] + (['-l'] if force else []) + [mnt], check=False)        # the bind mount of .apfs/root
+            last = self.run(['umount'] + (['-l'] if force else []) + [fmnt], check=False)
             if last.returncode and shutil.which('fusermount3'):
-                last = self.run(['fusermount3', '-u'] + (['-z'] if force else []) + [mnt], check=False)
+                last = self.run(['fusermount3', '-u'] + (['-z'] if force else []) + [fmnt], check=False)
         else:
             if target.startswith('/dev/'):
                 dev, mounts = target, self._mounts_of(target)

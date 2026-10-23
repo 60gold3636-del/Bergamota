@@ -91,8 +91,9 @@ class TestLinuxCommands(unittest.TestCase):
         self.assertEqual(h[1], ['mkfs.hfsplus', '-s', '-v', 'iOSRoot', '/w/r.img'])
         self.assertEqual(h[2], ['losetup', '--find', '--show', '/w/r.img'])
         self.assertEqual(h[3][:5], ['mount', '-t', 'hfsplus', '-o', 'rw,force,nls=utf8'])
-        self.assertEqual(h[4], ['apfs-fuse', '-v', '0', '/w/os.dmg', '/w/src'])
-        self.assertEqual(h[5][0], 'copytree')
+        self.assertEqual(h[4], ['apfs-fuse', '-v', '0', '/w/os.dmg', '/w/src.apfs'])
+        self.assertEqual(h[5], ['mount', '--bind', '/w/src.apfs/root', '/w/src'])     # apfs-fuse shows the volume under root/
+        self.assertEqual(h[6][0], 'copytree')
         self.assertTrue(any(c[0] == '/fake/ldid' and '-Icom.apple.mount' in c for c in h))
         self.assertTrue(any(c[0] == 'fsck.hfsplus' for c in h))
         self.assertTrue(any(c[:2] == ['losetup', '-d'] for c in h))
