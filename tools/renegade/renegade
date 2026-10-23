@@ -13,6 +13,8 @@
 #   renegade hfs SIMG ls|cat|get|getdir|stat|find|dsc ...   read the root image in place
 #   renegade jb fetch|stage|live|remove|status   optional jailbreak userland: Procursus rootless, Sileo, TrollStore (README)
 #   renegade sparse IN OUT [--consume]        raw <-> Android sparse image (direction from the IN suffix)
+#   renegade platform [--plan [macos|linux]]  platform layer: which backend, the commands an image build would run (dry)
+#   renegade test                             unit tests (command construction, dry run, feature gating)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 py() { exec python3 -I "$HERE/$1" "${@:2}"; }
@@ -32,6 +34,8 @@ sparse)	case ${1:-} in
 	*.simg) py simg2img.py "$@" ;;
 	*) py img2simg.py "$@" ;;
 	esac ;;
+platform)	py renegade_platform.py "$@" ;;
+test)	exec python3 -I -m unittest discover -s "$HERE/tests" "$@" ;;
 help|-h|--help) sed -n '2,/^set -/{/^set -/!s/^# \{0,1\}//p;}' "$0" ;;
 *)	echo "renegade: unknown command '$cmd' (renegade help)" >&2; exit 2 ;;
 esac

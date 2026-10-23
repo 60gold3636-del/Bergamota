@@ -6,11 +6,12 @@ without the IPSW dmgs (deleted, and the Mac has no room for them).
   update.py IMAGE.img                      resume: the raw image a failed run left behind (see below)
 
 Steps (every one checks `df` first and stops below 5 GiB free on the volume of the image):
-  0 preflight   (simg only, read only, via hfsx.py) the files the tweaks touch exist; the tools are built
-                (tools/sweetnet/build.sh); the jailbreak payload is downloaded, verified and staged (it needs the network)
+  0 preflight   (simg only, read only, via hfsx.py) the files the tweaks touch exist; features whose prebuilt on-device
+                tools are missing (tools/sweetnet/build.sh needs a Mac; always the case on Linux) are skipped with a
+                message and listed in a summary at the end, not failed; the jailbreak payload is downloaded, verified and staged (it needs the network)
   1 simg2img    simg2img.py --consume: IMAGE.simg -> IMAGE.img (a sparse raw image; the simg is eaten while it is
                 written, so the disk use stays flat; the simg no longer exists afterwards)
-  2 attach      hdiutil attach, read-write, no sudo, mounted at --mnt like mkroot-full.py does
+  2 attach      macOS: hdiutil attach, read-write, no sudo. Linux (root): losetup + mount -t hfsplus -o rw,force. Mounted at --mnt
   3 tweaks      the idempotent original tweaks (root_tweaks18.base(): launchd.plist, containers, event timing profiles,
                 usbnet, netcfg, sweetreboot, ssh/dropbear job, audio, activation, prefs, logd dirs), then staged apps -> /Applications (+ the register list), bluetooth (bluetoothd env, BlueTool stub, hcitest),
                 PosterBoard + sweetfp.dylib, the first-boot job (sweetuicache registration, default wallpaper/icon style via
@@ -19,7 +20,7 @@ Steps (every one checks `df` first and stops below 5 GiB free on the volume of t
                 The paths that are new (HFS creation date after the start) or that got an owner on purpose are collected
                 into an owner map; /System/Library/xpc/launchd.plist is put back to 0:0 (an old build left 501:20)
   4 seal        sync + detach, hfs_trim.py, hfsroot_owners.py with that map (only those paths: nothing else changes,
-                no --default-root), fsck_hfs -fn
+                no --default-root), fsck_hfs -fn (Linux: fsck.hfsplus -f -n)
   5 img2simg    img2simg.py --consume: IMAGE.img -> IMAGE.simg (the raw image is eaten while the simg is written)
 
 A failure after step 1 leaves the raw IMAGE.img next to the (now missing) simg, detached and consistent as far as the
@@ -37,6 +38,7 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import renegade_platform as rplat  # noqa: E402
 MIN_FREE = 5 << 30
 
 
@@ -77,31 +79,12 @@ def py(script, *args):
 
 
 def detach(mnt_or_dev):
-    for i in range(4):
-        r = subprocess.run(['hdiutil', 'detach', mnt_or_dev], capture_output=True, text=True)
-        if r.returncode == 0:
-            return
-        time.sleep(2 + 3 * i)
-    r = subprocess.run(['hdiutil', 'detach', '-force', mnt_or_dev], capture_output=True, text=True)
-    if r.returncode:
-        sys.exit('detach failed: ' + r.stderr)
+    rplat.detach_retry(mnt_or_dev)
 
 
 def detach_leftovers(raw):
     """A previous run that was killed can leave the raw image attached."""
-    out = subprocess.run(['hdiutil', 'info'], capture_output=True, text=True).stdout
-    dev, found = None, []
-    for line in out.splitlines():
-        if line.startswith('image-path') and os.path.realpath(line.split(':', 1)[1].strip()) == os.path.realpath(raw):
-            found.append(True)
-        elif line.startswith('/dev/disk') and found and dev is None:
-            dev = line.split()[0]
-        elif line.startswith('====='):
-            if found and dev:
-                detach(dev)
-            dev, found = None, []
-    if found and dev:
-        detach(dev)
+    rplat.detach_image(raw)
 
 
 def preflight(simg, rt, feats):
@@ -141,22 +124,13 @@ def preflight(simg, rt, feats):
 
 
 def check_tools(rt, feats):
-    problems = []
-    need = []
-    if feats['appreg'] or feats['jb'] or feats['wallpaper']:
-        need.append(('ios18/sweetuicache', 'sweetuicache (first-boot job)'))
-    if feats['wallpaper']:
-        need += [('ios18/' + n, n) for n in ('sweetposterset', 'sweeticonstyle', 'sweetopen', 'SweetRun.app')]
-    if feats['posterboard']:
-        need.append(('ios18/sweetfp.dylib', 'sweetfp.dylib'))
-    if feats['bglrender'] and not rt.find_bgl():
-        problems.append('bglrender payload not built: run gpu/eagl/make-payload.sh in the ios-beryllium gpu-eagl branch (or pass --no-bglrender)')
-    if feats['bluetooth']:
-        need.append(('bluetool-stub', 'BlueTool stub'))
-    for rel, what in need:
-        if not rt.find_sweetnet(rel):
-            problems.append(f'{what} not built: run tools/sweetnet/build.sh (or pass the --no-* flag)')
-    return problems
+    """Features whose prebuilt on-device binaries are missing are switched off (and listed in the summary) instead of
+    failing the preflight; on Linux that is the normal case. Returns the problems that really stop the update."""
+    for f_, why in rt.tool_gaps(feats).items():
+        feats[f_] = False
+        os.environ['RENEGADE_NO_' + f_.upper()] = '1'
+        log(f'preflight: feature {f_} skipped automatically: {why}')
+    return []
 
 
 def scan_new(mnt, t0, rec):
@@ -181,8 +155,9 @@ def scan_new(mnt, t0, rec):
             rel = e.name if rel_d == '.' else rel_d + '/' + e.name
             if '\t' in rel or '\n' in rel:
                 continue
-            if st.st_birthtime >= t0 - 1:
-                uid, gid = rec.owners.get(e.path, (0, 0))
+            if rplat.birthtime(st) >= t0 - 1:
+                # macOS mounts noowners (every file shows 501:20): default root. Linux owners are real: trust lstat
+                uid, gid = rec.owners.get(e.path, (st.st_uid, st.st_gid) if rplat.real_owners() else (0, 0))
                 table[unicodedata.normalize('NFD', rel)] = (uid, gid, st.st_mode & 0o7777)
             if e.is_dir(follow_symlinks=False):
                 stack.append(e.path)
@@ -251,6 +226,9 @@ def main():
             os.unlink(simg)                  # the zeroed shell simg2img --consume left
     log(f'update: {"resume from raw " + raw if resume else simg}; features: ' + ', '.join(
         f'{k}={"on" if v else "off"}' for k, v in feats.items()))
+    if not a.check:                      # --check only reads the simg (hfsx.py): no root needed on Linux
+        rplat.need_privileges()
+        rplat.check_tools('image', 'fsck', *(('zstd',) if feats.get('jb') else ()))
     need_free(d, 'start')
 
     # --- 0 preflight --------------------------------------------------------------------------------------------
@@ -270,9 +248,23 @@ def main():
         jailbreak.stage_build()
         jb_prestaged = True
     if a.check:
+        rt.skip_summary()
         log('preflight OK (--check: nothing consumed)')
         return
 
+    if rplat.backend().dry:              # RENEGADE_DRY_RUN=1: show the platform commands, run nothing
+        b = rplat.backend()
+        print(f'# dry run, backend: {b.name}')
+        print('python3 -I simg2img.py', simg, raw, '--consume' if not resume else '  # (resume: skipped)')
+        h = b.attach(raw, mnt, readonly=False)
+        print('# tweaks: plist/file edits in the mounted root (root_tweaks18.py); features without prebuilt binaries skip')
+        b.detach_retry(mnt)
+        print('python3 -I hfs_trim.py', raw)
+        print('python3 -I hfsroot_owners.py', raw, '--map', raw + '.owners.tsv')
+        b.fsck(raw)
+        print('python3 -I img2simg.py', raw, simg, '--consume')
+        rt.skip_summary()
+        return
     step = 'simg2img'
     try:
         # --- 1 simg2img -----------------------------------------------------------------------------------------
@@ -331,15 +323,10 @@ def main():
         py('hfs_trim.py', raw)
         need_free(d, 'hfsroot_owners')
         py('hfsroot_owners.py', raw, '--map', omap)
-        dev = subprocess.run(['hdiutil', 'attach', '-nomount', '-imagekey', 'diskimage-class=CRawDiskImage', raw],
-                             capture_output=True, text=True, check=True).stdout.split()[0]
-        try:
-            r = subprocess.run(['fsck_hfs', '-fn', dev.replace('/disk', '/rdisk')], capture_output=True, text=True)
-        finally:
-            detach(dev)
-        log('4 fsck_hfs -fn rc=', r.returncode, (r.stdout + r.stderr).strip()[-400:])
-        if r.returncode:
-            raise SystemExit('fsck_hfs reports errors')
+        rc, text = rplat.fsck(raw)
+        log('4', rplat.fsck_tool(), '-fn rc=' if not rplat.is_linux() else '-f -n rc=', rc, text.strip()[-400:])
+        if rc:
+            raise SystemExit(rplat.fsck_tool() + ' reports errors')
         # --- 5 img2simg -----------------------------------------------------------------------------------------
         step = 'img2simg'
         need_free(d, 'img2simg --consume')
@@ -358,12 +345,13 @@ def main():
             os.rmdir(mnt)
         except OSError:
             pass
+        rt.skip_summary()
         log('update complete')
     except BaseException as e:           # SystemExit, KeyboardInterrupt, CalledProcessError, ...
         log(f'FAILED in step "{step}": {e!r}')
         if step in ('attach', 'tweaks', 'seal') and os.path.ismount(mnt):
             subprocess.run(['sync'])
-            subprocess.run(['hdiutil', 'detach', mnt], capture_output=True)
+            rplat.detach(mnt)
         if not os.path.ismount(mnt):
             try:
                 os.rmdir(mnt)
