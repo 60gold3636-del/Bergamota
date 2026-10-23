@@ -155,10 +155,10 @@ index e41699a..bc326aa 100644
     DBG("Pipe Info:");
     DBG(" GPU-id:          %s", fd_dev_name(screen->dev_id));
 diff --git a/src/gallium/frontends/osmesa/osmesa.c b/src/gallium/frontends/osmesa/osmesa.c
-index 6d61677..6f009a6 100644
+index 6d61677..c169e26 100644
 --- a/src/gallium/frontends/osmesa/osmesa.c
 +++ b/src/gallium/frontends/osmesa/osmesa.c
-@@ -59,11 +59,16 @@
+@@ -59,11 +59,18 @@
  #include "GL/osmesa.h"
  
  #include <stdio.h>
@@ -172,10 +172,12 @@ index 6d61677..6f009a6 100644
 +#include "main/fbobject.h"
 +#include "main/texobj.h"
 +#include "state_tracker/st_cb_flush.h"
++#include "state_tracker/st_cb_eglimage.h"
++#include "main/teximage.h"
  
  #include "pipe/p_context.h"
  #include "pipe/p_screen.h"
-@@ -615,7 +620,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
+@@ -615,7 +622,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
        case OSMESA_PROFILE:
           profile = attribList[i+1];
           if (profile != OSMESA_CORE_PROFILE &&
@@ -185,7 +187,7 @@ index 6d61677..6f009a6 100644
              return NULL;
           break;
        case OSMESA_CONTEXT_MAJOR_VERSION:
-@@ -664,6 +670,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
+@@ -664,6 +672,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
     memset(&attribs, 0, sizeof(attribs));
     attribs.profile = (profile == OSMESA_CORE_PROFILE)
        ? API_OPENGL_CORE : API_OPENGL_COMPAT;
@@ -194,7 +196,7 @@ index 6d61677..6f009a6 100644
     attribs.major = version_major;
     attribs.minor = version_minor;
     attribs.flags = 0;  /* ST_CONTEXT_FLAG_x */
-@@ -1027,3 +1035,132 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
+@@ -1027,3 +1037,180 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
        debug_warning("Calling OSMesaPostprocess() after OSMesaMakeCurrent()\n");
     }
  }
@@ -210,6 +212,8 @@ index 6d61677..6f009a6 100644
 +GLAPI void GLAPIENTRY OSMesaSweetForgetSurface(uint32_t surface_id);
 +GLAPI int GLAPIENTRY OSMesaSweetBlit(GLuint name, int is_texture, uint32_t surface_id, int flip, int opaque);
 +GLAPI void GLAPIENTRY OSMesaSweetStats(double *out, int n);
++GLAPI int GLAPIENTRY OSMesaSweetAttachDirect(GLuint name, uint32_t surface_id);
++GLAPI void GLAPIENTRY OSMesaSweetDirectSync(uint32_t surface_id);
 +
 +/* Frame pipeline statistics (EAGL_SHIM_DEBUG / SWEET_GPU_STATS set): cumulative milliseconds per phase of OSMesaSweetBlit.
 + * 0 blits, 1 render-wait (st_finish before the blit: GPU time of everything the client drew), 2 blit enqueue (CPU),
@@ -326,6 +330,52 @@ index 6d61677..6f009a6 100644
 +      g_sweet_stats[5] += t3 - t2;
 +   }
 +   return 1;
++}
++
++/**
++ * Zero-copy display buffer: make level 0 of texture `name` of the current context BE the memory of IOSurface `surface_id` (a linear BGRA kernel-allocated
++ * surface, via SURFACE_BO and resource_from_handle), like glEGLImageTargetTexture2DOES. CoreAnimation then renders into the surface directly: no blit,
++ * and the damage-only redraw keeps the pixels already in it. Wrapped (client-memory) surfaces are GPU read-only and are refused here (returns 0).
++ */
++GLAPI int GLAPIENTRY
++OSMesaSweetAttachDirect(GLuint name, uint32_t surface_id)
++{
++   OSMesaContext osmesa = OSMesaGetCurrentContext();
++   unsigned dw = 0, dh = 0;
++
++   if (!osmesa || !sweet_hw_active())
++      return 0;
++   struct st_context *st = osmesa->st;
++   struct gl_context *ctx = st->ctx;
++   struct gl_texture_object *t = _mesa_lookup_texture(ctx, name);
++   if (!t || t->Target != GL_TEXTURE_2D)
++      return 0;
++   struct pipe_resource *res = sweet_hw_surface_resource(surface_id, 0, &dw, &dh);
++   if (!res)
++      return 0;
++   struct gl_texture_image *img = _mesa_get_tex_image(ctx, t, GL_TEXTURE_2D, 0);
++   if (!img)
++      return 0;
++   struct st_egl_image stimg;
++   memset(&stimg, 0, sizeof(stimg));
++   stimg.texture = res;
++   stimg.format = res->format;
++   stimg.internalformat = GL_RGBA;
++   st_bind_egl_image(ctx, t, img, &stimg, false, true);
++   return t->surface_based && t->pt == res;
++}
++
++/** Finish the GPU work and make it visible to the CPU / display (clean+invalidate the surface alias). */
++GLAPI void GLAPIENTRY
++OSMesaSweetDirectSync(uint32_t surface_id)
++{
++   OSMesaContext osmesa = OSMesaGetCurrentContext();
++
++   if (!osmesa || !sweet_hw_active())
++      return;
++   FLUSH_VERTICES(osmesa->st->ctx, 0, 0);
++   st_finish(osmesa->st);
++   sweet_hw_surface_sync(surface_id);
 +}
 diff --git a/src/gallium/targets/osmesa/meson.build b/src/gallium/targets/osmesa/meson.build
 index 3c37161..1fce590 100644
