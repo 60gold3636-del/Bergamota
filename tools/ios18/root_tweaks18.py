@@ -327,9 +327,10 @@ def ssh(root):
             os.chmod(kf, 0o600)
             print('ssh: host key generated', os.path.basename(kf))
 
-    # launchd job: -s no password logins, bound to the USB link address
+    # launchd job: -s no password logins; '-p 22' listens on IPv4 and IPv6 (the link-local address still answers when
+    # configd/IPConfiguration drops the static IPv4); the only network is the USB link
     job = {'Label': DROPBEAR_LABEL,
-           'ProgramArguments': ['/usr/local/bin/dropbear', '-F', '-E', '-s', '-p', '192.168.7.2:22',
+           'ProgramArguments': ['/usr/local/bin/dropbear', '-F', '-E', '-s', '-p', '22',
                                 '-r', DROPBEAR_KEY],
            'RunAtLoad': True, 'KeepAlive': True, 'UserName': 'root',
            'StandardErrorPath': '/dev/console'}
@@ -341,7 +342,7 @@ def ssh(root):
     plist = load(lpath)
     plist['LaunchDaemons'][jpath] = job
     save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
-    print('ssh: launchd job', DROPBEAR_LABEL, '(192.168.7.2:22, key-only)')
+    print('ssh: launchd job', DROPBEAR_LABEL, '(port 22 v4+v6, key-only)')
 
 
 NETCFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'research', 'sweetnet', 'sweetnetcfg')

@@ -1,7 +1,6 @@
 import sys, struct, subprocess
 sys.path.insert(0,'.')
-import adis, stubs
-from symb import *
+import adis
 from capstone import *
 # arm64e thin binary; map vmaddr->file offset via segments
 def load(path):
