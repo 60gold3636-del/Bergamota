@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index bbe358f..dfefbdb 100644
+index bbe358f..99a3869 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -55,6 +55,7 @@ extern "C" int sweet_battery_hud(int *percent, int *ma);        /* iokit/Kernel/
@@ -10,7 +10,7 @@ index bbe358f..dfefbdb 100644
  
  #if defined(SWEET)
  #include <IOKit/IOService.h>
-@@ -231,6 +232,22 @@ public:
+@@ -231,6 +232,26 @@ public:
  	uint32_t      fZcCount, fZcNo[8], fZcNoNext, fZcWhySeen;
  	uint64_t      fZcFrames, fCopyFrames;
  	bool          zcPresent(const uint8_t *rec, uint32_t mask);
@@ -25,15 +25,19 @@ index bbe358f..dfefbdb 100644
 +	 * released (set by zcPoll on the work loop). Compared as signed differences (ids wrap).
 +	 */
 +	bool          fSwapSync;
-+	uint32_t      fSwapNewest, fSwapScanID, fSwapDone, fCurSwapID;
++	uint32_t      fSwapNewest, fSwapScanID, fSwapPrevScan, fSwapDone, fCurSwapID;
++	uint32_t      fSwapDepth;       /* sweetfb_swapdepth: 1 = SwapWait(N) waits until N latched, 2 (default) = until N-1 latched */
++	bool          fWatching;        /* a frame is queued: the swap timer polls for its latch every 500 us */
++	void          latchWatch(void);
 +	bool          fVsyncAlign;      /* sweetfb_vsyncalign: the vsync timer follows the latch times SwapWait observed */
 +	uint64_t      fPhaseAbs;        /* a latch (vsync) as observed by SwapWait, abs time; 0 = none yet */
 +	uint64_t      fPeriodAbs;       /* vsync period, abs units */
 +	IOReturn      swapWait(uint32_t id);
++	bool          swapReady(uint32_t id);
  	/*
  	 * Display path statistics (patch 0210, sysctl kern.sweet_fb). Totals since
  	 * boot; once a second the window since the last publish is turned into
-@@ -247,6 +264,7 @@ public:
+@@ -247,6 +268,7 @@ public:
  		uint64_t copyAbs, copyMaxAbs;   /* copy path, latch waits excluded */
  		uint64_t zcAbs, zcMaxAbs;       /* zero-copy: cache clean + register programming */
  		uint64_t cleanAbs, cleans, cleanSkips;
@@ -41,7 +45,7 @@ index bbe358f..dfefbdb 100644
  	} fSt, fStPrev;
  	/*
  	 * Direct scanout (sweetfb_direct=1, patch 0211): hw scaler + page flipping + zero-copy
-@@ -502,10 +520,14 @@ AppleCLCD::start(IOService *provider)
+@@ -502,10 +524,14 @@ AppleCLCD::start(IOService *provider)
  			zcReq = 1;
  		}
  		{
@@ -59,7 +63,7 @@ index bbe358f..dfefbdb 100644
  		}
  		if (zcReq && smmuLevel == 0) {
  			smmuLevel = 1;
-@@ -545,13 +567,25 @@ AppleCLCD::start(IOService *provider)
+@@ -545,13 +571,27 @@ AppleCLCD::start(IOService *provider)
  			}
  		}
  		if (fZc && fZcOK) {
@@ -75,20 +79,22 @@ index bbe358f..dfefbdb 100644
  		if (fDirect) {
  			fEarly = fZc && fZcOK;
 +			{
-+				int ss = 1, va = 1;
++				int ss = 1, va = 1, depth = 2;
++				PE_parse_boot_argn("sweetfb_swapdepth", &depth, sizeof(depth));
++				fSwapDepth = depth <= 1 ? 1 : 2;
 +				PE_parse_boot_argn("sweetfb_swapsync", &ss, sizeof(ss));
 +				PE_parse_boot_argn("sweetfb_vsyncalign", &va, sizeof(va));
 +				fSwapSync = fEarly && ss != 0;
 +				fVsyncAlign = fSwapSync && va != 0;
 +				if (fEarly) {
-+					IOLog("SWEET FB: swap completion %s (SwapWait waits for the MDP latch; sweetfb_swapsync=0 = answer at once), vsync timer %s\n",
-+					    fSwapSync ? "honest" : "immediate", fVsyncAlign ? "follows the observed latch (sweetfb_vsyncalign=0 = free running)" : "free running");
++					IOLog("SWEET FB: swap completion %s (depth %u: SwapWait(N) waits for swap N%s to latch; sweetfb_swapsync=0 = answer at once), vsync timer %s\n",
++					    fSwapSync ? "honest" : "immediate", fSwapDepth, fSwapDepth == 1 ? "" : "-1", fVsyncAlign ? "follows the observed latch (sweetfb_vsyncalign=0 = free running)" : "free running");
 +				}
 +			}
  			if (!fEarly) {
  				IOLog("SWEET FB: sweetfb_direct=1 but zero-copy is not available (%s): every frame is copied at sweetfb_hz\n",
  				    !fHw || !fFlip ? "no hardware scaler / page flipping" : (!fZcOK ? "MDP SMMU not verified bypass" : "no low pool"));
-@@ -612,9 +646,37 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -612,9 +652,37 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  	uint64_t now = mach_absolute_time();
  	uint64_t count = ++fb->fVsyncCount;
  	fb->fSt.ticks++;
@@ -127,7 +133,7 @@ index bbe358f..dfefbdb 100644
  		0, 0,
  	};
  
-@@ -640,7 +702,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -640,7 +708,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  			fb->fBlackDone = true;
  			fb->blackout();
  		}
@@ -136,7 +142,7 @@ index bbe358f..dfefbdb 100644
  		return;
  	}
  	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0;
-@@ -670,7 +732,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -670,7 +738,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  	sweet_hold_release(taken);      /* copied: CA may render into them again */
  	fb->statsTick(now);
  	fb->hudTick(now);
@@ -145,15 +151,24 @@ index bbe358f..dfefbdb 100644
  }
  
  /*
-@@ -688,6 +750,7 @@ AppleCLCD::swapFired(OSObject *owner, IOTimerEventSource *)
+@@ -688,6 +756,8 @@ AppleCLCD::swapFired(OSObject *owner, IOTimerEventSource *)
  	if (fb->fPowerOff) {
  		return;         /* the vsync tick runs the backlight ramp and redraws on power on */
  	}
 +	fb->zcPoll();           /* 0216: also kicked by SwapWait when it saw the latch, so the frame it waited for is released now */
++	fb->latchWatch();       /* 0217: while a frame is queued this timer comes back every 500 us */
  	IOLockLock(fb->fLock);
  	if (!fb->fDirty) {
  		IOLockUnlock(fb->fLock);
-@@ -762,6 +825,8 @@ AppleCLCD::statsTick(uint64_t now)
+@@ -702,6 +772,7 @@ AppleCLCD::swapFired(OSObject *owner, IOTimerEventSource *)
+ 	fb->quietConsole();
+ 	if (fb->zcPresent(fb->fEarlyRec, get32(fb->fEarlyRec, 0x104))) {
+ 		sweet_hold_release(taken);      /* zcPresent holds the surface itself until its frame latched */
++		fb->latchWatch();
+ 		return;
+ 	}
+ 	SweetSurface *dropped[4] = {};
+@@ -762,6 +833,8 @@ AppleCLCD::statsTick(uint64_t now)
  	uint64_t copyAvg = dCopy ? sweet_abs_us(c.copyAbs - p.copyAbs) * 100 / dCopy : 0;
  	uint64_t zcAvg = dZc ? sweet_abs_us(c.zcAbs - p.zcAbs) * 100 / dZc : 0;
  	uint64_t clAvg = dCl ? sweet_abs_us(c.cleanAbs - p.cleanAbs) * 100 / dCl : 0;
@@ -162,7 +177,7 @@ index bbe358f..dfefbdb 100644
  	uint64_t lwAvg = dLw ? sweet_abs_us(c.latchWaitAbs - p.latchWaitAbs) * 100 / dLw : 0;
  	const char *mode = fZc && fZcOK ? (fDirect ? "direct" : "zc") : "copy";
  	const char *smmu = fSmmuA == -2 ? "untested" : ((fSmmuA == 1 && fSmmuB == 1) ? "bypass" : "translate-or-unknown");
-@@ -776,14 +841,16 @@ AppleCLCD::statsTick(uint64_t now)
+@@ -776,14 +849,16 @@ AppleCLCD::statsTick(uint64_t now)
  	    "zc_frames=%llu zc_s=%u.%02u copy_frames=%llu copy_s=%u.%02u scan_replaced=%llu scan_replaced_s=%u.%02u "
  	    "copy_us=%u.%02u copy_us_max=%llu zc_us=%u.%02u zc_us_max=%llu clean_us=%u.%02u cleans=%llu clean_skips=%llu "
  	    "latch_waits=%llu latch_wait_us=%u.%02u latch_timeouts=%llu vsync_s=%u.%02u "
@@ -182,7 +197,7 @@ index bbe358f..dfefbdb 100644
  	#undef PER_S
  	sweet_fb_stats_publish(line);
  	if (fStLogSecs != 0 && (fStLogT == 0 || sweet_abs_us(now - fStLogT) >= (uint64_t)fStLogSecs * 1000000)) {
-@@ -878,6 +945,7 @@ AppleCLCD::swap(const uint8_t *rec)
+@@ -878,6 +953,7 @@ AppleCLCD::swap(const uint8_t *rec)
  	}
  	IOLockLock(fLock);
  	fSt.swaps++;
@@ -190,15 +205,18 @@ index bbe358f..dfefbdb 100644
  	if (fDirty) {
  		fSt.coalesced++;        /* the previous swap never reached the panel */
  	}
-@@ -1363,6 +1431,7 @@ AppleCLCD::scanAddr(uint32_t pa, uint32_t stride, bool hwFrame)
+@@ -1363,6 +1439,10 @@ AppleCLCD::scanAddr(uint32_t pa, uint32_t stride, bool hwFrame)
  	    (*(volatile uint32_t *)(fMdp + SWEET_MDP_CTL0 + SWEET_MDP_CTL_FLUSH) & fLastFlush) != 0) {
  		fSt.scanReplaced++;     /* the previous address was still waiting for its vsync: that frame is never shown */
  	}
++	if (fCurSwapID != fSwapScanID) {
++		__atomic_store_n(&fSwapPrevScan, fSwapScanID, __ATOMIC_RELEASE);        /* the frame before this one (it is, or was, on the panel) */
++	}
 +	__atomic_store_n(&fSwapScanID, fCurSwapID, __ATOMIC_RELEASE);   /* before the flush: a poller that sees it clear sees this id */
  	__asm__ volatile ("dsb sy" ::: "memory");      /* WC writes of the frame land first */
  	p[SSPP_SRC0_ADDR / 4] = pa;
  	p[SSPP_YSTRIDE0 / 4] = stride;
-@@ -1442,17 +1511,17 @@ sweet_dcache_clean_va(const void *va, size_t len)
+@@ -1442,17 +1522,17 @@ sweet_dcache_clean_va(const void *va, size_t len)
  void
  AppleCLCD::zcPoll(void)
  {
@@ -219,7 +237,7 @@ index bbe358f..dfefbdb 100644
  	for (uint32_t i = 0; i < keep; i++) {
  		sweet_hold(fZcHeld[i], false);
  		fZcHeld[i]->release();
-@@ -1461,6 +1530,65 @@ AppleCLCD::zcPoll(void)
+@@ -1461,6 +1541,111 @@ AppleCLCD::zcPoll(void)
  	fZcHeld[0] = newest;
  	fZcHeld[1] = fZcHeld[2] = fZcHeld[3] = NULL;
  	fZcCount = newest != NULL ? 1 : 0;
@@ -239,6 +257,52 @@ index bbe358f..dfefbdb 100644
 + * watched the bits go from set to clear. Not in copy mode (frames are paced by sweetfb_hz there), with the display off,
 + * for ids that were never swapped, or with sweetfb_swapsync=0.
 + */
++/*
++ * Swap `id` may be answered "complete" (0217, one frame in flight): it was latched, or (depth 2) it is the frame now
++ * queued for the panel and the frame scanned before it has latched. CoreAnimation then renders N+1 while N waits for the
++ * vsync. What keeps N+1 off the surfaces still in use is not this call but the in-use hold (state page +0x18, read by
++ * IOSurfaceIsInUse when CoreAnimation picks its next target): every scanned surface stays held from SwapEnd until the
++ * frame that replaced it has latched (zcPoll), i.e. N and the frame on the panel are both held while N+1 is drawn.
++ */
++bool
++AppleCLCD::swapReady(uint32_t id)
++{
++	uint32_t done = __atomic_load_n(&fSwapDone, __ATOMIC_ACQUIRE);
++	if ((int32_t)(done - id) >= 0) {
++		return true;
++	}
++	if (fSwapDepth >= 2) {
++		uint32_t scan = __atomic_load_n(&fSwapScanID, __ATOMIC_ACQUIRE);
++		uint32_t prev = __atomic_load_n(&fSwapPrevScan, __ATOMIC_ACQUIRE);
++		return scan == id && (int32_t)(done - prev) >= 0;
++	}
++	return false;
++}
++
++/*
++ * A frame is queued (CTL flush bits set): poll for its latch every 500 us on the work loop, so the older surfaces are
++ * released (zcPoll, at the top of swapFired) within half a millisecond of the vsync and the vsync phase is learned
++ * (midpoint of the polling interval) without any caller having to wait for it.
++ */
++void
++AppleCLCD::latchWatch(void)
++{
++	volatile uint32_t *flush = (volatile uint32_t *)(fMdp + SWEET_MDP_CTL0 + SWEET_MDP_CTL_FLUSH);
++	uint32_t lf = fLastFlush;
++	if (lf != 0 && (*flush & lf) != 0) {
++		fWatching = true;
++		fSwapTimer->setTimeoutUS(500);
++	} else if (fWatching) {
++		fWatching = false;
++		if (fVsyncAlign) {
++			uint64_t half;
++			nanoseconds_to_absolutetime(250 * NSEC_PER_USEC, &half);
++			uint64_t now = mach_absolute_time();
++			__atomic_store_n(&fPhaseAbs, now > half ? now - half : now, __ATOMIC_RELEASE);
++		}
++	}
++}
++
 +IOReturn
 +AppleCLCD::swapWait(uint32_t id)
 +{
@@ -248,7 +312,7 @@ index bbe358f..dfefbdb 100644
 +	if ((int32_t)(id - __atomic_load_n(&fSwapNewest, __ATOMIC_ACQUIRE)) > 0) {
 +		return kIOReturnSuccess;        /* not a swap we know */
 +	}
-+	if ((int32_t)(__atomic_load_n(&fSwapDone, __ATOMIC_ACQUIRE) - id) >= 0) {
++	if (swapReady(id)) {
 +		return kIOReturnSuccess;
 +	}
 +	volatile uint32_t *flush = (volatile uint32_t *)(fMdp + SWEET_MDP_CTL0 + SWEET_MDP_CTL_FLUSH);
@@ -256,7 +320,7 @@ index bbe358f..dfefbdb 100644
 +	bool sawBusy = false, kicked = false;
 +	nanoseconds_to_absolutetime((uint64_t)fVsyncUS * 1500, &limit);        /* 1.5 frames */
 +	for (;;) {
-+		if ((int32_t)(__atomic_load_n(&fSwapDone, __ATOMIC_ACQUIRE) - id) >= 0) {
++		if (swapReady(id)) {
 +			fSt.swapWaits++;
 +			fSt.swapWaitAbs += mach_absolute_time() - t0;
 +			return kIOReturnSuccess;
@@ -285,7 +349,7 @@ index bbe358f..dfefbdb 100644
  }
  
  void
-@@ -1500,6 +1628,7 @@ bool
+@@ -1500,6 +1685,7 @@ bool
  AppleCLCD::zcPresent(const uint8_t *rec, uint32_t mask)
  {
  	int only = -1;
@@ -293,7 +357,7 @@ index bbe358f..dfefbdb 100644
  	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
  		if ((mask & (1u << layer)) && get32(rec, 0x54 + 4 * layer) != 0) {
  			if (only >= 0) {
-@@ -1589,7 +1718,11 @@ AppleCLCD::zcPresent(const uint8_t *rec, uint32_t mask)
+@@ -1589,7 +1775,11 @@ AppleCLCD::zcPresent(const uint8_t *rec, uint32_t mask)
  	uint32_t gpuBlits = __atomic_load_n(&s->gpuBlits, __ATOMIC_ACQUIRE);
  	bool gpuFrame = gpuBlits != s->gpuBlitsSeen;    /* the GPU wrote it since the last scan (BO_SYNC) */
  	s->gpuBlitsSeen = gpuBlits;
@@ -306,7 +370,7 @@ index bbe358f..dfefbdb 100644
  	if (clean) {
  		/* the CPU drew through its cache (write-back mapping): the MDP reads DRAM */
  		uint64_t tc0 = mach_absolute_time();
-@@ -2299,6 +2432,7 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -2299,6 +2489,7 @@ AppleCLCD::present(const uint8_t *rec)
  {
  	uint32_t mask = get32(rec, 0x104);
  
@@ -314,7 +378,7 @@ index bbe358f..dfefbdb 100644
  	quietConsole();
  
  	if (fZc && zcPresent(rec, mask)) {
-@@ -2611,6 +2745,10 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -2611,6 +2802,10 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
  		}
  		break;
  	case kSweetFBSwapWait:
