@@ -21,6 +21,7 @@
 #endif
 #import "eagl_private.h"
 #import <objc/runtime.h>
+#import <mach-o/dyld.h>
 #import <pthread.h>
 #import <stdatomic.h>
 #import <objc/message.h>
@@ -515,9 +516,9 @@ void GLCSetProfilerStorage(void) {}
 #pragma GCC visibility pop
 
 #ifdef EAGL_INJECT
-static void patch_class(Class ours, const char *realName) {
+static int patch_class(Class ours, const char *realName) {
     Class real = objc_getClass(realName);
-    if (!real || !ours) { fprintf(stderr, "EAGL(shim): cannot patch %s\n", realName); return; }
+    if (!real || !ours) return 0;
     for (int meta = 0; meta < 2; meta++) {
         Class from = meta ? object_getClass(ours) : ours, to = meta ? object_getClass(real) : real;
         unsigned n = 0;
@@ -527,9 +528,22 @@ static void patch_class(Class ours, const char *realName) {
         free(ms);
         if (getenv("EAGL_SHIM_DEBUG")) fprintf(stderr, "EAGL(shim): patched %u %s methods of %s\n", n, meta ? "class" : "instance", realName);
     }
+    return 1;
 }
+// The inserted library initializes before the process links OpenGLES in some cases: patch as soon as the real classes exist
+// (now, or when a later image load brings them), exactly once.
+static void try_patch(void) {
+    static int done;
+    if (done) return;
+    if (objc_getClass("EAGLContext") && objc_getClass("EAGLSharegroup")) {
+        patch_class(objc_getClass("BGEAGLContext"), "EAGLContext");
+        patch_class(objc_getClass("BGEAGLSharegroup"), "EAGLSharegroup");
+        done = 1;
+    }
+}
+static void on_image(const struct mach_header *mh, intptr_t slide) { (void)mh; (void)slide; try_patch(); }
 __attribute__((constructor)) static void eagl_inject_patch(void) {
-    patch_class(objc_getClass("BGEAGLContext"), "EAGLContext");
-    patch_class(objc_getClass("BGEAGLSharegroup"), "EAGLSharegroup");
+    try_patch();
+    _dyld_register_func_for_add_image(on_image);
 }
 #endif

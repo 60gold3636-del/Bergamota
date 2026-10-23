@@ -274,3 +274,28 @@ First things to look at on failure: `SWEET_DRM_TRACE=1` (failing msm requests), 
 Known risks: freedreno's resource layout for BGRA linear with a pitch that is not a multiple of 64 bytes (the shim's own pool surfaces use multiples of 64; surfaces made by other processes may be rejected -> CPU fallback);
 a6xx features Mesa assumes that the kernel/CP setup of stage 8 does not program yet (HWCG, CP_PROTECT, UBWC config, GBIF/UCHE minimum; see GPU_KERNEL.md risk 2); GET_PARAMs the kernel answers `kIOReturnUnsupported` for
 (UBWC_*, HIGHEST_BANK_BIT, MACROTILE_MODE: Mesa then uses defaults which may be wrong for the SDM845 memory config); no fence fds/syncobj (freedreno falls back to its own); 32-bit GPU VA space; one ring.
+
+## The ES renderer as a bootable option: `bglrender` (root tweak + boot-arg), 2026-10-23
+
+Why not the live override of the earlier plan: the phone has no `launchctl` (and launchd 18 reads the `launchd.plist` cache at boot), so a running backboardd cannot be restarted with a different environment without
+changing files that outlive the session. The approved design below keeps everything inert unless the kernel boot-args ask for it, so "boot the ES renderer" = boot an image, "go back" = boot the normal one.
+
+* **Launcher** `gpu/eagl/launch/bgl-launch.c` (arm64e, 50 KB): the backboardd job points here; it reads `kern.bootargs` (`sysctlbyname`, readable as mobile) and then execs the real `/usr/libexec/backboardd`:
+  `bglrender=1` -> `DYLD_INSERT_LIBRARIES=/usr/local/lib/bergamota-gl/OpenGLES.framework/OpenGLES` (GPU if the kernel has one, else softpipe: the shim's libOSMesa decides); `bglrender=soft` -> same plus `SWEET_GPU=0`;
+  `bgldebug=1` adds `EAGL_SHIM_DEBUG=1 SWEET_GPU_DEBUG=1`. Anything else (no arg, other value, sysctl failure, a payload file missing/unreadable, `/private/var/tmp/bgl-render.state` not writable) = plain backboardd, unchanged.
+  Crash-loop guard: the state file holds (boot time, last start, strikes); a start less than 60 s after the previous start of the same boot is a strike, three strikes -> plain backboardd for the rest of that boot; a new boot resets it
+  (nothing carries across a reboot). While injecting, stderr of backboardd (and so the shim's messages) goes to `/private/var/tmp/bgl-backboardd.log` (truncated above 1 MiB).
+  Verified on the phone with a test build (`-DBGL_TEST`: paths and boot-args overridable) and the real shim libraries: no arg -> plain; `soft` -> insert + `SWEET_GPU=0`; `1`+`bgldebug=1`; strike counter 0,1,2 then plain on the 4th start in a minute;
+  bogus value and missing libraries -> plain; the real `kern.bootargs` read as uid 501 works. Dyld honours `DYLD_INSERT_LIBRARIES` for platform binaries on this kernel (checked with `/bin/ps`, `/bin/df`).
+* **Payload** `gpu/eagl/make-payload.sh` -> `research/bergamota-gl/` (git-ignored; `MANIFEST.sha256`): `bgl-launch`, the injection build of the shim (`OpenGLES.framework/OpenGLES`, 350 KB), `libOSMesa.8.dylib` (Mesa 25.0.7 freedreno + softpipe, 15.3 MB),
+  `libdrm.2.dylib` (stand-in, 87 KB); arm64e, `pacstrip --sign`. The shim's inject constructor now also patches when OpenGLES shows up in a later image load (`_dyld_register_func_for_add_image`).
+* **Root side** (branch `renegade-auto`, `tools/renegade/root_tweaks18.py`, feature `bglrender`, ON by default, `--no-bglrender` / `RENEGADE_NO_BGLRENDER=1` to skip, also in `renegade update`): installs the payload into `/usr/local/lib/bergamota-gl/` (launcher last) and changes only
+  the `launchd.plist` cache entry of `com.apple.backboardd` (ProgramArguments[0] `/usr/libexec/backboardd` -> `/usr/local/lib/bergamota-gl/bgl-launch`). Idempotent; skipped with a message (job untouched) when the payload is not built. It looks for the payload in
+  `$RENEGADE_BGL`, `research/bergamota-gl` of its own checkout, of the main checkout and of `../ios-beryllium-gpu-eagl`. Tested on a copy of the real launchd.plist (one entry changed, second run no-op).
+* **Boot images** `gpu/eagl/make-boot-image.py BASE OUT --add ARG --del KEY`: edits only the 608-byte cmdline of the SWEETXNU payload; kernel, ADT, Enxerto and the Android header stay byte-identical (27 bytes differ).
+  `shim/out/shim-boot-gles-soft.img` = `shim-boot-ios18-fixvar-dma.img` minus `sweetfixvar=1`, plus `bglrender=soft` (sha256 1a08e6c4...0a37). `shim-boot-gles-gpu.img` later: the gpu-kernel 8d image/ADT `beryllium-hi-3x-gpufwz.adt` + `sweetgpu=8` + `bglrender=1`
+  (`make-boot-image.py <8d image> shim-boot-gles-gpu.img --add bglrender=1`).
+* **To use:** `renegade update` on the root image (installs payload + job change), flash, boot `shim-boot-gles-soft.img`. **To go back:** boot the normal image (no `bglrender`): backboardd then runs plain through the launcher. To remove the tweak from the root for good:
+  `renegade update --no-bglrender` does not undo it; restore ProgramArguments[0] to `/usr/libexec/backboardd` in the launchd.plist cache.
+* **Unknowns the first boot will answer:** whether backboardd's CA picks the GLES path at all (where the render server creates its `EAGLContext` is still not located); whether the process sandbox lets the injected library and `IOSurface`/IOKit calls through (the library is mapped by dyld before the sandbox is applied; the GPU path additionally
+  needs `iokit-open` for `SweetAdreno630`); what the frame cost is (softpipe: hundreds of ms per frame at 256x256, so a 750x1334 screen will be visibly slow). Everything lands in `/private/var/tmp/bgl-backboardd.log` (+ the unified log).
