@@ -78,7 +78,7 @@ static struct ucd ucd[NQ] __attribute__((aligned(128)));
 /* small DMA buffer for READ CAPACITY / UNMAP parameter lists, one cache line */
 static uint8_t pbuf[64] __attribute__((aligned(64)));
 
-static int inited, nq;
+static int inited, nq, qd = NQ;	/* nq: slots available, qd: commands allowed in flight (oem ufsq) */
 static uint32_t cap_reg;
 static void (*idle_fn)(void);
 
@@ -97,6 +97,16 @@ static uint32_t pk(uint32_t b0, uint32_t b1, uint32_t b2, uint32_t b3)
 static uint32_t be32(const uint8_t *p)
 {
 	return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+int ufs_set_depth(int n)
+{
+	if (n < 1)
+		n = 1;
+	if (n > NQ)
+		n = NQ;
+	qd = n;
+	return qd;
 }
 
 void ufs_set_idle(void (*fn)(void))
@@ -358,11 +368,21 @@ static int xfer_issue(unsigned i, int retry)
 	return 0;
 }
 
+static int popcount8(uint32_t v)
+{
+	int n = 0;
+	for (; v; v &= v - 1)
+		n++;
+	return n;
+}
+
 static void xfer_fill(void)
 {
 	for (int i = 0; i < nq && x.left && !x.err; i++) {
 		if (x.inflight & (1u << i))
 			continue;
+		if (popcount8(x.inflight) >= qd)
+			break;
 		uint32_t n = x.left > CMD_BLKS ? CMD_BLKS : (uint32_t)x.left;
 		x.c[i].lba = x.lba;
 		x.c[i].nblk = n;

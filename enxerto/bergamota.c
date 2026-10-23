@@ -679,6 +679,24 @@ static const char *p_part_hash(void *ctx, const char *name, uint64_t off, uint64
 	return e;
 }
 
+static const char *p_part_selftest(void *ctx, const char *name)
+{
+	const char *why;
+	const struct stor_part *p = st_part(name, &why);
+
+	(void)ctx;
+	if (!p)
+		return why;
+	last_summary[0] = 0;
+	return stor_selftest(&g_stor, p);
+}
+
+static void p_set_ufs_depth(void *ctx, int n)
+{
+	(void)ctx;
+	ufs_set_depth(n);
+}
+
 static void p_set_verify(void *ctx, int on)
 {
 	(void)ctx;
@@ -807,6 +825,8 @@ const char *bergamota_fastboot(uintptr_t dtb)
 	pl.part_erase = p_part_erase;
 	pl.part_hash = p_part_hash;
 	pl.set_verify = p_set_verify;
+	pl.part_selftest = p_part_selftest;
+	pl.set_ufs_depth = p_set_ufs_depth;
 	pl.gpt_info = p_gpt_info;
 	pl.usb_speed = p_usb_speed;
 	fb_init(&fb, &tr, &pl);

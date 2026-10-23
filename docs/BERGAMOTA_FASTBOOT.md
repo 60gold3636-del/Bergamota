@@ -91,6 +91,9 @@ at block 0x2b8c00, 109643 MiB per the xnu driver log); `oem gpt` shows what was 
   `fastboot oem hash:userdata:0:40000000:10000` then `fastboot get_staged out.bin` (1 GiB at 64 KiB blocks = 16384 hashes = 256 KiB).
 - `oem verify:1|0` (also `getvar verify`): after every write the range is read back from UFS and compared; a mismatch fails the command (`read-back verify FAILED`). Persists until reboot.
 - `oem gpt`: INFO lines with the LUNs and the allowlisted partitions found.
+- `oem selftest:<p>`: read-only test of the UFS read path with **dirty CPU caches** (the kernel-side corruption scenario): inside a cached window both scratch halves are filled with patterns,
+  the same 2 MiB (at the start, about a third and about two thirds of the partition) is read into both, the halves must be equal and must not hold the old pattern. `OKAYselftest passed` or a FAIL.
+- `oem ufsq:<1..8>`: commands kept in flight on UFS (default 8); `oem ufsq:1` turns pipelining off, a debugging knob if the multi-slot path misbehaves on hardware.
 - `reboot`, `reboot-bootloader`, `continue`: as before.
 
 ### UFS driver (ufs.c) and DMA cache maintenance
@@ -148,7 +151,8 @@ A sparse INPUT's DONT_CARE counts as zeros in delta mode (the result is the expa
 Build: `BOARD=beryllium DTB=.../dtb/beryllium/dtb enxerto/build.sh` -> `enxerto/out/bergamota-fastboot.img`, copied to `shim/out/bergamota-fastboot-flash.img`.
 1. From ABL fastboot: `fastboot boot bergamota-fastboot-flash.img`. Expect the Bergamota screen, serial `bergamota0001`.
 2. Read-only: `fastboot -s bergamota0001 getvar version-bootloader` (`bergamota-2`), `getvar bergamota-flash` (1), `getvar usb-speed`, `getvar partition-size:userdata` (about 109643 MiB),
-   `getvar partition-size:logo`, `fastboot oem gpt` (INFO lines), `python3 tools/bergamota-flash.py hash userdata --length 0x10000000` (256 MiB: MB/s, all-zero count, digest); run it twice, the digest must be identical.
+   `getvar partition-size:logo`, `fastboot oem gpt` (INFO lines), `fastboot oem selftest:userdata` (dirty-cache read test), `python3 tools/bergamota-flash.py hash userdata --length 0x10000000`
+   (256 MiB: MB/s, all-zero count, digest); run it twice, the digest must be identical. If a read errors or hangs, `fastboot oem ufsq:1` and retry (no pipelining).
 3. `fastboot oem verify:1`, flash `logo` (small): `python3 tools/bergamota-flash.py flash logo splash.img` (full + hash verify), reboot to see the splash.
 4. Delta flash of userdata with `--device-verify` for the first one, then without.
 

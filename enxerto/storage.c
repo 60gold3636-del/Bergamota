@@ -328,6 +328,44 @@ const char *stor_hash(struct stor *s, const struct stor_part *p, uint64_t off, u
 	return e;
 }
 
+const char *stor_selftest(struct stor *s, const struct stor_part *p)
+{
+	const char *e = check_range(s, p, 0, 0);
+	uint8_t *a = s->scratch, *b = s->scratch + STOR_HALF;
+	uint64_t span = STOR_HALF / STOR_BLK, nblk = p ? p->nblk : 0;
+
+	if (e)
+		return e;
+	if (nblk < 3 * span)
+		return "partition too small for the self test";
+	s->fill_len = 0;
+	if (s->cached)
+		s->cached(s->ctx, 1, 0, 0);
+	for (unsigned round = 0; round < 3 && !e; round++) {
+		uint64_t lba = p->first + round * (nblk / 3 / span) * span;	/* start, ~1/3, ~2/3 */
+		volatile uint64_t *va = (volatile uint64_t *)a, *vb = (volatile uint64_t *)b;
+		for (uint64_t i = 0; i < STOR_HALF / 8; i++) {		/* dirty cache lines in both halves */
+			va[i] = 0xa5a5a5a5a5a5a5a5ULL ^ i;
+			vb[i] = 0x5a5a5a5a5a5a5a5aULL ^ i;
+		}
+		if ((e = s->bd.read(s->bd.ctx, p->lun, lba, span, a)) || (e = s->bd.read(s->bd.ctx, p->lun, lba, span, b)))
+			break;
+		if (!same(a, b, STOR_HALF)) {
+			e = "selftest FAILED: two reads of the same blocks differ (DMA/cache problem)";
+			break;
+		}
+		uint64_t stale = 0;		/* lines still holding our dirty pattern would mean the read never landed or was overwritten */
+		for (uint64_t i = 0; i < STOR_HALF / 8; i++)
+			stale += (va[i] == (0xa5a5a5a5a5a5a5a5ULL ^ i));
+		if (stale > STOR_HALF / 8 / 2)
+			e = "selftest FAILED: the buffer still holds the pre-read pattern";
+		note_progress(s, STOR_HALF);
+	}
+	if (s->cached)
+		s->cached(s->ctx, 0, 0, 0);
+	return e;
+}
+
 const char *stor_sync(struct stor *s, const struct stor_part *p)
 {
 	const char *e = check_range(s, p, 0, 0);

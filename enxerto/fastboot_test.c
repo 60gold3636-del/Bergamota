@@ -450,6 +450,13 @@ static const char *tp_hash(void *ctx, const char *name, uint64_t off, uint64_t l
 	return p ? stor_hash(&g_stor, p, off, len, bs, out) : why;
 }
 static void tp_verify(void *ctx, int on) { (void)ctx; g_stor.verify = on; }
+static const char *tp_selftest(void *ctx, const char *name)
+{
+	(void)ctx;
+	const char *why;
+	const struct stor_part *p = stor_find(&g_stor, name, &why);
+	return p ? stor_selftest(&g_stor, p) : why;
+}
 
 static void setup_storage(int dup_boot, int bad_crc)
 {
@@ -464,6 +471,7 @@ static void setup_storage(int dup_boot, int bad_crc)
 	plat_stor.part_erase = tp_erase;
 	plat_stor.part_hash = tp_hash;
 	plat_stor.set_verify = tp_verify;
+	plat_stor.part_selftest = tp_selftest;
 	cur_platform = &plat_stor;
 }
 
@@ -1187,6 +1195,15 @@ static void test_flash_protocol(void)
 		free(s.d);
 		free(img);
 	}
+
+	/* ---- oem selftest (read-only) and the ufsq knob ---- */
+	setup_storage(0, 0);
+	reset_fake();
+	cmd("oem selftest:userdata"); cmd("oem selftest:modem"); cmd("oem selftest:logo"); cmd("oem ufsq:1"); cmd("oem ufsq:9"); cmd("oem ufsq:");
+	fb = run_session(&r);
+	CHECK(resp_is(0, "OKAYselftest passed") && resp_starts(1, "FAILpartition not allowed") && resp_starts(2, "FAIL") /* logo: 1 MiB, too small */
+	      && resp_is(3, "OKAY") && resp_starts(4, "FAIL") && resp_starts(5, "FAIL"));
+	CHECK(total_writes() == 0 && win_on == win_off && win_on >= 1);
 
 	/* ---- oem gpt / unknown oem ---- */
 	setup_storage(0, 0);

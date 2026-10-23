@@ -592,6 +592,21 @@ static void fb_oem(struct fb *fb, const char *a)
 		if (fb->p->set_verify)
 			fb->p->set_verify(fb->p->ctx, on);
 		fb_resp(fb, "OKAY", on ? "verify on" : "verify off");
+	} else if (fb_starts(a, "selftest:")) {
+		const char *name = a + 9;
+		const char *e = "no storage";
+		if (!fb_part_allowed(name))
+			e = FB_NOT_ALLOWED;
+		else if (fb->p->part_selftest) {
+			fb_op_begin(fb, FB_OP_HASH, name, 3ULL << 21);
+			e = fb->p->part_selftest(fb->p->ctx, name);
+			fb_op_end(fb);
+		}
+		fb_resp(fb, e ? "FAIL" : "OKAY", e ? e : "selftest passed");
+	} else if (fb_starts(a, "ufsq:") && a[5] >= '1' && a[5] <= '8' && !a[6]) {
+		if (fb->p->set_ufs_depth)
+			fb->p->set_ufs_depth(fb->p->ctx, a[5] - '0');
+		fb_resp(fb, "OKAY", "");
 	} else if (fb_eq(a, "gpt")) {
 		if (fb->p->gpt_info)
 			fb->p->gpt_info(fb->p->ctx, fb);

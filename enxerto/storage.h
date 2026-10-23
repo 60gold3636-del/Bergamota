@@ -81,5 +81,12 @@ const char *stor_erase(struct stor *s, const struct stor_part *p);
  * last block may be shorter) into out (16 bytes per block).
  */
 const char *stor_hash(struct stor *s, const struct stor_part *p, uint64_t off, uint64_t len, uint32_t bs, uint8_t *out);
+/*
+ * Read-only self test of the read path with DIRTY CPU caches (the failure mode of a driver without DMA
+ * cache maintenance): inside a cached window both scratch halves are filled with patterns (dirty lines),
+ * the same 2 MiB at the start of the partition is read into both halves, and the halves must be equal and
+ * must not contain the old pattern. Repeated for three offsets. NULL = pass.
+ */
+const char *stor_selftest(struct stor *s, const struct stor_part *p);
 /* Call after the last write of a flash: flush the device cache. */
 const char *stor_sync(struct stor *s, const struct stor_part *p);
