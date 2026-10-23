@@ -197,6 +197,8 @@ static void sync_attached(EAGLContext *c) {
     for (int i = 0; i < p->natt; i++) {
         Attach *a = &p->att[i];
         BOOL isTex = glIsTexture(a->name) && !glIsRenderbuffer(a->name);
+        // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
+        if (osm_sweet_active() && osm_sweet_blit(a->name, isTex, IOSurfaceGetID(a->surf), !a->inverted, NO)) continue;
         uint32_t w, h;
         uint8_t *buf = read_image(c, a->name, isTex, (uint32_t)IOSurfaceGetWidth(a->surf), (uint32_t)IOSurfaceGetHeight(a->surf), &w, &h);
         if (buf) {
@@ -291,9 +293,9 @@ static void eagl_install_hooks(void) {
         if (cur_ctx() == self) [EAGLContext setCurrentContext:nil];
         for (int i = 0; i < p->nbinds; i++) {
             [p->binds[i].drawable release];
-            for (int k = 0; k < POOL_N; k++) if (p->binds[i].pool[k]) CFRelease(p->binds[i].pool[k]);
+            for (int k = 0; k < POOL_N; k++) if (p->binds[i].pool[k]) { osm_sweet_forget(IOSurfaceGetID(p->binds[i].pool[k])); CFRelease(p->binds[i].pool[k]); }
         }
-        for (int i = 0; i < p->natt; i++) if (p->att[i].surf) CFRelease(p->att[i].surf);
+        for (int i = 0; i < p->natt; i++) if (p->att[i].surf) { osm_sweet_forget(IOSurfaceGetID(p->att[i].surf)); CFRelease(p->att[i].surf); }
         if (p->sg) {
             struct _EAGLSharegroupPrivate *g = p->sg->_private;
             pthread_mutex_lock(&g->lock);
@@ -363,7 +365,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
         glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 0, 0);
         if (b) {
             [b->drawable release]; b->drawable = nil;
-            for (int k = 0; k < POOL_N; k++) if (b->pool[k]) { CFRelease(b->pool[k]); b->pool[k] = NULL; }
+            for (int k = 0; k < POOL_N; k++) if (b->pool[k]) { osm_sweet_forget(IOSurfaceGetID(b->pool[k])); CFRelease(b->pool[k]); b->pool[k] = NULL; }
             *b = p->binds[--p->nbinds];
         }
         return YES;
@@ -390,7 +392,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     }
     if (b->drawable != d) { [b->drawable release]; b->drawable = [d retain]; }
     if (b->w != w || b->h != h) {
-        for (int k = 0; k < POOL_N; k++) if (b->pool[k]) { CFRelease(b->pool[k]); b->pool[k] = NULL; }
+        for (int k = 0; k < POOL_N; k++) if (b->pool[k]) { osm_sweet_forget(IOSurfaceGetID(b->pool[k])); CFRelease(b->pool[k]); b->pool[k] = NULL; }
     }
     b->w = w; b->h = h; b->fmt = fmt;
     EAGL_DEBUG("renderbuffer %d <- drawable %ux%u\n", rb, w, h);
@@ -404,17 +406,19 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     glGetIntegerv(GL_RENDERBUFFER_BINDING, &rb);
     DrawBind *b = rb ? find_bind(p, rb) : NULL;
     if (!b) return NO;
-    uint32_t w, h;
-    uint8_t *buf = read_image(self, rb, NO, 0, 0, &w, &h);
-    if (!buf) return NO;
+    BOOL opaque = YES;
+    if ([b->drawable respondsToSelector:@selector(isOpaque)]) opaque = ((BOOL (*)(id, SEL))objc_msgSend)(b->drawable, @selector(isOpaque));
     IOSurfaceRef s = b->pool[b->next];
     if (!s) s = b->pool[b->next] = make_surface(b->w, b->h);
     b->next = (b->next + 1) % POOL_N;
-    if (!s) { free(buf); return NO; }
-    BOOL opaque = YES;
-    if ([b->drawable respondsToSelector:@selector(isOpaque)]) opaque = ((BOOL (*)(id, SEL))objc_msgSend)(b->drawable, @selector(isOpaque));
-    rgba_to_surface(buf, w, h, s, YES, opaque);
-    free(buf);
+    if (!s) return NO;
+    if (!(osm_sweet_active() && osm_sweet_blit((unsigned)rb, 0, IOSurfaceGetID(s), 1, opaque))) {     // CPU fallback (softpipe, or a surface the GPU cannot use)
+        uint32_t w, h;
+        uint8_t *buf = read_image(self, rb, NO, 0, 0, &w, &h);
+        if (!buf) return NO;
+        rgba_to_surface(buf, w, h, s, YES, opaque);
+        free(buf);
+    }
     if ([b->drawable respondsToSelector:@selector(setContents:)])
         ((void (*)(id, SEL, id))objc_msgSend)(b->drawable, @selector(setContents:), (id)s);
     return YES;
@@ -428,7 +432,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     int idx = -1;
     for (int i = 0; i < p->natt; i++) if (p->att[i].name == image) idx = i;
     if (!surface) {                                     // detach
-        if (idx >= 0) { CFRelease(p->att[idx].surf); p->att[idx] = p->att[--p->natt]; }
+        if (idx >= 0) { osm_sweet_forget(IOSurfaceGetID(p->att[idx].surf)); CFRelease(p->att[idx].surf); p->att[idx] = p->att[--p->natt]; }
         return YES;
     }
     if (idx < 0) {

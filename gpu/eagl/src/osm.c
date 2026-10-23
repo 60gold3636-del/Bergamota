@@ -18,3 +18,10 @@ int osm_make_current(osm_ctx c, void *buf, int w, int h) {
     return OSMesaMakeCurrent((OSMesaContext)c, buf, GL_UNSIGNED_BYTE, w, h) ? 1 : 0;
 }
 void *osm_getproc(const char *name) { return (void *)OSMesaGetProcAddress(name); }
+
+extern int OSMesaSweetActive(void);
+extern int OSMesaSweetBlit(unsigned name, int is_texture, unsigned surface_id, int flip, int opaque);
+extern void OSMesaSweetForgetSurface(unsigned surface_id);
+int osm_sweet_active(void) { return OSMesaSweetActive(); }
+int osm_sweet_blit(unsigned name, int is_texture, unsigned surface_id, int flip, int opaque) { return OSMesaSweetBlit(name, is_texture, surface_id, flip, opaque); }
+void osm_sweet_forget(unsigned surface_id) { OSMesaSweetForgetSurface(surface_id); }

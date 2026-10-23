@@ -1,13 +1,13 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Build the OpenGLES shim (arm64e) and the standalone tests against a cross-built Mesa.
-#   build.sh [OUT]      OUT defaults to $GPU_EAGL_WORK/out; needs $GPU_EAGL_WORK/build-a64e (see mesa/build-mesa.sh)
+#   build.sh [OUT]      OUT defaults to $GPU_EAGL_WORK/out; needs $GPU_EAGL_WORK/build-a64e or build-hw (see mesa/build-mesa.sh)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${GPU_EAGL_WORK:?set GPU_EAGL_WORK to the scratch dir that holds mesa/ and build-a64e/}"
 ARCH="${ARCH:-arm64e}"
 MESA_SRC="$WORK/mesa"
-MESA_BLD="$WORK/build-${ARCH/arm64e/a64e}"
+MESA_BLD="${MESA_BLD:-$WORK/build-${ARCH/arm64e/a64e}}"      # MESA_BLD=$WORK/build-hw: freedreno + softpipe build (mesa/build-mesa.sh with GPU_EAGL_HW=1)
 OUT="${1:-$WORK/out-$ARCH}"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 CC="xcrun --sdk iphoneos clang -arch $ARCH -miphoneos-version-min=18.0 -isysroot $SDK"
@@ -22,6 +22,11 @@ for f in gl_stubs gl_resolve gl_unimpl osm macro_ctx macro_slots; do $CC $CF -c 
 $CC $CF -fno-objc-arc -fobjc-exceptions ${EAGL_DEFS:-} -c "$HERE/src/eagl.m" -o "$OUT/obj/eagl.o"
 cp -f "$OSMESA" "$OUT/libOSMesa.8.dylib"
 xcrun strip -x "$OUT/libOSMesa.8.dylib"          # keeps the exported OSMesa/glapi symbols
+if [ -f "$WORK/drm-standin/libdrm.2.dylib" ]; then      # hardware build: the libdrm stand-in sits next to libOSMesa
+  cp -f "$WORK/drm-standin/libdrm.2.dylib" "$OUT/libdrm.2.dylib"
+  for rp in $(otool -l "$OUT/libOSMesa.8.dylib" | awk '/LC_RPATH/{f=1} f&&/path /{print $2; f=0}'); do install_name_tool -delete_rpath "$rp" "$OUT/libOSMesa.8.dylib" 2>/dev/null || true; done
+  install_name_tool -add_rpath @loader_path "$OUT/libOSMesa.8.dylib" 2>/dev/null || true
+fi
 $CC -dynamiclib -o "$OUT/OpenGLES.framework/OpenGLES" "$OUT"/obj/{gl_stubs,gl_resolve,gl_unimpl,osm,macro_ctx,macro_slots,eagl}.o \
     -install_name "$SHIM_INSTALL_NAME" -Wl,-not_for_dyld_shared_cache -compatibility_version 1.0.0 -current_version 1.0.0 \
     -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework IOSurface \
