@@ -166,16 +166,30 @@ struct sweet_gpu_info {
 	uint64_t va_start;      /* GPU address range the kernel places BOs in */
 	uint64_t va_size;
 	uint32_t last_fence;    /* last submitted sequence number */
-	uint32_t reserved;
+	uint32_t abi_minor;     /* 1: SURFACE_BO accepts client-memory surfaces (read-only mappings), is idempotent, returns planes */
 };
 
 /* IOSurface memory as a BO: the pages of the surface (pixels from byte 0 of its memory) are entered into the
  * GPU address space. On input handle = SWEET_GPU_DESCRIBE_ONLY asks only for the geometry (no BO is made). */
 #define SWEET_GPU_DESCRIBE_ONLY         0xffffffffu
+/* Minor 1 (INFO.abi_minor >= 1) added everything after `planes`; a caller may pass/accept only the first
+ * SWEET_GPU_SURFACE_BO_V1_SIZE bytes (minor 0 layout). */
+#define SWEET_GPU_SURFACE_BO_V1_SIZE    48
+#define SWEET_GPU_SBO_IN_SYNC           0x1     /* in flags: clean+invalidate the CPU alias of the whole BO before returning */
+#define SWEET_GPU_SBO_READONLY          0x1     /* out flags: GPU mapping is read-only (client-memory surface) */
+#define SWEET_GPU_SBO_CPU_CACHEABLE     0x2     /* out: the CPU maps it cacheable: BO_SYNC after CPU writes / before CPU reads */
+#define SWEET_GPU_SBO_WRAPPED           0x4     /* out: the surface is client (another process') memory, pinned */
+#define SWEET_GPU_SBO_EXISTING          0x8     /* out: this surface already had a BO for this connection: same handle returned */
+struct sweet_gpu_surface_plane {
+	uint32_t offset;        /* byte offset of the plane in the BO (includes the client-memory start delta) */
+	uint32_t stride;        /* bytes per row of the plane */
+	uint32_t width;
+	uint32_t height;
+};
 struct sweet_gpu_surface_bo {
 	uint32_t surface_id;    /* in: IOSurfaceGetID() */
 	uint32_t handle;        /* in: DESCRIBE_ONLY or 0; out: BO handle (0 when describing) */
-	uint64_t size;          /* out: bytes mapped (whole pages) */
+	uint64_t size;          /* out: bytes mapped (whole 4 KiB pages) */
 	uint64_t iova;          /* out: GPU address of byte 0 of the surface memory (0 when describing) */
 	uint32_t offset;        /* out: byte offset of pixel (0,0) in the BO */
 	uint32_t bytes_per_row;
@@ -183,6 +197,12 @@ struct sweet_gpu_surface_bo {
 	uint32_t height;
 	uint32_t pixel_format;
 	uint32_t planes;
+	/* ---- minor 1 ---- */
+	uint32_t flags;         /* in: SWEET_GPU_SBO_IN_*; out: SWEET_GPU_SBO_* */
+	uint32_t tiling;        /* out: 0 = linear (IOSurfaces here are never tiled) */
+	uint32_t ubwc;          /* out: 0 = no UBWC (IOSurfaces here are never compressed) */
+	uint32_t reserved;
+	struct sweet_gpu_surface_plane plane[3];        /* out: first three planes (planes == 0: plane 0 describes the surface) */
 };
 
 struct sweet_gpu_bo_sync {

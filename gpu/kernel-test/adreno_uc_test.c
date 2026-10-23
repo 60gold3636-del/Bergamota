@@ -14,6 +14,9 @@
  * Add "-v" for the raw numbers.
  */
 #include <IOKit/IOKitLib.h>
+#include <IOSurface/IOSurfaceRef.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <sys/mman.h>
 #include <mach/mach.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -305,6 +308,116 @@ main(int argc, char **argv)
 			struct sweet_gem_close bc = { .handle = big.handle };
 			(void)call(SWEET_GPU_SEL_GEM_CLOSE, &bc, sizeof(bc), 0);
 		}
+	}
+
+	/* 9: IOSurface import (SWEET_GPU_SEL_SURFACE_BO): a kernel surface (GPU writes a dword into it, CPU reads it back) and a
+	 * client-memory ("wrapped") surface (imported read-only, flags checked, same handle on the second call). */
+	{
+		struct sweet_gpu_info inf2;
+		memset(&inf2, 0, sizeof(inf2));
+		(void)call(SWEET_GPU_SEL_INFO, &inf2, 0, sizeof(inf2));
+		CHECK(inf2.abi_minor >= 1, "INFO abi_minor %u (>= 1: surface import with planes/flags)", inf2.abi_minor);
+		int w = 256, h = 64, bpr = 256 * 4, fmt = 'BGRA', bpe = 4;
+		CFNumberRef nw = CFNumberCreate(NULL, kCFNumberIntType, &w), nh = CFNumberCreate(NULL, kCFNumberIntType, &h),
+		    nb = CFNumberCreate(NULL, kCFNumberIntType, &bpr), nf = CFNumberCreate(NULL, kCFNumberIntType, &fmt),
+		    ne = CFNumberCreate(NULL, kCFNumberIntType, &bpe);
+		CFMutableDictionaryRef d = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+		CFDictionarySetValue(d, kIOSurfaceWidth, nw);
+		CFDictionarySetValue(d, kIOSurfaceHeight, nh);
+		CFDictionarySetValue(d, kIOSurfaceBytesPerRow, nb);
+		CFDictionarySetValue(d, kIOSurfacePixelFormat, nf);
+		CFDictionarySetValue(d, kIOSurfaceBytesPerElement, ne);
+		IOSurfaceRef surf = IOSurfaceCreate(d);
+		CHECK(surf != NULL, "IOSurfaceCreate 256x64 BGRA");
+		if (surf) {
+			struct sweet_gpu_surface_bo sb3;
+			memset(&sb3, 0, sizeof(sb3));
+			sb3.surface_id = IOSurfaceGetID(surf);
+			kr = call(SWEET_GPU_SEL_SURFACE_BO, &sb3, sizeof(sb3), sizeof(sb3));
+			CHECK(kr == 0 && sb3.handle != 0 && sb3.iova >= 0x80000000ull && sb3.bytes_per_row == (uint32_t)bpr && sb3.tiling == 0 && sb3.ubwc == 0,
+			    "SURFACE_BO kernel surface: handle %u iova %#llx size %llu stride %u offset %u flags %#x plane0 {off %u stride %u %ux%u} kr %#x",
+			    sb3.handle, sb3.iova, sb3.size, sb3.bytes_per_row, sb3.offset, sb3.flags, sb3.plane[0].offset, sb3.plane[0].stride,
+			    sb3.plane[0].width, sb3.plane[0].height, kr);
+			if (kr == 0) {
+				struct sweet_gpu_surface_bo again = sb3;
+				again.flags = 0;
+				kr = call(SWEET_GPU_SEL_SURFACE_BO, &again, sizeof(again), sizeof(again));
+				CHECK(kr == 0 && again.handle == sb3.handle && (again.flags & SWEET_GPU_SBO_EXISTING), "SURFACE_BO again: same handle %u, EXISTING flag (%#x)", again.handle, again.flags);
+				/* GPU writes a dword at pixel (3,2): through a tiny cmd BO */
+				struct sweet_msm_gem_new cb = { .size = 4096 };
+				(void)call(SWEET_GPU_SEL_GEM_NEW, &cb, sizeof(cb), sizeof(cb));
+				struct sweet_msm_gem_info ci = { .handle = cb.handle, .info = SWEET_MSM_INFO_GET_IOVA }, co = { .handle = cb.handle, .info = SWEET_MSM_INFO_GET_OFFSET };
+				(void)call(SWEET_GPU_SEL_GEM_INFO, &ci, sizeof(ci), sizeof(ci));
+				(void)call(SWEET_GPU_SEL_GEM_INFO, &co, sizeof(co), sizeof(co));
+				mach_vm_address_t ca = 0;
+				mach_vm_size_t cs = 0;
+				kr = IOConnectMapMemory64(g_conn, (uint32_t)co.value, mach_task_self(), &ca, &cs, kIOMapAnywhere | kIOMapWriteCombineCache);
+				if (kr == 0) {
+					volatile uint32_t *c = (volatile uint32_t *)(uintptr_t)ca;
+					uint64_t px = sb3.iova + sb3.offset + 2ull * sb3.bytes_per_row + 3 * 4;
+					c[0] = pkt7(61, 3);
+					c[1] = (uint32_t)px;
+					c[2] = (uint32_t)(px >> 32);
+					c[3] = 0xa11ce001u;
+					struct sweet_msm_gem_submit_bo b4[2] = { { .flags = SWEET_MSM_SUBMIT_BO_READ, .handle = cb.handle },
+						{ .flags = SWEET_MSM_SUBMIT_BO_WRITE, .handle = sb3.handle } };
+					struct sweet_msm_gem_submit_cmd c4 = { .type = SWEET_MSM_SUBMIT_CMD_BUF, .submit_idx = 0, .size = 16 };
+					struct sweet_msm_gem_submit s4 = { .nr_bos = 2, .nr_cmds = 1, .bos = (uint64_t)(uintptr_t)b4, .cmds = (uint64_t)(uintptr_t)&c4 };
+					kr = call(SWEET_GPU_SEL_GEM_SUBMIT, &s4, sizeof(s4), sizeof(s4));
+					if (kr == 0) {
+						g_last_fence = s4.fence;
+					}
+					struct sweet_msm_wait_fence w4 = { .fence = s4.fence, .timeout = rel(2, 0) };
+					kr |= call(SWEET_GPU_SEL_WAIT_FENCE, &w4, sizeof(w4), 0);
+					struct sweet_gpu_bo_sync sy = { .handle = sb3.handle };
+					(void)call(SWEET_GPU_SEL_BO_SYNC, &sy, sizeof(sy), 0);
+					IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
+					uint32_t got = ((volatile uint32_t *)((uint8_t *)IOSurfaceGetBaseAddress(surf) + 2 * bpr))[3];
+					IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
+					CHECK(kr == 0 && got == 0xa11ce001u, "GPU wrote pixel (3,2) of the kernel surface: %#x (want 0xa11ce001) kr %#x", got, kr);
+					IOConnectUnmapMemory64(g_conn, (uint32_t)co.value, mach_task_self(), ca);
+				}
+				struct sweet_gem_close cc2 = { .handle = cb.handle };
+				(void)call(SWEET_GPU_SEL_GEM_CLOSE, &cc2, sizeof(cc2), 0);
+				cc2.handle = sb3.handle;
+				kr = call(SWEET_GPU_SEL_GEM_CLOSE, &cc2, sizeof(cc2), 0);
+				CHECK(kr == 0, "GEM_CLOSE of the surface BO");
+			}
+			CFRelease(surf);
+		}
+		/* client memory surface: our own anonymous pages wrapped by IOSurface (IOSurfaceAddress); skipped if refused */
+		size_t len = 256 * 64 * 4;
+		void *mem = mmap(NULL, len + 16384, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+		if (mem != MAP_FAILED) {
+			memset((uint8_t *)mem + 16, 0x5a, len);
+			int64_t addr64 = (int64_t)(uintptr_t)((uint8_t *)mem + 16);     /* not page aligned on purpose */
+			CFNumberRef na = CFNumberCreate(NULL, kCFNumberSInt64Type, &addr64);
+			int asz = (int)len;
+			CFNumberRef ns = CFNumberCreate(NULL, kCFNumberIntType, &asz);
+			CFDictionarySetValue(d, CFSTR("IOSurfaceAddress"), na);
+			CFDictionarySetValue(d, kIOSurfaceAllocSize, ns);
+			IOSurfaceRef ws = IOSurfaceCreate(d);
+			if (ws == NULL) {
+				printf("SKIP  wrapped IOSurface could not be created from client memory\n");
+			} else {
+				struct sweet_gpu_surface_bo wb;
+				memset(&wb, 0, sizeof(wb));
+				wb.surface_id = IOSurfaceGetID(ws);
+				wb.flags = SWEET_GPU_SBO_IN_SYNC;
+				kr = call(SWEET_GPU_SEL_SURFACE_BO, &wb, sizeof(wb), sizeof(wb));
+				CHECK(kr == 0 && wb.handle != 0, "SURFACE_BO wrapped surface: handle %u iova %#llx size %llu offset %u flags %#x kr %#x", wb.handle, wb.iova, wb.size, wb.offset, wb.flags, kr);
+				if (kr == 0) {
+					CHECK((wb.flags & SWEET_GPU_SBO_WRAPPED) && (wb.flags & SWEET_GPU_SBO_READONLY) && (wb.flags & SWEET_GPU_SBO_CPU_CACHEABLE),
+					    "wrapped flags WRAPPED|READONLY|CPU_CACHEABLE (%#x)", wb.flags);
+					CHECK(wb.offset == 16, "pixel (0,0) is %u bytes into the first page (client address +16)", wb.offset);
+					struct sweet_gem_close wc = { .handle = wb.handle };
+					(void)call(SWEET_GPU_SEL_GEM_CLOSE, &wc, sizeof(wc), 0);
+				}
+				CFRelease(ws);
+			}
+			munmap(mem, len + 16384);
+		}
+		CFRelease(d);
 	}
 
 	IOConnectUnmapMemory64(g_conn, (uint32_t)go.value, mach_task_self(), addr);

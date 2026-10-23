@@ -7,7 +7,7 @@ OUT="${1:-$HERE/out}"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 mkdir -p "$OUT"
 xcrun --sdk iphoneos clang -arch arm64e -miphoneos-version-min=18.0 -isysroot "$SDK" -O1 -g -Wall -Wextra -Wno-unused-parameter \
-    "$HERE/adreno_uc_test.c" -o "$OUT/adreno_uc_test.arm64e" -framework IOKit -framework CoreFoundation
+    "$HERE/adreno_uc_test.c" -o "$OUT/adreno_uc_test.arm64e" -framework IOKit -framework CoreFoundation -framework IOSurface
 "$HERE/../../tools/renegade/renegade" strip --sign -o "$OUT/adreno_uc_test" "$OUT/adreno_uc_test.arm64e"
 chmod +x "$OUT/adreno_uc_test"
 ls -l "$OUT/adreno_uc_test"

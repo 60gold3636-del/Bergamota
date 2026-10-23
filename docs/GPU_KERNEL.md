@@ -18,6 +18,8 @@ Patches in `xnu/patches-11215/`, applied after 0103/0170 (the stage-1..7 bring-u
 | `0184-beryllium-gpu-a630-debug-selector` | `sweet_a630.c`, `SweetAdreno.cpp`, ABI header | After the first hardware run (stage 8 passed, user submissions never ran): selector `0x73` `SWEET_GPU_SEL_DEBUG` (40-word read-only snapshot: GMU power/fence/counter, gpucc GX/CX, SMMU CB1 faults, CP RPTR/WPTR/status/IB1; GPU-core words only when GX is on, so never a hang); the same dump in the kernel log on every wait timeout and first 8 submits (with WPTR readback); submits refuse (no hang, no silent drop) when GX is off and re-assert the AHB fence ALLOW; `PARAM_TIMESTAMP` now reads the GMU always-on counter (Linux does; the CP copy read over AHB did not advance). |
 | `0185-beryllium-gpu-a630-4k-gpu-pages-fault-check` | `sweet_a630.c`, `SweetAdreno.cpp` | Found on hardware (8c, SMMU CB1 FSR 0x402 at BO+0x1000): xnu's PAGE_SIZE is 16 KiB, the GPU's page 4 KiB, and BOs were entered with one PTE per 16 KiB. Now one PTE per 4 KiB (each from its own physical address); the table pool uses 4 KiB tables; TLB flush after every map batch; a CB1 translation fault (FSR & 0xc00001fe, bit 10 is a stale status bit and is cleared before submits) is logged, cleared and declares the GPU lost, and `WAIT_FENCE` then fails at once with `kIOReturnIOError` instead of timing out. The context terminates faulting accesses (no CFCFG), so there is no CB_RESUME; the CP itself does not recover from a fault. |
 | `0186-beryllium-gpu-a630-power-dcvs-recovery-metrics` | `sweet_a630.c`, `SweetAdreno.cpp` | Power, DCVS, recovery, metrics, UBWC params, BW-table fix: section 11. |
+| `0187-beryllium-gpu-adreno-iosurface-import` | `SweetAdreno.cpp`, ABI header | Zero-copy import of client-memory (wrapped) IOSurfaces, idempotent `SURFACE_BO`, planes/flags: section 12. |
+| `0188-beryllium-gpu-a630-governor-boost` | `sweet_a630.c` | Governor measures by sampling, interactive boost floor, CP stamps optional: section 12. |
 | `0182-beryllium-gpu-adreno-iokit-user-client` | `iokit/Kernel/arm/SweetAdreno.cpp`, `SweetAdrenoABI.h`, `iokit/conf/files.arm64` | IOService `SweetAdreno630` (published by `sweet_a630.c` after keep-up) and its user client with the msm ioctls as selectors. |
 
 `xnu/gpu-abi/sweet_adreno_abi.h` is the userland-facing copy of the ABI header (byte-identical to `SweetAdrenoABI.h` of 0182).
@@ -229,6 +231,28 @@ The live log `usb-20261022-201239.txt` ends with healthy `SWEET USB: ue0` statis
 This is a suspicion list, not a diagnosis: boot with `sweetgpuhb=5` and compare the USB clock words before and after the link goes away.
 
 Always-on changes of 0186 (also without the new boot-args): the CP stamps + `CP_WAIT_FOR_IDLE` per submission, the cmd-db BW table, the conditional GPLL0 vote write, recovery enabled (3 resets), the params above.
+
+## 12. Zero-copy surfaces and the interactive governor (patches 0187/0188; built, untested on hardware)
+
+### ABI minor 1 (for the EAGL/Mesa side)
+
+`INFO.abi_minor` (was `reserved`) is 1. `abi_version` stays 1: everything below is backward compatible.
+
+**`SWEET_GPU_SEL_SURFACE_BO` (0x71)** now accepts every IOSurface, including **client-memory (wrapped) surfaces** made by another process (`IOSurfaceCreate` with an address / `IOSurfaceWrapClientImage|Memory`). Struct `sweet_gpu_surface_bo` grew to 112 bytes; a caller that passes/accepts only the first 48 bytes (`SWEET_GPU_SURFACE_BO_V1_SIZE`) gets the old fields.
+
+* The memory of a wrapped surface is already wired by `IOMemoryDescriptor::prepare()` for the surface's lifetime; the BO holds a reference to the surface, so the pages stay pinned until `GEM_CLOSE` or the connection closes, whatever the owner does. Each 4 KiB granule of each 16 KiB kernel page is entered (as in 0185), starting at the page that contains the pixels; `offset` includes the start delta inside that page.
+* **Wrapped surfaces are mapped READ-ONLY into the GPU** (`SBO_READONLY`): use them as sources (textures: icons, glyphs, wallpaper). If the owner dies its address space is torn down and wired pages are freed, so a GPU that could still write there could corrupt memory that was reused; a GPU read of such a page is harmless. Never put a wrapped surface in the write position of a submission (a GPU write to a read-only page is a SMMU fault = recovery). Render into kernel-allocated surfaces (`IOSurfaceCreate` without an address) or Mesa BOs.
+* **Idempotent:** the same surface in the same connection returns the same handle and iova (`SBO_EXISTING`), so it can be called every frame; the mapping is made once. The BO lives until `GEM_CLOSE` (or the connection closes): close it when the IOSurface is destroyed or after a cache policy of your choice. A surface whose pages never move (wired) needs no "moved" handling; if the surface is destroyed and the id recycled, the old BO still maps the old pages (we hold the surface) until closed.
+* **Cache:** `flags` out has `SBO_CPU_CACHEABLE` when the CPU maps the surface cacheable (wrapped surfaces; the zero-copy low pool). The GPU mapping is non-cacheable, so after CPU writes call `BO_SYNC` on the dirty byte range (or pass `SBO_IN_SYNC` on the `SURFACE_BO` call to clean the whole BO), and after the GPU wrote a cacheable surface `BO_SYNC` before the CPU reads. Surfaces that are not CPU-cacheable need nothing.
+* **Layout:** `tiling` = 0 and `ubwc` = 0 always (IOSurfaces here are linear, uncompressed); `bytes_per_row` and `plane[0..2] {offset, stride, width, height}` describe it (single-plane surfaces: plane[0]); `offset` = byte offset of pixel (0,0) from `iova`.
+* Describe-only (`handle = 0xffffffff` on input) returns the same fields without mapping.
+
+### Governor (0188)
+
+* **Why 0186's governor never moved:** a log of the 8e image showed `busy 0%` with thousands of submissions (the `99` seen in `pm:` lines is the time share at 257 MHz). The CP timestamp method read as a frozen counter on this hardware (`CP_ALWAYS_ON` also read constant over the CPU), so busy time was always 0 and the governor never raised the level. The per-submission stamps and `CP_WAIT_FOR_IDLE` are now **off by default** (`sweetgpustamps=1` brings them back); this also removes a pipeline drain from every submission.
+* **Sampling:** while the governor runs the PM thread wakes every 4 ms and accumulates the time during which the newest submission's fence is not yet written; window 100 ms; `busy_pct` (also in `kern.sweet_gpu`) is measured in every mode (it is only *acted on* with `sweetgpufreq=gov`). Thresholds: >= 95% -> cap, >= 90% -> +2 levels, >= 80% -> +1, < 30% twice in a row -> -1.
+* **Interactive boost:** a window with >= 4 submissions (a client drawing frames) sets a floor of `sweetgpuboost=N` (default 3 = 414 MHz; 0 off) for 400 ms after the last such window; the load part never goes below the floor; a wake from slumber starts at the floor. New `kern.sweet_gpu` keys appended before `total_ms`: `boost_level`, `boosted` (0/1), `submits_100ms`. The `pm:` log line prints `submits/100ms` too.
+* Still unverified: that the GMU applies perf index N as row N of our table (no register shows the real GX clock); verify by timing a fixed workload per level or by the rise in `res_ms` of higher levels together with a shorter frame time.
 
 ## 10. Provenance and licences
 
