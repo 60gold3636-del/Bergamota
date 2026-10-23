@@ -187,10 +187,12 @@ struct sweet_gpu_info {
 #define SWEET_GPU_SBO_CPU_CACHEABLE     0x2     /* out: the CPU maps it cacheable: BO_SYNC after CPU writes / before CPU reads */
 #define SWEET_GPU_SBO_WRAPPED           0x4     /* out: the surface is client (another process') memory, pinned */
 #define SWEET_GPU_SBO_EXISTING          0x8     /* out: this surface already had a BO for this connection: same handle returned */
-/* Minor 2. Input bit (in flags, needs >= 128 input bytes; wrapped surfaces only; kIOReturnUnsupported otherwise or when
- * sweetgpualias=0): also map the pages of the BO READ-WRITE, cacheable, into the calling task and return the address in
- * alias_addr. The mapping lives exactly as long as the BO (GEM_CLOSE or connection close unmaps it; do not munmap it
- * yourself) and is the CPU's door to a surface whose own mapping is read-only. The GPU mapping stays read-only. Idempotent.
+/* Minor 2. Input bit (in flags, needs >= 128 input bytes in and out; kIOReturnUnsupported when sweetgpualias=0): also map
+ * the pages of the BO READ-WRITE into the calling task and return the address in alias_addr. Any surface: client-memory
+ * (wrapped) surfaces get a cacheable alias of their wired pages (their own mappings are read-only), kernel surfaces
+ * (the sweetfb low pool, kernel buffers; these BOs are GPU-writable) the ordinary mapping with the surface's cache
+ * attribute (write-back for the pool, write-combined otherwise). The mapping lives exactly as long as the BO (GEM_CLOSE or connection close unmaps it; do not munmap it
+ * yourself) and is the CPU's door to a surface whose own mapping is read-only. A wrapped surface's GPU mapping stays read-only. Idempotent.
  * After writing through it call BO_SYNC on the written range (clean to the point of coherency) before the surface is
  * used by the GPU, by CoreAnimation's consumer or by the display. */
 #define SWEET_GPU_SBO_IN_WRITABLE_ALIAS 0x2     /* in flags */
