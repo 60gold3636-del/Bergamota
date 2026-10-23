@@ -54,6 +54,22 @@ struct SettingsView: View {
                     Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(ok ? .green : .red)
                     Text(ok ? "found (used by \"Enter Bergamota fastboot\")" : "missing: Enter Bergamota fastboot will refuse until it exists").font(.caption).foregroundStyle(.secondary)
                 }
+                Picker("Flash route", selection: $s.flashVia) {
+                    Text("Bergamota fastboot (ABL as fallback)").tag("auto")
+                    Text("ABL fastboot only").tag("abl")
+                }
+                Picker("Userdata flash mode", selection: $s.flashMode) {
+                    Text("Delta (only changed blocks)").tag("delta")
+                    Text("Full image").tag("full")
+                }
+                TextField("tools/bergamota-flash.py", text: $s.flashToolPath, prompt: Text("(found in the repo)"))
+                HStack(spacing: 4) {
+                    let ok = s.flashTool != nil
+                    Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(ok ? .green : .red)
+                    Text(ok ? "found: \(s.flashTool ?? "")" : "missing: flashing through Bergamota fastboot is unavailable (ABL fallback is used)").font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Flashing goes through Bergamota fastboot (Enxerto writes UFS itself; needs python3). Userdata is sent as a delta against what the phone holds, boot and logo in full. Only userdata, boot and logo can be written.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("Only while the queue is armed and the next item is pending, after iOS has been up for 30 s, once per queue item (SSH: /usr/local/bin/sweetreboot fastboot). If the phone is not in fastboot 90 s later the item is marked \"needs manual fastboot\" and auto-rebooting pauses.")
                     .font(.caption).foregroundStyle(.secondary)
             }

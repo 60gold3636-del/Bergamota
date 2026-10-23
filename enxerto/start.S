@@ -175,3 +175,41 @@ mmu_off_jump:
 	isb
 	mov	x0, x17
 	br	x16
+
+/*
+ * mmu_off_ret(ranges[3] = {lo, hi} x 3): leave the cached window of mmu_enable_ranges and RETURN.
+ * Clean+invalidate every range (the image too: the stack is in it) to the PoC, clear SCTLR.M and .C
+ * (I stays on), invalidate the ranges again (lines refilled speculatively before the switch) and the
+ * TLBs. The ranges are loaded into registers first; between the first clean and the SCTLR write nothing
+ * touches memory, and the function only uses caller-saved registers, so the caller's stack (cleaned
+ * with the rest of the image) is read back from memory with the MMU off.
+ */
+	.globl mmu_off_ret
+mmu_off_ret:
+	msr	daifset, #0xf
+	ldp	x3, x4, [x0, #0]
+	ldp	x5, x6, [x0, #16]
+	ldp	x7, x8, [x0, #32]
+	mrs	x9, ctr_el0		/* DminLine: log2 words */
+	ubfx	x9, x9, #16, #4
+	mov	x13, #4
+	lsl	x13, x13, x9		/* line bytes */
+	sub	x14, x13, #1
+	dsb	sy
+	civac_range x3, x4
+	civac_range x5, x6
+	civac_range x7, x8
+	dsb	sy
+	mrs	x9, sctlr_el1
+	mov	x10, #((1 << 0) | (1 << 2))	/* M, C */
+	bic	x9, x9, x10
+	msr	sctlr_el1, x9
+	isb
+	civac_range x3, x4
+	civac_range x5, x6
+	civac_range x7, x8
+	dsb	sy
+	tlbi	vmalle1
+	dsb	sy
+	isb
+	ret

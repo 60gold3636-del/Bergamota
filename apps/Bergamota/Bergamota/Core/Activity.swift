@@ -46,14 +46,15 @@ extension AppModel {
             let f = queue.flasher
             let frac = f.fraction(now: now)
             let pct = frac.map { " \(Int($0 * 100))%" } ?? (f.total > 0 ? " \(f.progressText)" : "")
-            let detail = f.progressDetail(now: now) ?? (f.total > 0 ? "chunk \(f.progressText), measuring speed" : "starting")
-            return ActivityBanner(title: "FLASHING \(f.partition.uppercased())" + pct,
+            let detail = f.progressDetail(now: now) ?? (f.route == .bergamota ? "\(f.phaseLabel)..." : (f.total > 0 ? "chunk \(f.progressText), measuring speed" : "starting"))
+            let title = f.route == .bergamota && f.phase != "send" && !f.phase.isEmpty ? f.phaseLabel.uppercased() : "FLASHING \(f.partition.uppercased())"
+            return ActivityBanner(title: title + pct,
                                   subtitle: "\(detail)  |  \(f.fileName)  |  do not unplug", color: .red,
                                   symbol: "externaldrive.fill.badge.exclamationmark", progress: frac ?? (f.total > 0 ? 0 : nil))
         }
         if let l = queue.flasher.last, now.timeIntervalSince(l.at) < 300, queue.sending == nil, (lastSent?.sentAt ?? .distantPast) < l.at, st.isFastboot || !l.ok {
             return l.ok ? ActivityBanner(title: "FLASHED", subtitle: "\(queue.flasher.partition) \(queue.flasher.fileName). Boot the image or reboot.", color: .orange, symbol: "checkmark.seal.fill")
-                        : ActivityBanner(title: "FAILED", subtitle: "userdata flash failed. See the Flash page output.", color: .red, symbol: "xmark.octagon.fill")
+                        : ActivityBanner(title: "FAILED", subtitle: "\(queue.flasher.partition) flash failed. See the Flash page output.", color: .red, symbol: "xmark.octagon.fill")
         }
         if let s = queue.sending { return ActivityBanner(title: "SENDING \(s.name.uppercased())", subtitle: "fastboot boot, do not unplug", color: .orange, symbol: "paperplane.fill") }
 
@@ -83,8 +84,8 @@ extension AppModel {
             var sub = "up since seen \(formatUptime(now.timeIntervalSince(monitor.stateSince)))"
             if let i = monitor.info, let b = i.batteryPercent { sub = "battery \(b)%" + (i.isCharging == true ? " charging" : "") + "  |  " + sub }
             return ActivityBanner(title: "iOS UP", subtitle: sub, color: .green, symbol: "apple.logo")
-        case .fastboot: return ActivityBanner(title: "ABL FASTBOOT", subtitle: "Qualcomm ABL (serial \(monitor.fastbootSerial ?? "?")): fastboot boot and flash userdata", color: .orange, symbol: st.symbol)
-        case .bergamotaFastboot: return ActivityBanner(title: "BERGAMOTA FASTBOOT", subtitle: "Enxerto (\(monitor.fastbootVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "serial \(monitor.fastbootSerial ?? "?")")): fastboot boot only, no flash", color: .lime, symbol: st.symbol)
+        case .fastboot: return ActivityBanner(title: "ABL FASTBOOT", subtitle: "Qualcomm ABL (serial \(monitor.fastbootSerial ?? "?")): fastboot boot and flash (fallback route)", color: .orange, symbol: st.symbol)
+        case .bergamotaFastboot: return ActivityBanner(title: "BERGAMOTA FASTBOOT", subtitle: "Enxerto (\(monitor.fastbootVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "serial \(monitor.fastbootSerial ?? "?")")): fastboot boot and flash userdata/boot/logo (main flash route)", color: .lime, symbol: st.symbol)
         case .recovery: return ActivityBanner(title: "IN ORANGEFOX", subtitle: "recovery over adb", color: .purple, symbol: "wrench.and.screwdriver.fill")
         case .android: return ActivityBanner(title: "ANDROID", subtitle: "adb device", color: .teal, symbol: "android.fill")
         case .iosBooting: return ActivityBanner(title: "iOS BOOTING", subtitle: monitor.sshPortOpen ? "USB network up, SSH port open but the server does not answer yet" : "USB network is up, waiting for SSH", color: .yellow, symbol: "hourglass")

@@ -25,6 +25,12 @@ final class AppSettings {
 
     /// Prefer Bergamota fastboot (Enxerto's) over ABL fastboot for the automatic reboot of queued boots; falls back to ABL when `sweetreboot bergamota` fails.
     var preferBergamotaFastboot: Bool { didSet { d.set(preferBergamotaFastboot, forKey: "preferBergamotaFastboot") } }
+    /// Flash route: "auto" = Bergamota fastboot (Enxerto's, tools/bergamota-flash.py), ABL fastboot as the fallback; "abl" = ABL only.
+    var flashVia: String { didSet { d.set(flashVia, forKey: "flashVia") } }
+    /// Userdata flash mode through Bergamota fastboot: "delta" (only the blocks that differ, default) or "full".
+    var flashMode: String { didSet { d.set(flashMode, forKey: "flashMode") } }
+    /// Optional explicit path of tools/bergamota-flash.py (empty = find it in the repo / sibling worktrees).
+    var flashToolPath: String { didSet { d.set(flashToolPath, forKey: "flashToolPath") } }
     /// Image `fastboot boot`ed from ABL fastboot by "Enter Bergamota fastboot".
     var bergamotaImagePath: String { didSet { d.set(bergamotaImagePath, forKey: "bergamotaImagePath") } }
     static let defaultBergamotaImage = "/Users/zesmoi/git/iAndroid/ios-beryllium-ios18/enxerto/out/bergamota-fastboot.img"
@@ -48,6 +54,9 @@ final class AppSettings {
         notifyOnIOS = d.object(forKey: "notifyOnIOS") as? Bool ?? true
         preferBergamotaFastboot = d.object(forKey: "preferBergamotaFastboot") as? Bool ?? true
         bergamotaImagePath = d.string(forKey: "bergamotaImagePath") ?? Self.defaultBergamotaImage
+        flashVia = d.string(forKey: "flashVia") ?? "auto"
+        flashMode = d.string(forKey: "flashMode") ?? "delta"
+        flashToolPath = d.string(forKey: "flashToolPath") ?? ""
         autoRebootToFastboot = d.object(forKey: "autoRebootToFastboot") as? Bool ?? true
     }
 
@@ -59,6 +68,21 @@ final class AppSettings {
     var bootImageBase: String { bootDir == "enxerto" ? "enxerto-boot" : "shim-boot" }
     /// Every folder that may hold boot images and ADTs (new and pre-rebrand ones), the current one first.
     var bootOutDirs: [String] { [bootDir + "/out"] + (bootDir == "enxerto" ? ["shim/out"] : []) }
+    var flashViaValue: UserdataFlash.Via { UserdataFlash.Via(rawValue: flashVia) ?? .auto }
+    var flashModeValue: UserdataFlash.Mode { UserdataFlash.Mode(rawValue: flashMode) ?? .delta }
+    /// tools/bergamota-flash.py: the Settings path, else this repo, else sibling worktrees of it.
+    var flashTool: String? {
+        let fm = FileManager.default
+        var cands: [String] = []
+        if !flashToolPath.isEmpty { cands = [(flashToolPath as NSString).expandingTildeInPath] }
+        else {
+            cands = [repoFile("tools/" + UserdataFlash.toolName)]
+            for sib in ["ios-beryllium-enxerto-flash", "ios-beryllium-ios18", "ios-beryllium-rebrand"] {
+                cands.append(repoURL.deletingLastPathComponent().appendingPathComponent(sib + "/tools/" + UserdataFlash.toolName).path)
+            }
+        }
+        return cands.first { fm.fileExists(atPath: $0) }
+    }
     var repoValid: Bool { FileManager.default.fileExists(atPath: repoFile("tools/mkpayload.py")) }
 
     var fastboot: String? { Shell.resolve("fastboot", override: fastbootPath) }

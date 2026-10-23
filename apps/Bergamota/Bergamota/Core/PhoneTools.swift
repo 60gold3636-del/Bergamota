@@ -96,8 +96,9 @@ final class PhoneTools {
 
     /// Automatic reboot for queued boots: Bergamota fastboot when preferred (and the phone's sweetreboot is not known to lack it),
     /// ABL fastboot when not or when `sweetreboot bergamota` fails. Returns the target that was sent.
-    func rebootIOSToFastboot() async -> (ok: Bool, msg: String, target: String) {
-        if settings.preferBergamotaFastboot, bergamotaSupported != false {
+    /// `preferBergamota` overrides the setting (a queue item that flashes always wants Bergamota fastboot, its main flash path).
+    func rebootIOSToFastboot(preferBergamota: Bool? = nil) async -> (ok: Bool, msg: String, target: String) {
+        if preferBergamota ?? settings.preferBergamotaFastboot, bergamotaSupported != false {
             let r = await rebootIOS(to: "bergamota")
             if r.0 { return (true, r.1, "bergamota") }
             DebugLog.write("sweetreboot bergamota failed (\(r.1)), falling back to ABL fastboot")
@@ -110,11 +111,25 @@ final class PhoneTools {
     }
 
     /// ABL fastboot -> Bergamota fastboot: `fastboot -s <serial> boot <bergamota-fastboot.img>`. Only from ABL fastboot.
-    func enterBergamota() async -> (Bool, String) {
-        guard monitor.state == .fastboot else { return (false, "phone is not in ABL fastboot (state: \(monitor.state.title))") }
-        guard !enteringBergamota else { return (false, "already entering Bergamota fastboot") }
+    /// `forFlash`: prefer the flash-capable build `bergamota-fastboot-flash.img` (next to the configured image, in shim/out or enxerto/out).
+    static let flashImageName = "bergamota-fastboot-flash.img"
+    func bergamotaImage(forFlash: Bool) -> String {
         var path = (settings.bergamotaImagePath as NSString).expandingTildeInPath
         if !FileManager.default.fileExists(atPath: path), path == AppSettings.defaultBergamotaImage { path = AppSettings.legacyBergamotaImage }
+        if forFlash {
+            let dirs = [(path as NSString).deletingLastPathComponent, settings.repoFile("shim/out"), settings.repoFile("enxerto/out")]
+            for d in dirs {
+                let c = d + "/" + Self.flashImageName
+                if FileManager.default.fileExists(atPath: c) { return c }
+            }
+        }
+        return path
+    }
+
+    func enterBergamota(forFlash: Bool = false) async -> (Bool, String) {
+        guard monitor.state == .fastboot else { return (false, "phone is not in ABL fastboot (state: \(monitor.state.title))") }
+        guard !enteringBergamota else { return (false, "already entering Bergamota fastboot") }
+        let path = bergamotaImage(forFlash: forFlash)
         guard FileManager.default.fileExists(atPath: path) else {
             return (false, "Bergamota fastboot image not found: \(path). Build it with Enxerto (enxerto/out/bergamota-fastboot.img) or set the path in Settings.")
         }

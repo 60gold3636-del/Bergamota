@@ -69,3 +69,8 @@ int usb_dwc3_bulk_in(const void *buf, unsigned len);
  * USB_LINK_LOST or USB_TIMEOUT. idle() is called while waiting.
  */
 int usb_dwc3_bulk_out(void *dst, uint64_t len, void (*idle)(void));
+/*
+ * Send len bytes straight from memory on the bulk IN endpoint (fastboot `upload`: the hash table of
+ * `oem hash`), in transfers of up to 8 MiB. 0, USB_LINK_LOST or USB_TIMEOUT. idle() is called while waiting.
+ */
+int usb_dwc3_bulk_in_dma(const void *src, uint64_t len, void (*idle)(void));

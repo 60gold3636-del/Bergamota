@@ -971,3 +971,29 @@ int usb_dwc3_bulk_out(void *dst, uint64_t len, void (*idle)(void))
 	cache_inv((uintptr_t)dst, got);
 	return (int)got;
 }
+
+int usb_dwc3_bulk_in_dma(const void *src, uint64_t len, void (*idle)(void))
+{
+	const uint8_t *p = src;
+	uint64_t done = 0;
+
+	if (ud.state != USB_ST_CONFIGURED)
+		return USB_LINK_LOST;
+	while (done < len) {
+		uint32_t n = len - done > DL_TRB_MAX ? DL_TRB_MAX : (uint32_t)(len - done);
+		/* the host reads this memory through the SMMU/DMA: no CPU line may stay dirty */
+		cache_ci((uintptr_t)p + done, n);
+		uint32_t gen = ud.link_gen;
+		ud.tx_done = 0;
+		if (ud_start_trb(EP_TX, UD_TRB_TX, (uintptr_t)p + done, n, TRBCTL_NORMAL))
+			return USB_LINK_LOST;
+		int rc = wait_done(&ud.tx_done, gen, 20000, idle);
+		if (rc) {
+			if (rc == USB_TIMEOUT)
+				ud_end_transfer(EP_TX);
+			return rc;
+		}
+		done += n;
+	}
+	return 0;
+}

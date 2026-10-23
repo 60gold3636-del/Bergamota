@@ -50,7 +50,7 @@ struct DashboardView: View {
         case .unknown: "Probing the phone..."
         case .offline: "No device seen. Hold Power + Volume Down for fastboot, or plug the phone in."
         case .fastboot: "Phone is in ABL fastboot (serial \(model.monitor.fastbootSerial ?? "?")). Ready for `fastboot boot` and flash userdata."
-        case .bergamotaFastboot: "Phone is in Bergamota fastboot (serial \(model.monitor.fastbootSerial ?? "?")). Ready for `fastboot boot`; no flash commands."
+        case .bergamotaFastboot: "Phone is in Bergamota fastboot (serial \(model.monitor.fastbootSerial ?? "?")). Ready for `fastboot boot` and flashing userdata/boot/logo (main flash route)."
         case .recovery: "OrangeFox / recovery over adb (\(model.monitor.adbSerial ?? "?"))."
         case .android: "Android is up over adb (\(model.monitor.adbSerial ?? "?"))."
         case .iosBooting:
@@ -119,7 +119,7 @@ struct DashboardView: View {
                 if m.state == .fastboot || m.state == .bergamotaFastboot {
                     Card(title: m.state == .fastboot ? "ABL fastboot" : "Bergamota fastboot", symbol: m.state.symbol) {
                         if m.state == .fastboot {
-                            Text("Qualcomm ABL: `fastboot boot` and flash commands. \"Enter Bergamota fastboot\" boots Enxerto's own fastboot (1 GiB downloads, no flash commands).")
+                            Text("Qualcomm ABL: `fastboot boot` and flash commands. \"Enter Bergamota fastboot\" boots Enxerto's own fastboot (1 GiB downloads, the main flash route; flashing enters it automatically).")
                                 .font(.callout).foregroundStyle(.secondary)
                             HStack {
                                 Button { confirmEnterBergamota = true } label: { Label("Enter Bergamota fastboot", systemImage: "leaf.circle.fill") }
@@ -131,7 +131,7 @@ struct DashboardView: View {
                                 }
                             }
                         } else {
-                            Text("Enxerto's fastboot (\(m.fastbootVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "version-bootloader bergamota-N")): `fastboot boot` up to 1 GiB, no flash commands. Flashing userdata needs ABL fastboot (Power + Volume Down).")
+                            Text("Enxerto's fastboot (\(m.fastbootVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "version-bootloader bergamota-N")): `fastboot boot` up to 1 GiB and flash userdata/boot/logo (delta by default). ABL fastboot stays the fallback.")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                     }

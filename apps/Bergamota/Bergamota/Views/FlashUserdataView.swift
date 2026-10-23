@@ -79,6 +79,8 @@ struct FlashConfirmSheet: View {
     @State private var typed = ""
     @State private var sha: String?
     @State private var result: String?
+    @State private var via: UserdataFlash.Via?
+    @State private var diffMode: UserdataFlash.Mode?
 
     private var isNow: Bool { if case .now = req.mode { return true }; return false }
 
@@ -98,26 +100,43 @@ struct FlashConfirmSheet: View {
                 if case .queue(let b) = req.mode, !b.isEmpty {
                     GridRow { Text("Then").foregroundStyle(.secondary); Text("fastboot boot \((b as NSString).lastPathComponent)") }
                 }
-                GridRow { Text("Command").foregroundStyle(.secondary); Text("fastboot -s <serial> flash userdata <file>").font(.system(size: 11, design: .monospaced)) }
+                GridRow { Text("Command").foregroundStyle(.secondary)
+                    Text((via ?? model.settings.flashViaValue) == .abl ? "fastboot -s <serial> -S 512M flash \(i.partition) <file>"
+                         : "python3 tools/bergamota-flash.py flash \(i.partition) <file> \(i.partition == "userdata" && (diffMode ?? model.settings.flashModeValue) == .delta ? "--delta" : "--full")")
+                        .font(.system(size: 11, design: .monospaced)) }
             }
+            HStack(spacing: 16) {
+                Picker("Route", selection: Binding(get: { via ?? model.settings.flashViaValue }, set: { via = $0 })) {
+                    Text("Bergamota fastboot (ABL fallback)").tag(UserdataFlash.Via.auto)
+                    Text("ABL fastboot only").tag(UserdataFlash.Via.abl)
+                }.frame(maxWidth: 300)
+                if i.partition == "userdata" {
+                    Picker("Mode", selection: Binding(get: { diffMode ?? model.settings.flashModeValue }, set: { diffMode = $0 })) {
+                        Text("Delta").tag(UserdataFlash.Mode.delta)
+                        Text("Full").tag(UserdataFlash.Mode.full)
+                    }.frame(maxWidth: 160)
+                }
+            }
+            Text("Bergamota fastboot writes the phone's UFS itself. Delta compares the phone's real contents block by block and sends only what differs. Only userdata, boot and logo can be written.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Type \(UserdataFlash.confirmWord) to enable the button:").foregroundStyle(.secondary)
             TextField(UserdataFlash.confirmWord, text: $typed).textFieldStyle(.roundedBorder).frame(width: 220)
-            if isNow, model.monitor.state != .fastboot { Text("The phone is not in fastboot.").foregroundStyle(.orange) }
+            if isNow, !model.monitor.state.isFastboot { Text("The phone is not in fastboot.").foregroundStyle(.orange) }
             if let r = result { Text(r).foregroundStyle(.secondary) }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(isNow ? "Flash userdata" : "Add to queue") {
                     if case .queue(let b) = req.mode {
-                        q.addFlash(userdata: i, bootPath: b)
+                        q.addFlash(userdata: i, bootPath: b, via: via, mode: diffMode)
                         dismiss()
                     } else {
                         dismiss()
-                        Task { _ = await q.flashUserdataNow(i) }
+                        Task { _ = await q.flashUserdataNow(i, via: via, mode: diffMode) }
                     }
                 }
                 .buttonStyle(.borderedProminent).tint(.red)
-                .disabled(!ready || (isNow && (model.monitor.state != .fastboot || q.sending != nil || q.flashing)))
+                .disabled(!ready || (isNow && (!model.monitor.state.isFastboot || q.sending != nil || q.flashing || q.preparingFlash)))
             }
         }
         .padding(20).frame(width: 600)
@@ -134,12 +153,12 @@ struct FlashPane: View {
 
     var body: some View {
         let q = model.queue, f = model.flasher
-        let inFastboot = model.monitor.state == .fastboot
+        let inFastboot = model.monitor.state.isFastboot
         let info: UserdataFlash.Info? = { if case .success(let i) = UserdataFlash.validate(path.trimmingCharacters(in: .whitespaces)) { return i }; return nil }()
         VStack(alignment: .leading, spacing: 0) {
             Form {
                 Section("Flash userdata (the iOS root image)") {
-                    Label("The only partition this app can flash is userdata. It replaces the iOS install on the phone.", systemImage: "exclamationmark.triangle.fill")
+                    Label("Flashes userdata through Bergamota fastboot (delta by default; ABL fastboot is the fallback). It replaces the iOS install on the phone.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange).font(.callout)
                     FlashImagePicker(path: $path)
                     HStack {
@@ -161,7 +180,11 @@ struct FlashPane: View {
             Divider()
             HStack {
                 Text("Output").font(.headline)
-                if f.active { ProgressView(value: f.total > 0 ? Double(f.current) : 0, total: Double(max(f.total, 1))).frame(width: 160); Text(f.progressText).monospacedDigit() }
+                if f.active {
+                    if f.route == .bergamota { ProgressView(value: f.fraction() ?? 0).frame(width: 160) }
+                    else { ProgressView(value: f.total > 0 ? Double(f.current) : 0, total: Double(max(f.total, 1))).frame(width: 160) }
+                    Text(f.progressText).monospacedDigit()
+                }
                 else if let l = f.last { Text(l.ok ? "FLASHED" : "FAILED").bold().foregroundStyle(l.ok ? .green : .red) }
                 Spacer()
             }.padding(10)
@@ -190,7 +213,7 @@ struct FlashPickerSheet: View {
         let info: UserdataFlash.Info? = { if case .success(let i) = UserdataFlash.validate(path.trimmingCharacters(in: .whitespaces)) { return i }; return nil }()
         VStack(alignment: .leading, spacing: 12) {
             Text("Flash userdata").font(.title2.bold())
-            Text("Replaces the iOS install on the phone. Only the userdata partition is ever flashed.").foregroundStyle(.secondary)
+            Text("Replaces the iOS install on the phone. Only userdata, boot and logo can be written.").foregroundStyle(.secondary)
             FlashImagePicker(path: $path)
             HStack {
                 Spacer()

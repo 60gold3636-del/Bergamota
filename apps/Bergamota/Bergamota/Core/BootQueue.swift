@@ -21,6 +21,9 @@ struct QueueItem: Identifiable, Hashable, Codable {
     /// Partition `userdataImage` is flashed to (nil = userdata; boot or logo allowed, see UserdataFlash.partitions).
     var flashPartition: String?
     var flashTarget: String { flashPartition ?? "userdata" }
+    /// Per-item overrides of the flash route (auto/abl/bergamota) and the userdata mode (delta/full); nil = the Settings values.
+    var flashVia: String?
+    var flashMode: String?
     var hasBoot: Bool { !imagePath.isEmpty }
     var flashesUserdata: Bool { userdataImage != nil }
     /// "flash userdata X, then boot Y" (or only the first half).
@@ -48,7 +51,8 @@ final class BootQueue {
         switch monitor.state {
         case .bergamotaFastboot: true
         case .fastboot: false
-        default: settings.preferBergamotaFastboot && tools.bergamotaSupported == true
+        default:
+            (pending.first?.flashesUserdata == true ? effectiveVia(pending[0]) != .abl : settings.preferBergamotaFastboot) && tools.bergamotaSupported == true
         }
     }
     func largeWarns(_ size: Int64) -> Bool { size > Self.largeImageBytes && !targetsBergamota }
@@ -60,6 +64,8 @@ final class BootQueue {
     var items: [QueueItem] = [] { didSet { save() } }
     var armed = false { didSet { if armed != oldValue { save() } } }
     var waitingForLeave = false
+    /// A flash is moving the phone into Bergamota fastboot (enter + wait for re-enumeration): nothing else is sent meanwhile.
+    var preparingFlash = false
     var lastSendFailed = false
     var recoveryRebootSent = false
     var note: String?
@@ -116,15 +122,20 @@ final class BootQueue {
         loading = false
     }
 
+    func effectiveVia(_ it: QueueItem) -> UserdataFlash.Via { it.flashVia.flatMap(UserdataFlash.Via.init) ?? settings.flashViaValue }
+    func effectiveMode(_ it: QueueItem) -> UserdataFlash.Mode { it.flashMode.flatMap(UserdataFlash.Mode.init) ?? settings.flashModeValue }
+
     var pending: [QueueItem] { items.filter { $0.status == .pending } }
     var sending: QueueItem? { items.first { $0.status == .sending } }
 
     func add(_ path: String, label: String = "") { items.append(QueueItem(imagePath: path, label: label, size: Self.fileSize(path))) }
     /// Item that flashes `userdata` (already validated) and then, if `bootPath` is non-empty, boots `bootPath`.
-    func addFlash(userdata: UserdataFlash.Info, bootPath: String = "", label: String = "") {
+    func addFlash(userdata: UserdataFlash.Info, bootPath: String = "", label: String = "",
+                  via: UserdataFlash.Via? = nil, mode: UserdataFlash.Mode? = nil) {
         items.append(QueueItem(imagePath: bootPath, label: label, size: bootPath.isEmpty ? 0 : Self.fileSize(bootPath),
                                userdataImage: userdata.path, userdataSize: userdata.size,
-                               flashPartition: userdata.partition == "userdata" ? nil : userdata.partition))
+                               flashPartition: userdata.partition == "userdata" ? nil : userdata.partition,
+                               flashVia: via?.rawValue, flashMode: mode?.rawValue))
     }
     func remove(_ id: UUID) { items.removeAll { $0.id == id && $0.status != .sending } }
     func clearFinished() { items.removeAll { $0.status == .sent || $0.status == .failed } }
@@ -148,7 +159,7 @@ final class BootQueue {
 
     var statusText: String {
         if !armed { return pending.isEmpty ? "Queue is empty." : "Queue stopped. Press Start to arm it." }
-        if flasher.active { return "Flashing userdata \(flasher.progressText). Do not unplug." }
+        if flasher.active { return "Flashing \(flasher.partition) via \(flasher.route == .bergamota ? "Bergamota fastboot" : "ABL fastboot") (\(flasher.progressText)). Do not unplug." }
         if let s = sending { return "Sending \(s.name) ..." }
         if pending.isEmpty { return "Queue is empty." }
         if waitingForLeave {
@@ -212,7 +223,8 @@ final class BootQueue {
         DebugLog.write("auto-reboot to fastboot for \(items[idx].name)")
         if settings.notifyOnBoot { Notifier.post("Bergamota", "Rebooting iOS into fastboot for \(items[idx].name).") }
         Task {
-            let (ok, msg, target) = await tools.rebootIOSToFastboot()
+            let flashItem = items.first { $0.id == id }.flatMap { $0.flashesUserdata ? $0 : nil }
+            let (ok, msg, target) = await tools.rebootIOSToFastboot(preferBergamota: flashItem.map { effectiveVia($0) != .abl })
             autoRebootBusy = false
             guard let i = items.firstIndex(where: { $0.id == id }) else { return }
             if ok { rebootWatch = (id, Date()); note = "Auto-reboot sent (\(target == "bergamota" ? "Bergamota" : "ABL") fastboot). Waiting for fastboot." }
@@ -243,7 +255,7 @@ final class BootQueue {
         if settings.notifyOnIOS && new == .ios && old != .ios && old != .unknown { Notifier.post("Bergamota", "iOS is up on the Poco F1.") }
 
         autoRebootStep(new: new)
-        guard armed, sending == nil, !flasher.active, !tools.enteringBergamota, !pending.isEmpty else { return }
+        guard armed, sending == nil, !flasher.active, !preparingFlash, !tools.enteringBergamota, !pending.isEmpty else { return }
 
         if new == .recovery, settings.rebootFromRecovery, !recoveryRebootSent {
             recoveryRebootSent = true
@@ -277,7 +289,7 @@ final class BootQueue {
     }
 
     private func sendNext(force: Bool = false) async {
-        guard sending == nil, !flasher.active, !tools.enteringBergamota, force || !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
+        guard sending == nil, !flasher.active, !preparingFlash, !tools.enteringBergamota, force || !waitingForLeave, let idx = items.firstIndex(where: { $0.status == .pending }) else { return }
         guard let fb = settings.fastboot else { note = "fastboot not found"; return }
         // Latch first: whatever happens, no second send until the phone leaves fastboot.
         waitingForLeave = true
@@ -286,22 +298,30 @@ final class BootQueue {
         items[idx].status = .sending
         let path = items[idx].imagePath
         let id = items[idx].id
-        var args: [String] = []
-        if let s = monitor.fastbootSerial { args += ["-s", s] }
-        args += ["boot", path]
         var out = ""
-        // Optional userdata flash first (the single flash exception), then exactly one `fastboot boot`.
+        // Optional flash first (userdata/boot/logo only), then exactly one `fastboot boot`. The flash goes through Bergamota
+        // fastboot (the main path), entered from ABL on the way; ABL fastboot flashing is the fallback.
         if let ud = items[idx].userdataImage {
             switch UserdataFlash.validate(ud, partition: items[idx].flashTarget) {
             case .failure(let e): finish(id, ok: false, output: "\(items[idx].flashTarget) flash refused: \(e.message)"); return
             case .success(let info):
-                let (ok, msg) = await flasher.flash(info)
-                out = flasher.output
+                var log = ""
+                guard let route = await prepareFlashRoute(via: effectiveVia(items[idx]), log: &log) else {
+                    finish(id, ok: false, output: log + "could not reach a fastboot that can flash"); return
+                }
+                let (ok, msg) = await flasher.flash(info, route: route, mode: effectiveMode(items[idx]))
+                out = log + flasher.output
+                // Whatever fastboot kind we flashed in, no second send until the phone leaves it.
+                waitingForLeave = true
+                sentSession = monitor.fastbootSession
                 if !ok { finish(id, ok: false, output: out + msg); return }
                 if path.isEmpty { finish(id, ok: true, output: out); return }
                 out += "\n"
             }
         }
+        var args: [String] = []
+        if let s = monitor.fastbootSerial { args += ["-s", s] }
+        args += ["boot", path]
         guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else {
             finish(id, ok: false, output: out + "image not found: \(path)")
             return
@@ -313,16 +333,65 @@ final class BootQueue {
         finish(id, ok: r.ok, output: out)
     }
 
-    /// Manual "Flash userdata" action (Boot page / Control Plane): only in fastboot, never while the queue sends,
-    /// and the queue stays latched until the phone leaves fastboot so no boot follows by itself.
-    func flashUserdataNow(_ info: UserdataFlash.Info) async -> String {
-        guard monitor.state == .fastboot else { return monitor.state == .bergamotaFastboot ? "Bergamota fastboot has no flash commands: flash userdata from ABL fastboot" : "phone is not in fastboot" }
-        guard !flasher.active else { return "a userdata flash is already running" }
+    /// Puts the phone into the fastboot kind this flash should use and returns the route, or nil (phone unusable). Notes go to `log`.
+    /// ABL fastboot + via auto/bergamota: `fastboot boot` the Bergamota fastboot image and wait for the re-enumeration; if that
+    /// fails, auto falls back to ABL flashing (when the phone is still in ABL fastboot), bergamota gives up.
+    private func prepareFlashRoute(via: UserdataFlash.Via, log: inout String) async -> UserdataFlash.Route? {
+        switch monitor.state {
+        case .bergamotaFastboot:
+            if settings.flashTool == nil { log += "\(UserdataFlash.toolName) not found: can not flash through Bergamota fastboot\n"; return nil }
+            if via == .abl { log += "phone is in Bergamota fastboot: flashing there (ABL is not reachable from here)\n" }
+            return .bergamota
+        case .fastboot:
+            if via == .abl { return .abl }
+            if settings.flashTool == nil {
+                log += "\(UserdataFlash.toolName) not found; "
+                if via == .bergamota { log += "route bergamota requested\n"; return nil }
+                log += "falling back to ABL fastboot flashing\n"; return .abl
+            }
+            preparingFlash = true
+            defer { preparingFlash = false }
+            note = "Entering Bergamota fastboot for the flash."
+            let (ok, msg) = await tools.enterBergamota(forFlash: true)
+            log += "enter Bergamota fastboot: \(msg)\n"
+            if ok {
+                for _ in 0..<60 {
+                    if monitor.state == .bergamotaFastboot { note = nil; return .bergamota }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                log += "Bergamota fastboot did not appear within 60 s\n"
+            }
+            note = nil
+            if via == .bergamota { return nil }
+            if monitor.state == .fastboot { log += "FALLBACK: flashing through ABL fastboot\n"; return .abl }
+            if monitor.state == .bergamotaFastboot { return .bergamota }
+            return nil
+        default:
+            log += "phone is not in fastboot (state: \(monitor.state.title))\n"
+            return nil
+        }
+    }
+
+    /// Manual "Flash" action (Boot page / Control Plane): in either fastboot kind (ABL: enters Bergamota fastboot first unless
+    /// the route is abl), never while the queue sends, and the queue stays latched until the phone leaves fastboot so no boot
+    /// follows by itself. `via` / `mode` default to the Settings values.
+    func flashUserdataNow(_ info: UserdataFlash.Info, via: UserdataFlash.Via? = nil, mode: UserdataFlash.Mode? = nil) async -> String {
+        guard monitor.state.isFastboot else { return "phone is not in fastboot" }
+        guard !flasher.active, !preparingFlash else { return "a flash is already running" }
         guard sending == nil else { return "a queue send is in progress" }
         guard monitor.fastbootSerial != nil else { return "no fastboot serial" }
         waitingForLeave = true
         sentSession = monitor.fastbootSession
-        let (_, msg) = await flasher.flash(info)
+        var log = ""
+        guard let route = await prepareFlashRoute(via: via ?? settings.flashViaValue, log: &log) else {
+            flasher.output = log
+            flasher.last = (false, Date(), "FAILED: " + (log.split(separator: "\n").last.map(String.init) ?? "no fastboot"))
+            return flasher.last?.message ?? "failed"
+        }
+        waitingForLeave = true
+        sentSession = monitor.fastbootSession
+        let (_, msg) = await flasher.flash(info, route: route, mode: mode ?? settings.flashModeValue)
+        if !log.isEmpty { flasher.output = log + flasher.output }
         nonFastbootStreak = 0
         if settings.notifyOnBoot { Notifier.post("Bergamota", msg) }
         return msg
