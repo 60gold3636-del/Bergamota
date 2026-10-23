@@ -38,7 +38,7 @@ object is keyed on its full input.
 
 - Bump `CACHE_VERSION` in the workflow `env:` (invalidates both caches).
 - Changing the Xcode version, `DXB_SHA` or `macos_version` changes the keys automatically.
-- Delete a single entry: `gh cache list -R ry-diffusion/ios-beryllium`, then
+- Delete a single entry: `gh cache list -R ry-diffusion/Bergamota`, then
   `gh cache delete <id>`.
 - Entries for `ci-cache` or other branches are not visible to `main` (and vice versa),
   except that branches can read the default branch's caches.

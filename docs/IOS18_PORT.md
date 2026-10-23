@@ -54,9 +54,9 @@ diskutil eject research/ios18/ramdisk/mnt && rm -f research/ios18/ramdisk/094-* 
 
 # 1. kernel with 0131: CI builds branches only by dispatch
 git push -u origin ios18                         # you review first
-gh workflow run xnu.yml --ref ios18 -R ry-diffusion/ios-beryllium
-gh run list -R ry-diffusion/ios-beryllium --branch ios18 -L 1      # note the run id, then
-gh run download <ID> -R ry-diffusion/ios-beryllium -n xnu-kernel -D xnu/out-0131
+gh workflow run xnu.yml --ref ios18 -R ry-diffusion/Bergamota
+gh run list -R ry-diffusion/Bergamota --branch ios18 -L 1      # note the run id, then
+gh run download <ID> -R ry-diffusion/Bergamota -n xnu-kernel -D xnu/out-0131
 
 # 2. boot image: same ADT, payload and cmdline as your current image, plus sweetarm64e=1
 python3 tools/mkpayload.py xnu/out-0131/kernel.development.sweet shim/out/<current>.adt shim/out/payload-0131.bin \

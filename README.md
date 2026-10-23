@@ -72,8 +72,8 @@ brew install aarch64-elf-gcc dtc blacktop/tap/ipsw
 **1. Heartwood.** The kernel builds on GitHub's macOS runners:
 
 ```sh
-gh workflow run xnu.yml -R ry-diffusion/ios-beryllium -r develop
-gh run download -R ry-diffusion/ios-beryllium -n xnu-kernel -D xnu/out-develop
+gh workflow run xnu.yml -R ry-diffusion/Bergamota -r develop
+gh run download -R ry-diffusion/Bergamota -n xnu-kernel -D xnu/out-develop
 ```
 
 **2. Renegade.** Download the iOS 18.7.8 root and build the image. No sudo is needed, but you need about 20 GB free:

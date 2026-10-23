@@ -40,7 +40,7 @@ final class AppSettings {
         ghPath = d.string(forKey: "ghPath") ?? ""
         pythonPath = d.string(forKey: "pythonPath") ?? ""
         sshPath = d.string(forKey: "sshPath") ?? ""
-        ghRepo = d.string(forKey: "ghRepo") ?? "ry-diffusion/ios-beryllium"
+        ghRepo = d.string(forKey: "ghRepo") ?? "ry-diffusion/Bergamota"
         rebootFromRecovery = d.bool(forKey: "rebootFromRecovery")
         notifyOnBoot = d.object(forKey: "notifyOnBoot") as? Bool ?? true
         allowRemoteStart = d.object(forKey: "allowRemoteStart") as? Bool ?? true
