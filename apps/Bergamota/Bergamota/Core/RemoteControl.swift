@@ -266,6 +266,14 @@ final class RemoteControl {
             if let p = i.powerSource { ios["powerSource"] = p }
             phone["ios"] = ios
         }
+        if m.state == .ios {
+            // `phone.metrics`: the object sweetmetrics printed (docs/BERGAMOTA_METRICS.md) plus when Bergamota fetched it.
+            if let mm = m.metrics, let d = mm.json.data(using: .utf8), var o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] {
+                o["fetched"] = ISO8601DateFormatter().string(from: mm.fetched)
+                phone["metrics"] = o
+            }
+            if let e = m.metricsError { phone["metricsError"] = e }
+        }
         let items: [[String: Any]] = queue.items.map { it in
             let st: String
             switch it.status {

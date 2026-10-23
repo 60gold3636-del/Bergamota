@@ -31,6 +31,9 @@ final class AppSettings {
     var flashMode: String { didSet { d.set(flashMode, forKey: "flashMode") } }
     /// Optional explicit path of tools/bergamota-flash.py (empty = find it in the repo / sibling worktrees).
     var flashToolPath: String { didSet { d.set(flashToolPath, forKey: "flashToolPath") } }
+    /// Let `sweetmetrics --gpu-info` open a SweetAdreno630 user client every poll to read the INFO selector (ready/lost). Off by default:
+    /// a client on the GPU service can interfere with GPU tests and with the idle slumber of the DCVS governor.
+    var metricsGPUInfo: Bool { didSet { d.set(metricsGPUInfo, forKey: "metricsGPUInfo") } }
     /// Image `fastboot boot`ed from ABL fastboot by "Enter Bergamota fastboot".
     var bergamotaImagePath: String { didSet { d.set(bergamotaImagePath, forKey: "bergamotaImagePath") } }
     static let defaultBergamotaImage = "/Users/zesmoi/git/iAndroid/ios-beryllium-ios18/enxerto/out/bergamota-fastboot.img"
@@ -54,6 +57,7 @@ final class AppSettings {
         notifyOnIOS = d.object(forKey: "notifyOnIOS") as? Bool ?? true
         preferBergamotaFastboot = d.object(forKey: "preferBergamotaFastboot") as? Bool ?? true
         bergamotaImagePath = d.string(forKey: "bergamotaImagePath") ?? Self.defaultBergamotaImage
+        metricsGPUInfo = d.bool(forKey: "metricsGPUInfo")
         flashVia = d.string(forKey: "flashVia") ?? "auto"
         flashMode = d.string(forKey: "flashMode") ?? "delta"
         flashToolPath = d.string(forKey: "flashToolPath") ?? ""

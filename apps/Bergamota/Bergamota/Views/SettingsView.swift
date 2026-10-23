@@ -20,6 +20,8 @@ struct SettingsView: View {
             Section("Phone") {
                 TextField("Phone IP", text: $s.phoneIP)
                 Text("USB Ethernet is found by MAC \(PhoneMonitor.usbMAC); SSH as root@IP (key only).").font(.caption).foregroundStyle(.secondary)
+                Toggle("Read the GPU INFO selector (opens a SweetAdreno630 user client every 2 s)", isOn: $s.metricsGPUInfo)
+                Text("Live metrics run /usr/local/bin/sweetmetrics over SSH every ~2 s while iOS is up. Off (default): read-only registry/sysctl sources only, no GPU client is opened.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Tools (leave empty to resolve via PATH, /opt/homebrew/bin, /usr/local/bin)") {
                 toolRow("fastboot", $s.fastbootPath, s.fastboot)

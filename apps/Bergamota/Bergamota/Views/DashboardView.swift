@@ -137,6 +137,8 @@ struct DashboardView: View {
                     }
                 }
 
+                PerformanceCard()
+
                 Card(title: "iOS device", symbol: "iphone") {
                     if m.state != .ios {
                         Text("Available when iOS is up.").foregroundStyle(.secondary)

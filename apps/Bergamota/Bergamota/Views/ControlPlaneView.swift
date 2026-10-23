@@ -41,6 +41,7 @@ struct ControlPlaneView: View {
                 lastBootTile
             }
             .fixedSize(horizontal: false, vertical: true)
+            MetricsStrip(s: s)
             HStack(spacing: 18 * s) {
                 queueCard.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 ciCard.frame(width: 440 * s).frame(maxHeight: .infinity, alignment: .topLeading)
