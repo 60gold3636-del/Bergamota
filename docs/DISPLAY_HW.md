@@ -220,6 +220,12 @@ One line, `key=value` words, refreshed about once per second (`sweet_fb v1 mode=
 
 `mode` (direct | zc | copy: what is armed), `hz`, `flushticks` (vsync ticks per copied frame), `hw`, `flip`, `smmu`, `clean` (never|always|auto), `up_s`, `win_ms`, `swaps`, `swaps_s`, `coalesced`, `coalesced_s` (swaps that replaced an unpresented frame: dropped by the pacing), `zc_frames`, `zc_s`, `copy_frames`, `copy_s`, `scan_replaced`, `scan_replaced_s`, `copy_us` (average CPU time of a copied frame, latch waits excluded), `copy_us_max` (window), `zc_us`, `zc_us_max` (cache clean + register programming of a scanned frame), `clean_us`, `cleans`, `clean_skips`, `latch_waits`, `latch_wait_us`, `latch_timeouts`, `vsync_s`, `pool_used`, `pool_total`, `pool_surfaces`, `pool_fallbacks`. Readers must ignore unknown keys. The same line is logged as `SWEET FB: stats ...` every `sweetfb_statlog` seconds.
 
+### 5.5b On-screen performance HUD (0213)
+
+`sysctl kern.sweet_fb_hud=1` (0 = off, default; boot-arg `sweetfb_hud=1` sets the initial value) draws a small stippled box with outlined white text at the left, below the status bar (y = buffer height / 16), refreshed twice a second. Rows: `DISP` frames/s pushed to the panel (zc + copy) and vsync Hz; `APP` backboardd swaps/s and coalesced/s; `COPY` avg/max copy time (latch waits and the HUD itself excluded); `GPU` MHz, level, busy %, gov|fixed (`sweet_gpu_hud_state`); `CPU` A55/A75 MHz (`sweet_cpufreq_hud_mhz`); `BAT` % and mA, + charging (`sweet_battery_hud`, last value SweetBattery published).
+
+It is drawn into the buffer the CPU copy fills (write-combined, so no cache clean, only `dsb sy`): after each copy before `scanTo`, and on the vsync timer into the front buffer when the screen is still. Zero-copy and direct scan-out scan the app's own IOSurface, which is never written: there the HUD stays off (one `SWEET FB: HUD unavailable` log line). After switching it off a still screen keeps the last box until the next frame.
+
 ### 5.6 What to expect (estimates, not measured)
 
 * Copy path (`sweetfb_direct=0 sweetfb_hz=60`): `copy_us` about 5-10 ms per 10.7 MiB frame through write-combined stores (0127's estimate), i.e. 30-60 percent of one A75 at 60 swaps/s; if the CPU cannot keep up `coalesced_s` grows (frames dropped) and `swaps_s` stays near what backboardd manages.
