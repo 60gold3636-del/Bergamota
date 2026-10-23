@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
-index 2545cf9f9a2a342972c6967f9d2bec78662d7058..e09ddc80df5ef212550a3b38ea5d7340cff67876 100644
+index 2545cf9f9a2a342972c6967f9d2bec78662d7058..bed0aa3030e3b38df6e0e1026592ff239aa04251 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
 @@ -24,6 +24,9 @@ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
@@ -88,17 +88,13 @@ index 2545cf9f9a2a342972c6967f9d2bec78662d7058..e09ddc80df5ef212550a3b38ea5d7340
  		nanoseconds_to_deadline(5 * NSEC_PER_SEC, &deadline);
  		while (__atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE) == 0 ||
  		    !sweet_cpu_signal_is_enabled(i)) {
-@@ -199,6 +231,13 @@ SweetCPU::initCPU(bool boot)
+@@ -199,6 +231,9 @@ SweetCPU::initCPU(bool boot)
  	 * startAll waits for its delivery after the startup thread unmasks IRQs.
  	 * Waiting here with DAIF.I set would deadlock every secondary. */
  	signalCPU(this);
-+	if (ml_get_interrupts_enabled()) {
-+		/* Boot CPU inside processor_boot(): same as AppleARMSMP::initCPU. Secondaries
-+		 * enable interrupts and call ml_cpu_up() in processor_cpu_reinit(). */
-+		ml_wait_for_cpu_signal_to_enable();
-+		assert_ml_cpu_signal_is_enabled(true);
-+		ml_cpu_up();
-+	}
++	/* xnu-11215: waiting for this self-IPI and ml_cpu_up() happen in processor_cpu_reinit()
++	 * (osfmk/kern/machine.c) for every CPU, boot CPU included; doing it here too trips
++	 * the ml_cpu_up() assertion. */
  	setCPUState(kIOCPUStateRunning);
  	kprintf("SWEET CPU: cpu=%u entered initCPU mpidr=0x%llx EL%llu IRQs=%u\n",
  	    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
