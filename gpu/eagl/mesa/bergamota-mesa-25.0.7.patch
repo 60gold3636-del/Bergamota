@@ -309,10 +309,10 @@ index 25985dd..f7d01b1 100644
      */
 diff --git a/src/gallium/targets/osmesa/sweet_hw.c b/src/gallium/targets/osmesa/sweet_hw.c
 new file mode 100644
-index 0000000..fa27593
+index 0000000..488055f
 --- /dev/null
 +++ b/src/gallium/targets/osmesa/sweet_hw.c
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,189 @@
 +/*
 + * SPDX-License-Identifier: MIT
 + * Bergamota: hardware (freedreno / Adreno 630) pipe_screen for the OSMesa target, over the libdrm stand-in
@@ -437,7 +437,9 @@ index 0000000..fa27593
 +      goto out;
 +   {
 +      struct sweet_gpu_surface_bo sb = { .surface_id = surface_id, .handle = 0 };
-+      if (sweet_drm_surface_bo(g_fd, &sb) != 0 || sb.planes > 1 || sb.pixel_format != 0x42475241 /* BGRA */) {
++      /* BGRA, or no pixel format at all (CoreAnimation's offscreen/backdrop surfaces are created without one) with 4 bytes per pixel */
++      if (sweet_drm_surface_bo(g_fd, &sb) != 0 || sb.planes > 1 ||
++          !((sb.pixel_format == 0x42475241 /* BGRA */) || (sb.pixel_format == 0 && sb.bytes_per_row >= sb.width * 4 && sb.bytes_per_row < sb.width * 8))) {
 +         if (getenv("SWEET_GPU_DEBUG"))
 +            fprintf(stderr, "OSMesa/sweet: surface %u not usable (planes %u fmt %08x)\n", surface_id, sb.planes, sb.pixel_format);
 +         goto out;

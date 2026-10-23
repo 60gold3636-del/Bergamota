@@ -169,7 +169,8 @@ int main(int argc, char **argv)
 		args[0] = 0;
 	args[sizeof args - 1] = 0;
 
-	if ((has_arg(args, "bglrender", mode, sizeof mode) || marker_mode(mode, sizeof mode)) &&
+	{ char mm[16] = ""; int have_marker = marker_mode(mm, sizeof mm); if (!has_arg(args, "bglrender", mode, sizeof mode) && have_marker) snprintf(mode, sizeof mode, "%s", mm); }   /* boot-arg wins for the mode; the marker may still add debug/nohook */
+	if (mode[0] &&
 	    (!strcmp(mode, "1") || !strcmp(mode, "soft")) &&
 	    readable(LIBDIR, "OpenGLES.framework/OpenGLES") && readable(LIBDIR, "libOSMesa.8.dylib") &&
 	    readable(LIBDIR, "libdrm.2.dylib") && guard()) {

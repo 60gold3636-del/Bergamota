@@ -43,6 +43,7 @@
 
 #define EAGL_DEBUG(...) do { if (g_debug) fprintf(stderr, "EAGL(shim): " __VA_ARGS__); } while (0)
 static int g_debug;
+static volatile int g_target_attach;      // set once attachImage:<target> was used: the render server's convention (see texImageIOSurface)
 
 #pragma GCC visibility push(default)
 // --- constants -------------------------------------------------------------------------------------------
@@ -488,6 +489,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     struct _EAGLContextPrivate *p = _private;
     int kind = 0;
     GLuint name = (GLuint)image;
+    if (surface && (image == GL_TEXTURE_2D || image == GL_RENDERBUFFER || image == 0x84f5)) g_target_attach = 1;
     if (surface && (image == GL_TEXTURE_2D || image == GL_RENDERBUFFER || image == 0x84f5 /* TEXTURE_RECTANGLE */)) {
         GLint bound = 0;
         if (image == GL_RENDERBUFFER) { glGetIntegerv(GL_RENDERBUFFER_BINDING, &bound); kind = 2; }
@@ -571,7 +573,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
         return NO;
     }
     for (uint32_t y = 0; y < h; y++) {
-        const uint8_t *sp = src + (invert ? y : (h - 1 - y)) * bpr;
+        const uint8_t *sp = src + ((invert || g_target_attach) ? y : (h - 1 - y)) * bpr;   // render server (target-form attach): images keep their native top-down rows; CARenderer-style clients: flipped unless invert
         uint8_t *dp = tmp + (size_t)y * w * bpp;
         if (bgra8) for (uint32_t x = 0; x < w; x++) { uint32_t q = ((const uint32_t *)sp)[x]; ((uint32_t *)dp)[x] = (q & 0xff00ff00u) | ((q & 0xff) << 16) | ((q >> 16) & 0xff); }
         else memcpy(dp, sp, (size_t)w * bpp);

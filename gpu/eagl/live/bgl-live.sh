@@ -33,14 +33,14 @@ if [ -f /usr/libexec/backboardd.real ]; then
 fi
 for p in $(ps ax | grep '/usr/libexec/backboardd' | grep -v grep | cut -c1-6); do kill -9 $p; done
 EOT
-  ph "mkdir -p $D/OpenGLES.framework /private/var/tmp/bgl-in; rm -rf /private/var/tmp/bgl-in/*"
-  put "$PAYLOAD/libOSMesa.8.dylib" "$PAYLOAD/libdrm.2.dylib" "$T/bgl-launch-live" "$T/revert.sh" "$HOST:/private/var/tmp/bgl-in/"
-  put "$PAYLOAD/OpenGLES.framework/OpenGLES" "$HOST:/private/var/tmp/bgl-in/OpenGLES"
+  ph "mkdir -p $D/OpenGLES.framework /var/root/bgl-in; rm -rf /var/root/bgl-in/*"
+  put "$PAYLOAD/libOSMesa.8.dylib" "$PAYLOAD/libdrm.2.dylib" "$T/bgl-launch-live" "$T/revert.sh" "$HOST:/var/root/bgl-in/"
+  put "$PAYLOAD/OpenGLES.framework/OpenGLES" "$HOST:/var/root/bgl-in/OpenGLES"
   (cd "$T" && shasum -a 256 bgl-launch-live revert.sh | cut -c1-64; cd "$PAYLOAD" && shasum -a 256 libOSMesa.8.dylib libdrm.2.dylib OpenGLES.framework/OpenGLES | cut -c1-64) > "$T/sha.local"
-  ph "cd /private/var/tmp/bgl-in && sha256sum bgl-launch-live revert.sh libOSMesa.8.dylib libdrm.2.dylib OpenGLES | cut -c1-64" > "$T/sha.phone"
+  ph "cd /var/root/bgl-in && sha256sum bgl-launch-live revert.sh libOSMesa.8.dylib libdrm.2.dylib OpenGLES | cut -c1-64" > "$T/sha.phone"
   cmp "$T/sha.local" "$T/sha.phone" || { echo "sha256 mismatch: abort"; exit 1; }
   echo "payload staged and verified"
-  ph "set -e; cd /private/var/tmp/bgl-in
+  ph "set -e; cd /var/root/bgl-in
       for f in libOSMesa.8.dylib libdrm.2.dylib; do rm -f $D/\$f; cp \$f $D/\$f; chmod 755 $D/\$f; done
       rm -f $D/OpenGLES.framework/OpenGLES; cp OpenGLES $D/OpenGLES.framework/OpenGLES; chmod 755 $D/OpenGLES.framework/OpenGLES
       rm -f $D/revert.sh; cp revert.sh $D/revert.sh; chmod 755 $D/revert.sh
@@ -51,7 +51,7 @@ EOT
         mv /usr/libexec/backboardd.real.tmp /usr/libexec/backboardd.real
       fi
       cp bgl-launch-live /usr/libexec/backboardd.new; chmod 755 /usr/libexec/backboardd.new; mv -f /usr/libexec/backboardd.new /usr/libexec/backboardd
-      rm -rf /private/var/tmp/bgl-in; ls -l /usr/libexec/backboardd /usr/libexec/backboardd.real $D"
+      rm -rf /var/root/bgl-in; ls -l /usr/libexec/backboardd /usr/libexec/backboardd.real $D"
   ;;
 arm)     ph "setsid nohup sh -c 'sleep 180; $D/revert.sh' > /dev/null 2>&1 < /dev/null & echo dead-man armed" ;;
 mode)    case "${2:-}" in soft|1) ph "echo \"$2 \$($D/bgl-launch --bgl-print-boot-uuid) ${3:-}\" > /private/var/run/bglrender; cat /private/var/run/bglrender";; off) ph "rm -f /private/var/run/bglrender; echo marker removed";; *) echo "mode soft|1|off"; exit 1;; esac ;;
