@@ -78,11 +78,12 @@ static int boot_uuid(char *out, size_t n)
 /* The volatile marker holds "MODE UUID [debug]" (MODE soft|1) and is honoured only when UUID is the boot session UUID of THIS boot
  * (kern.bootsessionuuid): a marker left over from an earlier boot can never act, whatever the clock says (the first live test showed that
  * kern.boottime and file times are unreliable early in boot: the RTC is set only later). Returns 1 and the mode in val. */
-static int g_marker_debug;
+static int g_marker_debug, g_marker_nohook;
 static int marker_mode(char *val, size_t vlen)
 {
 	char line[256], uuid[64] = "", cur[64] = "";
 	char *mode, *u, *dbg, *save = NULL;
+	g_marker_nohook = 0;
 	FILE *f;
 
 	if (boot_uuid(cur, sizeof cur) != 0 || !cur[0])
@@ -97,6 +98,11 @@ static int marker_mode(char *val, size_t vlen)
 	dbg = strtok_r(NULL, " \r\n", &save);
 	if (!mode || !u)
 		return 0;
+	if (dbg && !strcmp(dbg, "nohook")) { g_marker_nohook = 1; dbg = NULL; }
+	if (dbg && !strcmp(dbg, "debug")) {                  /* further words: debug, nohook in any order */
+		char *w = strtok_r(NULL, " \r\n", &save);
+		if (w && !strcmp(w, "nohook")) g_marker_nohook = 1;
+	}
 	snprintf(uuid, sizeof uuid, "%s", u);
 	if (strcmp(uuid, cur) != 0)
 		return 0;
@@ -173,6 +179,11 @@ int main(int argc, char **argv)
 		setenv("DYLD_INSERT_LIBRARIES", lib, 1);
 		if (!strcmp(mode, "soft"))
 			setenv("SWEET_GPU", "0", 1);
+		{   /* the render-server hook of the shim (ca_server_hook.m): on unless bglhook=0 (boot-arg) or "nohook" in the marker */
+			char hv[16] = "";
+			if (!g_marker_nohook && !(has_arg(args, "bglhook", hv, sizeof hv) && !strcmp(hv, "0")))
+				setenv("BGL_CA_HOOK", "1", 1);
+		}
 		if ((has_arg(args, "bgldebug", dbg, sizeof dbg) && !strcmp(dbg, "1")) || g_marker_debug) {
 			setenv("EAGL_SHIM_DEBUG", "1", 1);
 			setenv("SWEET_GPU_DEBUG", "1", 1);
