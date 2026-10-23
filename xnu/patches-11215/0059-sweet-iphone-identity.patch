@@ -14,7 +14,7 @@ index 292e7823408443a429f10e1014b66617a25485be..a4053a5927d483d8c317abdaa8edad7f
  	 * compatibility. Use hw.product/hw.target for something
  	 * consistent instead. */
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
-index 15f81b2fb651c972f637f905281b3953e299b340..3e37a4d077bc6a3e55d88c56920255254ff9a1d5 100644
+index a8f070421ba27f7b86971e6e493c315c28db2c2e..0631685e90870c78f9460cff6d984c364f2bc6ef 100644
 --- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
 +++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
 @@ -18,8 +18,6 @@ public:
@@ -26,8 +26,8 @@ index 15f81b2fb651c972f637f905281b3953e299b340..3e37a4d077bc6a3e55d88c5692025525
  };
  
  OSDefineMetaClassAndStructors(SweetPlatformExpert, IODTPlatformExpert);
-@@ -64,23 +62,9 @@ SweetPlatformExpert::processTopLevel(IORegistryEntry *root)
- 	createNubs(this, IODTFindMatchingEntries(root, kIODTExclusive, excludeList()));
+@@ -76,23 +74,9 @@ SweetPlatformExpert::processTopLevel(IORegistryEntry *root)
+ 	}
  }
  
 -bool
