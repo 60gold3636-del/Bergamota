@@ -417,7 +417,27 @@ static void h_DrawElementsInstanced(GLenum a, GLsizei b, GLenum c, const void *d
 static void (*o_DrawRangeElements)(GLenum, GLuint, GLuint, GLsizei, GLenum, const void *);
 static void h_DrawRangeElements(GLenum a, GLuint b, GLuint c, GLsizei d, GLenum e, const void *f) { mark_cur_dirty(); o_DrawRangeElements(a, b, c, d, e, f); }
 static void (*o_Clear)(GLbitfield);
-static void h_Clear(GLbitfield m) { mark_cur_dirty(); o_Clear(m); }
+static void diag_fbo(void) {      // debug: say why a framebuffer the render server draws into is incomplete
+    static int n; if (!g_debug || n >= 40) return;
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st == GL_FRAMEBUFFER_COMPLETE) return;
+    n++;
+    GLint fb = 0, t0 = 0, n0 = 0, r = 0, g = 0, b = 0, a = 0, td = 0, nd = 0, ts = 0, ns = 0, w = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &t0);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &n0);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0x8212, &r);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0x8213, &g);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0x8214, &b);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0x8215, &a);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &td);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &nd);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &ts);
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &ns);
+    (void)w;
+    fprintf(stderr, "EAGL(shim): INCOMPLETE FBO %d status 0x%x: colour0 type 0x%x name %d bits %d/%d/%d/%d, depth type 0x%x name %d, stencil type 0x%x name %d\n", fb, st, t0, n0, r, g, b, a, td, nd, ts, ns);
+}
+static void h_Clear(GLbitfield m) { mark_cur_dirty(); diag_fbo(); o_Clear(m); }
 static void (*o_ClearBufferfv)(GLenum, GLint, const GLfloat *);
 static void h_ClearBufferfv(GLenum a, GLint b, const GLfloat *c) { mark_cur_dirty(); o_ClearBufferfv(a, b, c); }
 static void mark_bound_texture_dirty(void) {     // texture writes (upload / copy) land in the texture bound to GL_TEXTURE_2D
@@ -447,10 +467,18 @@ static void h_DeleteTextures(GLsizei n, const GLuint *t) {
     if (c) for (GLsizei i = 0; i < n; i++) for (int k = 0; k < c->_private->natt; k++) {
         Attach *a = &c->_private->att[k];
         if (a->name != t[i] || a->kind == 2 || !att_is_tex(a)) continue;
-        if (g_debug) fprintf(stderr, "EAGL(shim): [ctx %p] glDeleteTextures(%u) deletes a display attachment (surface %u, dirty %d)\n", c, t[i], IOSurfaceGetID(a->surf), a->dirty);
-        if (g_dirty_track && a->dirty && IOSurfaceGetWidth(a->surf) * IOSurfaceGetHeight(a->surf) >= 1000000) sync_att(c, k);
+        BOOL big = IOSurfaceGetWidth(a->surf) * IOSurfaceGetHeight(a->surf) >= 1000000;
+        if (g_debug) fprintf(stderr, "EAGL(shim): [ctx %p] glDeleteTextures(%u) deletes an attached texture (surface %u, dirty %d)\n", c, t[i], IOSurfaceGetID(a->surf), a->dirty);
+        if (g_dirty_track && a->dirty && big) sync_att(c, k);
+        // The texture is going away: its attachment must too. A stale entry kept copying a deleted (empty) texture over a live display surface
+        // every flush (surface black after CoreAnimation tore down its buffers: display sleep/wake, app switches).
+        osm_sweet_forget(IOSurfaceGetID(a->surf)); CFRelease(a->surf);
+        c->_private->att[k] = c->_private->att[--c->_private->natt];
+        k--;
     }
+    if (c) { c->_private->cur_att = -1; }
     o_DeleteTextures(n, t);
+    if (c) update_cur_target(c);
 }
 static void (*o_BindFramebuffer)(GLenum, GLuint);
 static void h_BindFramebuffer(GLenum t, GLuint f) { o_BindFramebuffer(t, f); EAGLContext *c = cur_ctx(); if (c) update_cur_target(c); }

@@ -155,7 +155,7 @@ index e41699a..bc326aa 100644
     DBG("Pipe Info:");
     DBG(" GPU-id:          %s", fd_dev_name(screen->dev_id));
 diff --git a/src/gallium/frontends/osmesa/osmesa.c b/src/gallium/frontends/osmesa/osmesa.c
-index 6d61677..c169e26 100644
+index 6d61677..06793ac 100644
 --- a/src/gallium/frontends/osmesa/osmesa.c
 +++ b/src/gallium/frontends/osmesa/osmesa.c
 @@ -59,11 +59,18 @@
@@ -196,7 +196,7 @@ index 6d61677..c169e26 100644
     attribs.major = version_major;
     attribs.minor = version_minor;
     attribs.flags = 0;  /* ST_CONTEXT_FLAG_x */
-@@ -1027,3 +1037,180 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
+@@ -1027,3 +1037,190 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
        debug_warning("Calling OSMesaPostprocess() after OSMesaMakeCurrent()\n");
     }
  }
@@ -348,21 +348,31 @@ index 6d61677..c169e26 100644
 +   struct st_context *st = osmesa->st;
 +   struct gl_context *ctx = st->ctx;
 +   struct gl_texture_object *t = _mesa_lookup_texture(ctx, name);
-+   if (!t || t->Target != GL_TEXTURE_2D)
++   const int dbg = getenv("EAGL_SHIM_DEBUG") != NULL;
++   if (!t || t->Target != GL_TEXTURE_2D) {
++      if (dbg) fprintf(stderr, "OSMesa/sweet: direct attach of surface %u: texture %u missing or not 2D\n", surface_id, name);
 +      return 0;
++   }
 +   struct pipe_resource *res = sweet_hw_surface_resource(surface_id, 0, &dw, &dh);
-+   if (!res)
++   if (!res) {
++      if (dbg) fprintf(stderr, "OSMesa/sweet: direct attach of surface %u: no writable GPU resource (refused: wrapped/read-only, bad geometry or SURFACE_BO failed)\n", surface_id);
 +      return 0;
++   }
 +   struct gl_texture_image *img = _mesa_get_tex_image(ctx, t, GL_TEXTURE_2D, 0);
-+   if (!img)
++   if (!img) {
++      if (dbg) fprintf(stderr, "OSMesa/sweet: direct attach of surface %u: texture %u has no level 0 image\n", surface_id, name);
 +      return 0;
++   }
 +   struct st_egl_image stimg;
 +   memset(&stimg, 0, sizeof(stimg));
 +   stimg.texture = res;
 +   stimg.format = res->format;
 +   stimg.internalformat = GL_RGBA;
 +   st_bind_egl_image(ctx, t, img, &stimg, false, true);
-+   return t->surface_based && t->pt == res;
++   int ok = t->surface_based && t->pt == res;
++   if (dbg)
++      fprintf(stderr, "OSMesa/sweet: direct attach of surface %u (%ux%u) to texture %u: %s\n", surface_id, dw, dh, name, ok ? "ok" : "st_bind_egl_image did not take the resource");
++   return ok;
 +}
 +
 +/** Finish the GPU work and make it visible to the CPU / display (clean+invalidate the surface alias). */
