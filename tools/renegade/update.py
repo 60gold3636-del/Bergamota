@@ -2,7 +2,7 @@
 """Renegade in-place update (`renegade update`): apply the root tweaks of root_tweaks18.py to a FINISHED root image,
 without the IPSW dmgs (deleted, and the Mac has no room for them).
 
-  update.py IMAGE.simg [--no-appreg] [--no-posterboard] [--no-bluetooth] [--no-jb] [--no-wallpaper] [--force-jb] [--mnt DIR]
+  update.py IMAGE.simg [--no-appreg] [--no-posterboard] [--no-bluetooth] [--no-jb] [--no-wallpaper] [--no-bglrender] [--force-jb] [--mnt DIR]
   update.py IMAGE.img                      resume: the raw image a failed run left behind (see below)
 
 Steps (every one checks `df` first and stops below 5 GiB free on the volume of the image):
@@ -148,6 +148,8 @@ def check_tools(rt, feats):
         need += [('ios18/' + n, n) for n in ('sweetposterset', 'sweeticonstyle', 'sweetopen', 'SweetRun.app')]
     if feats['posterboard']:
         need.append(('ios18/sweetfp.dylib', 'sweetfp.dylib'))
+    if feats['bglrender'] and not rt.find_bgl():
+        problems.append('bglrender payload not built: run gpu/eagl/make-payload.sh in the ios-beryllium gpu-eagl branch (or pass --no-bglrender)')
     if feats['bluetooth']:
         need.append(('bluetool-stub', 'BlueTool stub'))
     for rel, what in need:
@@ -204,7 +206,8 @@ def main():
                      ('posterboard', 'sweetfp.dylib + the LC_LOAD_DYLIB in PosterBoard'),
                      ('bluetooth', 'bluetoothd env, BlueTool stub, hcitest'),
                      ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)'),
-                     ('wallpaper', 'default Gradient wallpaper and icon style at first boot')):
+                     ('wallpaper', 'default Gradient wallpaper and icon style at first boot'),
+                     ('bglrender', 'Bergamota GL renderer payload + backboardd launcher (inert without boot-arg bglrender=1|soft)')):
         ap.add_argument('--no-' + f_, action='store_true', help='skip: ' + what)
     ap.add_argument('--disable-cryptexd', action='store_true', help='OPT-IN fallback: remove the crash-looping cryptexd job (same as RENEGADE_DISABLE_CRYPTEXD=1)')
     ap.add_argument('--force-jb', action='store_true', help='reinstall /private/var/jb even when it is at the pinned versions')
@@ -213,7 +216,7 @@ def main():
     a = ap.parse_args()
     if a.disable_cryptexd:
         os.environ['RENEGADE_DISABLE_CRYPTEXD'] = '1'
-    rt_features = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper')
+    rt_features = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender')
     for f_ in rt_features:
         if getattr(a, 'no_' + f_):
             os.environ['RENEGADE_NO_' + f_.upper()] = '1'
@@ -297,6 +300,8 @@ def main():
             rt.bluetooth(mnt)
         if feats['posterboard']:
             rt.posterboard(mnt)
+        if feats['bglrender']:
+            rt.bglrender(mnt)
         rt.firstboot(mnt, appreg=feats['appreg'], jb=feats['jb'], wallpaper=feats['wallpaper'])
         if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':
             rt.cryptexd(mnt)

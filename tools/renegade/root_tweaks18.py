@@ -528,15 +528,17 @@ def event_timing(root):
 #   bluetooth    bluetooth(): BT_HCI_TRANSPORT in bluetoothd's job, BlueTool stub, hcitest
 #   jb           jailbreak_userland() + firstboot(): Procursus rootless, Sileo, TrollStore (jailbreak.py)
 #   wallpaper    firstboot(): Gradient darkBlue.preset1 as lock poster + default (not tinted) icon style, once, as mobile
+#   bglrender    bglrender(): the Bergamota GL renderer payload (EAGL shim over Mesa freedreno/softpipe) in /usr/local/lib/bergamota-gl and
+#                backboardd's launchd job pointed at its launcher; INERT unless the kernel boot-args contain bglrender=1|soft
 #
-# All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER) or the
+# All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER, BGLRENDER) or the
 # --no-<feature> flags of `renegade root` and `renegade update`, which set the same variables.
 # Opt-in (off by default): RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd, cryptexd(): fallback that removes the
 # crash-looping cryptexd job.
 # Every function is idempotent: `renegade update` runs them again on a finished image.
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
-FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper')
+FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender')
 SWEETNET_DIRS = [os.environ.get('RENEGADE_SWEETNET'),
                  os.path.join(REPO, 'research/sweetnet'),
                  os.path.join(REPO, '..', 'ios-beryllium', 'research/sweetnet')]
@@ -877,6 +879,62 @@ def cryptexd(root):
         len(gone), 'moved aside' if moved else 'not present (already disabled)'))
 
 
+BGL_DIRS = [os.environ.get('RENEGADE_BGL'),
+            os.path.join(REPO, 'research/bergamota-gl'),
+            os.path.join(REPO, '..', 'ios-beryllium', 'research/bergamota-gl'),
+            os.path.join(REPO, '..', 'ios-beryllium-gpu-eagl', 'research/bergamota-gl')]
+BGL_FILES = ('bgl-launch', 'OpenGLES.framework/OpenGLES', 'libOSMesa.8.dylib', 'libdrm.2.dylib')
+BGL_DIR = 'usr/local/lib/bergamota-gl'
+BGL_LAUNCH = '/usr/local/lib/bergamota-gl/bgl-launch'
+BACKBOARDD_LABEL, BACKBOARDD_PATH = 'com.apple.backboardd', '/usr/libexec/backboardd'
+
+
+def find_bgl():
+    """The payload directory built by gpu/eagl/make-payload.sh (ios-beryllium gpu-eagl branch): $RENEGADE_BGL, this checkout,
+    the main checkout or the gpu-eagl worktree; None when it is incomplete."""
+    for d in BGL_DIRS:
+        if d and all(os.path.isfile(os.path.join(d, f)) for f in BGL_FILES):
+            return os.path.abspath(d)
+    return None
+
+
+def bglrender(root):
+    """The Bergamota GL renderer for backboardd (docs/GPU_EAGL.md in the gpu-eagl branch). Installs the payload under
+    /usr/local/lib/bergamota-gl and makes backboardd's job (the launchd.plist cache entry that launchd 18 reads; the per-job
+    plist stays as it is) start bgl-launch, which execs the real /usr/libexec/backboardd and injects the shim ONLY when
+    the kernel boot-args contain bglrender=1 (GPU if the kernel has one, else softpipe) or bglrender=soft (softpipe);
+    without the boot-arg, or on any doubt (missing/unreadable file, three starts in a minute in one boot, state not writable),
+    it execs plain backboardd: the system then behaves as without this tweak. Skipped (job untouched) when the payload is not built."""
+    src = find_bgl()
+    if not src:
+        print('bglrender: payload not built (gpu/eagl/make-payload.sh): backboardd job left alone')
+        return
+    dst = os.path.join(root, BGL_DIR)
+    for d in (dst, os.path.join(dst, 'OpenGLES.framework')):
+        os.makedirs(d, exist_ok=True)
+        os.chown(d, 0, 0)
+        os.chmod(d, 0o755)
+    # the launcher goes last: a job pointing at a missing launcher would not start backboardd at all
+    for f in BGL_FILES[1:] + BGL_FILES[:1]:
+        install_file(os.path.join(src, f), os.path.join(dst, f))
+    n = 0
+    lpath = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(lpath)
+    plist = load(lpath)
+    # Only the launchd.plist cache is edited (launchd 18 reads that, not the per-job plist; editing the latter in place would also
+    # need an owner-map entry for no gain).
+    for job in [j for j in plist['LaunchDaemons'].values() if j.get('Label') == BACKBOARDD_LABEL]:
+        pa = job.get('ProgramArguments')
+        if pa and pa[0] == BACKBOARDD_PATH:
+            pa[0] = BGL_LAUNCH
+            n += 1
+        elif pa and pa[0] == BGL_LAUNCH:
+            n += 1
+    save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('bglrender: payload from %s installed in /%s; backboardd job -> %s (%d entr%s; inert without boot-arg bglrender=1|soft)' % (
+        src, BGL_DIR, BGL_LAUNCH, n, 'y' if n == 1 else 'ies'))
+
+
 def auto(root):
     """The Renegade auto-fixes, in build order (the jb payload is copied by jailbreak_userland, it needs a staging
     step with downloads and an owner map)."""
@@ -886,6 +944,8 @@ def auto(root):
     if enabled('posterboard'):
         posterboard(root)
     firstboot(root, appreg=enabled('appreg'), jb=enabled('jb'), wallpaper=enabled('wallpaper'))
+    if enabled('bglrender'):
+        bglrender(root)
     if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':      # opt-in, off by default
         cryptexd(root)
 
