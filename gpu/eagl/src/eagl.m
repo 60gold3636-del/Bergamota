@@ -337,11 +337,41 @@ static void pipe_stats_report(void) {
 }
 
 // Flush every attachImage: association of this context into its IOSurface.
+// frames mode: compare what the GPU rendered (glReadPixels of the texture = the surface memory seen by the GPU) with what the CPU reads from the surface
+// right after the sync. Mismatches mean stale cache lines / missing sync on this side; none means the surface is coherent for the CPU and any artefact
+// on screen comes from later (the kernel's copy to the panel, or a surface that is being rendered into while it is copied).
+static void verify_direct(EAGLContext *c, Attach *a) {
+    static int n; if (n++ >= 300) return;
+    uint32_t w = 0, h = 0, sw = (uint32_t)IOSurfaceGetWidth(a->surf), sh = (uint32_t)IOSurfaceGetHeight(a->surf);
+    uint8_t *buf = read_image(c, a->name, YES, sw, sh, &w, &h);
+    if (!buf) return;
+    if (IOSurfaceLock(a->surf, kIOSurfaceLockReadOnly, NULL) != KERN_SUCCESS) { free(buf); return; }
+    const uint8_t *sp = IOSurfaceGetBaseAddress(a->surf); size_t bpr = IOSurfaceGetBytesPerRow(a->surf);
+    size_t bad = 0, badrows = 0, first_x = 0, first_y = 0; BOOL found = NO;
+    for (uint32_t y = 0; y < h && y < sh; y++) {
+        size_t rowbad = 0;
+        for (uint32_t x = 0; x < w && x < sw; x++) {
+            const uint8_t *g = buf + ((size_t)y * w + x) * 4, *q = sp + y * bpr + (size_t)x * 4;     // g = RGBA, q = BGRA, same row order (no flip for target-form attaches)
+            if (g[0] != q[2] || g[1] != q[1] || g[2] != q[0] || g[3] != q[3]) { rowbad++; if (!found) { found = YES; first_x = x; first_y = y; } }
+        }
+        bad += rowbad; if (rowbad) badrows++;
+    }
+    fprintf(stderr, "EAGL(shim): VERIFY surface %u: %zu mismatching pixels in %zu rows of %ux%u%s", IOSurfaceGetID(a->surf), bad, badrows, w, h, bad ? "" : "\n");
+    if (bad) fprintf(stderr, ", first at (%zu,%zu): gpu %02x%02x%02x%02x cpu(bgra) %02x%02x%02x%02x\n", first_x, first_y,
+                     buf[(first_y * w + first_x) * 4], buf[(first_y * w + first_x) * 4 + 1], buf[(first_y * w + first_x) * 4 + 2], buf[(first_y * w + first_x) * 4 + 3],
+                     sp[first_y * bpr + first_x * 4], sp[first_y * bpr + first_x * 4 + 1], sp[first_y * bpr + first_x * 4 + 2], sp[first_y * bpr + first_x * 4 + 3]);
+    IOSurfaceUnlock(a->surf, kIOSurfaceLockReadOnly, NULL); free(buf);
+}
+
 static void sync_att(EAGLContext *c, int i) {
     struct _EAGLContextPrivate *p = c->_private;
     Attach *a = &p->att[i];
         a->dirty = 0;
-        if (a->direct) { double td = g_debug ? now_ms() : 0; osm_sweet_direct_sync(IOSurfaceGetID(a->surf)); if (g_debug) { g_ps_direct_ms += now_ms() - td; g_ps_direct_n++; } return; }
+        if (a->direct) {
+            double td = g_debug ? now_ms() : 0; osm_sweet_direct_sync(IOSurfaceGetID(a->surf)); if (g_debug) { g_ps_direct_ms += now_ms() - td; g_ps_direct_n++; }
+            if (g_debug_frames) verify_direct(c, a);
+            return;
+        }
         BOOL isTex = a->kind ? (a->kind == 1) : (glIsTexture(a->name) && !glIsRenderbuffer(a->name));
         // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
         double t_start = g_debug ? now_ms() : 0;
