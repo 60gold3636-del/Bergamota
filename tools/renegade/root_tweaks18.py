@@ -90,12 +90,14 @@ def launchd(root):
 
 BT_LABEL = 'com.apple.bluetoothd'
 # H4BC over the POSIX driver on the plain kernel control (no Skywalk channel), at the 3 Mbaud the
-# kernel left the controller at. No BT_DEVICE_ADDRESS: bluetoothd 16.7 sscanf()s it and then zeroes
-# the result (main+0x238), exiting with "Not a valid MAC address (all 00s)" / "No bluetooth on this
-# device"; without it, it reads the ADT /arm-io/bluetooth local-mac-address (tools/mkadt.py BT_MAC).
+# kernel left the controller at. No BT_DEVICE_ADDRESS: bluetoothd (16.7 and 18.7.8 alike) sscanf()s it
+# and then zeroes the result (start+0x274 / +0x278 in 18.7.8: STR WZR / STRH WZR right after the sscanf),
+# exiting with "Not a valid MAC address (all 00s)" / "No bluetooth on this device"; without it, it reads
+# the ADT /arm-io/bluetooth local-mac-address (tools/mkadt.py BT_MAC, IOServiceNameMatching "bluetooth").
 BT_ENV = {'BT_HCI_TRANSPORT': 'H4BC:POSIX:com.apple.uart.bluetooth,3000000'}
 BT_ENV_REMOVE = ('BT_DEVICE_ADDRESS',)
-BLUETOOL_STUB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'research', 'sweetnet', 'bluetool-stub')
+BLUETOOL_STUB = None        # default: find_sweetnet('bluetool-stub') at call time (tools/sweetnet/build.sh)
+HCITEST = None              # same for hcitest
 
 
 def bluetoothd_env(plist):
@@ -121,22 +123,26 @@ def bluetooth(root):
         return
     save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     print('bluetooth: BT_HCI_TRANSPORT set for', BT_LABEL)
-    if not os.path.exists(BLUETOOL_STUB):
+    stub_path = BLUETOOL_STUB or find_sweetnet('bluetool-stub')
+    if not stub_path or not os.path.exists(stub_path):
         print('bluetooth: BlueTool stub not built (tools/sweetnet/build.sh): BlueTool left alone')
         return
     dst = os.path.join(root, 'usr/sbin/BlueTool')
     orig = dst + '.orig'
-    with open(BLUETOOL_STUB, 'rb') as f:
+    with open(stub_path, 'rb') as f:
         stub = f.read()
     if os.path.exists(dst) and not os.path.exists(orig):
         with open(dst, 'rb') as f:
             if f.read() != stub:
                 shutil.copy2(dst, orig)
+                os.chown(orig, 0, 0)
                 print('bluetooth: original BlueTool kept as BlueTool.orig')
-    shutil.copy2(BLUETOOL_STUB, dst)
-    os.chown(dst, 0, 0)
-    os.chmod(dst, 0o755)
+    install_file(stub_path, dst)
     print('bluetooth: /usr/sbin/BlueTool is the stub')
+    hci = HCITEST or find_sweetnet('hcitest')
+    if hci and os.path.exists(hci):
+        install_file(hci, os.path.join(root, 'usr/local/bin/hcitest'))
+        print('bluetooth: /usr/local/bin/hcitest installed')
 
 
 def containers(root):
@@ -463,25 +469,43 @@ def quiet(root):
     print(f'quiet: removed {len(gone)} job(s) {QUIET_REMOVE}, ThrottleInterval set on {n}')
 
 
+REGISTER_LIST = 'usr/local/share/renegade/register-apps'
+
+
+def write_file(path, text, mode=0o644):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(text)
+    os.chown(path, 0, 0)
+    os.chmod(path, mode)
+
+
 def staged_apps(root):
     # The removable built-in apps (Safari, Photos, Messages, Camera, ...) ship in
     # /private/var/staged_system_apps; iOS installs them during first-boot setup, which our
     # boot never runs, so SpringBoard only showed Settings. Moving them into /Applications
-    # (root:wheel) lets lsd register them like system apps (done live on the phone 2026-10-23:
-    # 39 apps, all registered).
+    # (root:wheel) lets lsd see them; the first-boot job (firstboot()) then registers them with
+    # LaunchServices (done by hand on the phone 2026-10-23: 39 apps, all registered).
+    # Their names are kept in /usr/local/share/renegade/register-apps for that job.
     src = os.path.join(root, 'private/var/staged_system_apps')
     dst = os.path.join(root, 'Applications')
-    if not os.path.isdir(src):
-        return
-    for name in sorted(os.listdir(src)):
-        if not name.endswith('.app') or os.path.exists(os.path.join(dst, name)):
-            continue
-        os.rename(os.path.join(src, name), os.path.join(dst, name))
-        for d, dirs, files in os.walk(os.path.join(dst, name)):
-            for n in dirs + files:
-                os.lchown(os.path.join(d, n), 0, 0)
-        os.lchown(os.path.join(dst, name), 0, 0)
-        print('staged app ->', name)
+    moved = []
+    if os.path.isdir(src):
+        for name in sorted(os.listdir(src)):
+            if not name.endswith('.app') or os.path.exists(os.path.join(dst, name)):
+                continue
+            os.rename(os.path.join(src, name), os.path.join(dst, name))
+            for d, dirs, files in os.walk(os.path.join(dst, name)):
+                for n in dirs + files:
+                    os.lchown(os.path.join(d, n), 0, 0)
+            os.lchown(os.path.join(dst, name), 0, 0)
+            moved.append(name)
+            print('staged app ->', name)
+    if moved:
+        lst = os.path.join(root, REGISTER_LIST)
+        have = open(lst).read().split('\n') if os.path.exists(lst) else []
+        write_file(lst, '\n'.join(sorted({n for n in have + moved if n})) + '\n')
+    return moved
 
 
 def event_timing(root):
@@ -494,6 +518,436 @@ def event_timing(root):
         if os.path.exists(s) and not os.path.exists(t):
             shutil.copy2(s, t)
             print('event timing profile', t)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Renegade auto-fixes (2026-10-23): what was done by hand on the live phone, baked into the root.
+#
+#   appreg       staged_apps() + firstboot(): first-boot job registering the apps with LaunchServices (sweetuicache)
+#   posterboard  posterboard(): sweetfp.dylib linked into PosterBoard (NSURLFileProtectionKey on HFS+)
+#   bluetooth    bluetooth(): BT_HCI_TRANSPORT in bluetoothd's job, BlueTool stub, hcitest
+#   jb           jailbreak_userland() + firstboot(): Procursus rootless, Sileo, TrollStore (jailbreak.py)
+#   wallpaper    firstboot(): Gradient darkBlue.preset1 as lock poster + default (not tinted) icon style, once, as mobile
+#   bglrender    bglrender(): the Bergamota GL renderer payload (EAGL shim over Mesa freedreno/softpipe) in /usr/local/lib/bergamota-gl and
+#                backboardd's launchd job pointed at its launcher; INERT unless the kernel boot-args contain bglrender=1|soft
+#
+# All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER, BGLRENDER) or the
+# --no-<feature> flags of `renegade root` and `renegade update`, which set the same variables.
+# Opt-in (off by default): RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd, cryptexd(): fallback that removes the
+# crash-looping cryptexd job.
+# Every function is idempotent: `renegade update` runs them again on a finished image.
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
+FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender')
+SWEETNET_DIRS = [os.environ.get('RENEGADE_SWEETNET'),
+                 os.path.join(REPO, 'research/sweetnet'),
+                 os.path.join(REPO, '..', 'ios-beryllium', 'research/sweetnet')]
+
+
+def enabled(feature):
+    if feature == 'jb' and os.environ.get('RENEGADE_JB') == '0':
+        return False
+    return os.environ.get('RENEGADE_NO_' + feature.upper()) != '1'
+
+
+def find_sweetnet(rel):
+    """First existing research/sweetnet/REL (tools/sweetnet/build.sh output) of: $RENEGADE_SWEETNET, this
+    checkout, the main checkout."""
+    for d in SWEETNET_DIRS:
+        if d and os.path.exists(os.path.join(d, rel)):
+            return os.path.abspath(os.path.join(d, rel))
+    return None
+
+
+UICACHE = None              # default: find_sweetnet('ios18/sweetuicache') (arm64e, pacstrip --sign)
+SWEETFP = None              # default: find_sweetnet('ios18/sweetfp.dylib')
+ADDLC = os.path.join(HERE, '..', 'sweetnet', 'addlc.py')
+SWEETFP_PATH = '/usr/local/lib/sweetfp.dylib'
+POSTER_BIN = 'Applications/PosterBoard.app/PosterBoard'
+
+
+class OwnerRecorder:
+    """Stand-in for os.chown/os.lchown while building WITHOUT root (mkroot-full.py, update.py): the owners are written
+    into the HFS+ catalog afterwards by hfsroot_owners.py. `rec.install()` patches the os module of this process.
+    A chown to the owner of the process is not recorded: the image is mounted noowners, so every file shows up as the
+    mounting user (501:20), and code that rewrites a file in place passes that pair on (`save(path, ..., st.st_uid,
+    st.st_gid, ...)`) without meaning it; recording it gave /System/Library/xpc/launchd.plist the owner 501:20."""
+
+    def __init__(self):
+        self.owners = {}
+
+    def __call__(self, path, uid, gid, **kw):
+        if (uid, gid) == (os.getuid(), os.getgid()):
+            return
+        self.owners[os.path.abspath(path)] = (uid, gid)
+
+    def install(self):
+        os.chown = self
+        os.lchown = self
+
+
+def add_job(root, label, job):
+    """A LaunchDaemon: its plist in /System/Library/LaunchDaemons plus the entry in the launchd.plist cache that
+    launchd 18 actually reads (same as the dropbear and netcfg jobs)."""
+    jpath = '/System/Library/LaunchDaemons/%s.plist' % label
+    os.makedirs(os.path.join(root, os.path.dirname(jpath).lstrip('/')), exist_ok=True)
+    save(os.path.join(root, jpath.lstrip('/')), job, 0, 0, 0o644, plistlib.FMT_XML)
+    lpath = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(lpath)
+    plist = load(lpath)
+    plist['LaunchDaemons'][jpath] = job
+    save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+
+
+def macho_has_dylib(path, dylib):
+    """True if the thin 64-bit Mach-O at path has a load command naming dylib (LOAD/WEAK/REEXPORT)."""
+    import struct
+    with open(path, 'rb') as f:
+        d = f.read(1 << 16)
+    magic, _cpu, _sub, _ft, ncmds, _sz = struct.unpack_from('<6I', d, 0)
+    if magic != 0xfeedfacf:
+        raise ValueError('%s: not a thin 64-bit Mach-O' % path)
+    off = 32
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from('<II', d, off)
+        if cmd in (0xc, 0x18 | 0x80000000, 0x1f, 0x8000001f):
+            nm = d[off + struct.unpack_from('<I', d, off + 8)[0]:off + size].split(b'\0')[0].decode()
+            if nm == dylib:
+                return True
+        off += size
+    return False
+
+
+def entitlements_of(path):
+    import subprocess
+    r = subprocess.run(['codesign', '-d', '--entitlements', '-', '--xml', path], capture_output=True)
+    out = r.stdout.strip()
+    return plistlib.loads(out) if out.startswith(b'<?xml') else None
+
+
+def posterboard(root):
+    """PosterBoard fix (live 2026-10-23): the HFS+ root has no data-protection classes, so PosterBoard's check of
+    NSURLFileProtectionKey on its data store fails ("Failed to migrate to Version 61 from 59", no wallpaper store).
+    sweetfp.dylib (tools/sweetnet/sweetfp.m: arm64e, pacstrip --sign) keeps the class in an xattr; it is linked into
+    /Applications/PosterBoard.app/PosterBoard as an extra LC_LOAD_DYLIB (tools/sweetnet/addlc.py: dyld ignores
+    DYLD_INSERT_LIBRARIES for platform binaries) and the binary is re-signed ad hoc, keeping its identifier, flags
+    and entitlements."""
+    import subprocess, tempfile
+    sys.path.insert(0, HERE)
+    import pacstrip
+    binp = os.path.join(root, POSTER_BIN)
+    if not os.path.exists(binp):
+        print('posterboard: no', POSTER_BIN, 'in the image: skipped')
+        return
+    dylib = SWEETFP or find_sweetnet('ios18/sweetfp.dylib')
+    if not dylib:
+        print('posterboard: sweetfp.dylib not built (tools/sweetnet/build.sh): skipped, PosterBoard left alone')
+        return
+    install_file(dylib, os.path.join(root, SWEETFP_PATH.lstrip('/')), 0o755)    # first: the binary must never name a missing dylib
+    print('posterboard:', SWEETFP_PATH, 'installed')
+    if macho_has_dylib(binp, SWEETFP_PATH):
+        print('posterboard: PosterBoard already links', SWEETFP_PATH)
+        return
+    mode = os.stat(binp).st_mode & 0o7777
+    tmpd = tempfile.mkdtemp(prefix='renegade-posterboard-')
+    try:
+        tmp = os.path.join(tmpd, 'PosterBoard')
+        shutil.copyfile(binp, tmp)
+        os.chmod(tmp, 0o755)
+        ents, ident = entitlements_of(tmp), pacstrip.cs_identity(tmp)
+        subprocess.run([sys.executable, '-I', ADDLC, tmp, SWEETFP_PATH], check=True)
+        pacstrip.sign(tmp)
+        if entitlements_of(tmp) != ents or pacstrip.cs_identity(tmp)[:2] != ident[:2]:
+            sys.exit('posterboard: entitlements or identifier changed by the re-sign: PosterBoard left alone')
+        if not macho_has_dylib(tmp, SWEETFP_PATH):
+            sys.exit('posterboard: LC_LOAD_DYLIB missing after addlc.py')
+        install_file(tmp, binp, mode)
+    finally:
+        shutil.rmtree(tmpd, ignore_errors=True)
+    print('posterboard: PosterBoard links', SWEETFP_PATH, '(re-signed ad hoc as %s, %d entitlements kept)' % (
+        ident[0], len(ents or {})))
+
+
+FIRSTBOOT_LABEL = 'org.bergamota.renegade-firstboot'
+FIRSTBOOT_SH = 'usr/local/libexec/renegade-firstboot.sh'
+FIRSTBOOT_DONE = 'private/var/db/.renegade-firstboot-done'
+FIRSTBOOT_SCRIPT = r'''#!/bin/sh
+# Renegade first boot (root_tweaks18.firstboot), run by the launchd job org.bergamota.renegade-firstboot.
+#  1. APPREG: register /Applications apps listed in /usr/local/share/renegade/register-apps with LaunchServices:
+#       /usr/local/bin/sweetuicache /Applications/NAME.app      (one call per app, as root, like the live fix)
+#     LaunchServices answers only once lsd is up, so the first app is retried (5 s apart, 10 min at most).
+#  2. the jailbreak post-install (/var/jb/usr/share/renegade-jb/postinstall.sh) if the root has one
+#  3. WALL: the default wallpaper (Gradient poster, no Metal) and icon style (default, not tinted), once, as mobile:
+#     /private/var/tmp/sweetrun.sh is written, `sweetopen com.sweet.run` starts SweetRun.app through FrontBoard (an app
+#     lives in the mobile user's launchd domain, where PosterBoard's XPC service is reachable) and the script runs
+#     sweetposterset (retried: -2203 while PosterBoard's store has no lock role yet, or the service is not up) and
+#     sweeticonstyle. Marker /private/var/db/.renegade-poster-done
+#  4. disables itself: marker /private/var/db/.renegade-firstboot-done (after 3 incomplete runs too)
+DONE=/private/var/db/.renegade-firstboot-done
+TRIES=/private/var/db/.renegade-firstboot-tries
+[ -e $DONE ] && exit 0
+PATH=/usr/local/bin:/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+exec >>/private/var/log/renegade-firstboot.log 2>&1
+n=0
+[ -f $TRIES ] && n=$(cat $TRIES)
+n=$((n+1))
+echo $n >$TRIES
+echo "== renegade first boot, run $n: $(date)"
+rc=0
+APPREG=@APPREG@
+UIC=/usr/local/bin/sweetuicache
+LIST=/usr/local/share/renegade/register-apps
+reg() {
+	out=$($UIC "/Applications/$1" 2>&1)
+	r=$?
+	echo "$out"
+	return $r
+}
+if [ $APPREG = 1 ] && [ -x $UIC ] && [ -s $LIST ]; then
+	first=1
+	bad=
+	while read app; do
+		[ -d "/Applications/$app" ] || continue
+		if [ $first = 1 ]; then
+			first=0
+			t=0
+			until reg "$app"; do
+				t=$((t+1))
+				[ $t -ge 120 ] && { bad="$bad $app"; break; }
+				sleep 5
+			done
+			continue
+		fi
+		reg "$app" || bad="$bad $app"
+	done <$LIST
+	for app in $bad; do      # one more round for the failures
+		reg "$app" || rc=1
+	done
+	[ $rc = 0 ] && echo "apps registered" || echo "registration incomplete"
+fi
+WALL=@WALL@
+PDONE=/private/var/db/.renegade-poster-done
+if [ $WALL = 1 ] && [ ! -e $PDONE ] && [ -d /Applications/SweetRun.app ]; then
+	echo "-- default wallpaper and icon style, as mobile via SweetRun"
+	T=/private/var/tmp
+	t=0
+	until reg SweetRun.app; do      # idempotent; lsd may not be up yet when appreg is off
+		t=$((t+1))
+		[ $t -ge 24 ] && break
+		sleep 5
+	done
+	rm -f $T/sweetrun.log $T/renegade-poster.rc
+	cat >$T/sweetrun.sh <<'EOS'
+export PATH=/usr/local/bin:/usr/bin:/bin
+n=0
+ok=1
+while [ $n -lt 20 ]; do
+	n=$((n+1))
+	echo "sweetposterset try $n"
+	/usr/local/bin/sweetposterset com.apple.GradientPoster.GradientPosterExtension darkBlue.preset1 && { ok=0; break; }
+	sleep 10
+done
+echo "sweetposterset rc=$ok"
+# "already selected" counts as done (rc 0); drop duplicate Gradient configurations an older tool left behind
+[ $ok = 0 ] && /usr/local/bin/sweetposterset --cleanup com.apple.GradientPoster.GradientPosterExtension darkBlue.preset1
+/usr/local/bin/sweeticonstyle default || ok=1
+echo $ok >/private/var/tmp/renegade-poster.rc
+EOS
+	chmod 644 $T/sweetrun.sh
+	t=0
+	until /usr/local/bin/sweetopen com.sweet.run; do      # works once SpringBoard is up
+		t=$((t+1))
+		[ $t -ge 120 ] && break
+		sleep 5
+	done
+	t=0
+	while [ ! -e $T/renegade-poster.rc ] && [ $t -lt 240 ]; do
+		t=$((t+1))
+		sleep 5
+	done
+	cat $T/sweetrun.log
+	if [ -e $T/renegade-poster.rc ] && [ "$(cat $T/renegade-poster.rc)" = 0 ]; then
+		touch $PDONE
+		echo "wallpaper and icon style set"
+	else
+		rc=1
+		echo "wallpaper/icon style not set (retried on the next boot)"
+	fi
+fi
+JBPI=/var/jb/usr/share/renegade-jb/postinstall.sh
+if [ -f $JBPI ] && [ ! -e /var/jb/.renegade-jb-done ]; then
+	echo "-- jailbreak post-install ($JBPI)"
+	/bin/sh $JBPI
+	[ -e /var/jb/.renegade-jb-done ] || rc=1
+fi
+if [ $rc = 0 ] || [ $n -ge 3 ]; then
+	touch $DONE
+	echo "== done (rc=$rc), first-boot job disabled"
+fi
+exit 0
+'''
+
+
+def firstboot(root, appreg=True, jb=True, wallpaper=True):
+    """First-boot job: app registration with sweetuicache and, when the root has /var/jb, the jailbreak post-install
+    (Sileo and TrollStore registration). Runs from the launchd.plist cache, needs /bin/sh (dash, ssh tweak). Disables
+    itself with /private/var/db/.renegade-firstboot-done. Also installs /usr/local/bin/sweetuicache (arm64e,
+    pacstrip --sign, tools/sweetnet/build.sh)."""
+    if not appreg and not jb and not wallpaper:
+        print('firstboot: appreg, jb and wallpaper are all off: no job')
+        return
+    uic = UICACHE or find_sweetnet('ios18/sweetuicache')
+    if not uic:
+        print('firstboot: sweetuicache not built (tools/sweetnet/build.sh): skipped')
+        return
+    if not os.path.exists(os.path.join(root, 'bin/sh')):
+        print('firstboot: /bin/sh missing (the ssh tweak installs dash): skipped')
+        return
+    install_file(uic, os.path.join(root, 'usr/local/bin/sweetuicache'))
+    if wallpaper:
+        wall = [find_sweetnet('ios18/' + n) for n in ('sweetposterset', 'sweeticonstyle', 'sweetopen', 'SweetRun.app')]
+        if not all(wall):
+            print('firstboot: sweetposterset/sweeticonstyle/sweetopen/SweetRun.app not built (tools/sweetnet/build.sh): '
+                  'default wallpaper and icon style skipped')
+            wallpaper = False
+        else:
+            for n, src in zip(('sweetposterset', 'sweeticonstyle', 'sweetopen'), wall):
+                install_file(src, os.path.join(root, 'usr/local/bin', n))
+            app = os.path.join(root, 'Applications/SweetRun.app')
+            if os.path.exists(app):
+                shutil.rmtree(app)
+            shutil.copytree(wall[3], app, symlinks=True)
+            for d, dirs, files in os.walk(app):
+                for n in dirs + files:
+                    os.lchown(os.path.join(d, n), 0, 0)
+            os.lchown(app, 0, 0)
+            print('firstboot: sweetposterset, sweeticonstyle, sweetopen, /Applications/SweetRun.app installed')
+    write_file(os.path.join(root, FIRSTBOOT_SH), FIRSTBOOT_SCRIPT.replace('@APPREG@', '1' if appreg else '0')
+               .replace('@WALL@', '1' if wallpaper else '0'), 0o755)
+    add_job(root, FIRSTBOOT_LABEL, {
+        'Label': FIRSTBOOT_LABEL, 'ProgramArguments': ['/bin/sh', '/' + FIRSTBOOT_SH],
+        'RunAtLoad': True, 'UserName': 'root', 'StandardErrorPath': '/dev/console',
+        'EnvironmentVariables': {'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'}})
+    reg = os.path.join(root, REGISTER_LIST)
+    n = len([l for l in open(reg).read().split('\n') if l]) if os.path.exists(reg) else 0
+    print('firstboot: job %s (%d apps to register, appreg %s, wallpaper %s, jailbreak post-install %s)' % (
+        FIRSTBOOT_LABEL, n, 'on' if appreg else 'off', 'on' if wallpaper else 'off', 'if present' if jb else 'off'))
+
+
+def jailbreak_userland(root, owners_out, force=False, prestaged=False):
+    """Procursus rootless + Sileo + TrollStore into /private/var/jb (jailbreak.py image_stage); /var stays the
+    symlink to private/var. Skipped when the pinned versions are already installed (force: reinstall)."""
+    sys.path.insert(0, HERE)
+    import jailbreak
+    inst = os.path.join(root, 'private/var/jb/usr/share/renegade-jb/VERSIONS')
+    if not force and os.path.exists(inst) and open(inst).read() == jailbreak.versions_text():
+        print('jailbreak: /var/jb already at the pinned versions: skipped (force to reinstall)')
+        return 0
+    if not prestaged:
+        jailbreak.fetch()
+        jailbreak.stage_build()
+    n = jailbreak.image_stage(root, owners_out)
+    print('jailbreak: %d paths in /private/var/jb, first-boot post-install by the %s job' % (n, FIRSTBOOT_LABEL))
+    return n
+
+
+CRYPTEXD_LABEL = 'com.apple.security.cryptexd'
+
+
+def cryptexd(root):
+    """OPT-IN fallback (RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd): cryptexd cannot personalize or graft cryptexes
+    without Apple's secure boot and traps (sig 5) in a respawn loop; Renegade has already merged the cryptex contents
+    into the root. Removes its job from the launchd.plist cache (the one launchd 18 reads) and moves
+    /System/Library/LaunchDaemons/com.apple.security.cryptexd.plist to cryptexd.plist.renegade-disabled. The real fix
+    (stubbing the trap) lives on the cryptexd branch; this is only the fallback."""
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = load(path)
+    jobs = plist['LaunchDaemons']
+    gone = [k for k, j in jobs.items() if j.get('Label') == CRYPTEXD_LABEL]
+    for k in gone:
+        del jobs[k]
+    if gone:
+        save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    jp = os.path.join(root, 'System/Library/LaunchDaemons/%s.plist' % CRYPTEXD_LABEL)
+    moved = os.path.exists(jp)
+    if moved:
+        os.replace(jp, jp + '.renegade-disabled')
+        os.chown(jp + '.renegade-disabled', 0, 0)
+    print('cryptexd: %d launchd.plist job(s) removed, LaunchDaemons plist %s' % (
+        len(gone), 'moved aside' if moved else 'not present (already disabled)'))
+
+
+BGL_DIRS = [os.environ.get('RENEGADE_BGL'),
+            os.path.join(REPO, 'research/bergamota-gl'),
+            os.path.join(REPO, '..', 'ios-beryllium', 'research/bergamota-gl'),
+            os.path.join(REPO, '..', 'ios-beryllium-gpu-eagl', 'research/bergamota-gl')]
+BGL_FILES = ('bgl-launch', 'OpenGLES.framework/OpenGLES', 'libOSMesa.8.dylib', 'libdrm.2.dylib')
+BGL_DIR = 'usr/local/lib/bergamota-gl'
+BGL_LAUNCH = '/usr/local/lib/bergamota-gl/bgl-launch'
+BACKBOARDD_LABEL, BACKBOARDD_PATH = 'com.apple.backboardd', '/usr/libexec/backboardd'
+
+
+def find_bgl():
+    """The payload directory built by gpu/eagl/make-payload.sh (ios-beryllium gpu-eagl branch): $RENEGADE_BGL, this checkout,
+    the main checkout or the gpu-eagl worktree; None when it is incomplete."""
+    for d in BGL_DIRS:
+        if d and all(os.path.isfile(os.path.join(d, f)) for f in BGL_FILES):
+            return os.path.abspath(d)
+    return None
+
+
+def bglrender(root):
+    """The Bergamota GL renderer for backboardd (docs/GPU_EAGL.md in the gpu-eagl branch). Installs the payload under
+    /usr/local/lib/bergamota-gl and makes backboardd's job (the launchd.plist cache entry that launchd 18 reads; the per-job
+    plist stays as it is) start bgl-launch, which execs the real /usr/libexec/backboardd and injects the shim ONLY when
+    the kernel boot-args contain bglrender=1 (GPU if the kernel has one, else softpipe) or bglrender=soft (softpipe);
+    without the boot-arg, or on any doubt (missing/unreadable file, three starts in a minute in one boot, state not writable),
+    it execs plain backboardd: the system then behaves as without this tweak. Skipped (job untouched) when the payload is not built."""
+    src = find_bgl()
+    if not src:
+        print('bglrender: payload not built (gpu/eagl/make-payload.sh): backboardd job left alone')
+        return
+    dst = os.path.join(root, BGL_DIR)
+    for d in (dst, os.path.join(dst, 'OpenGLES.framework')):
+        os.makedirs(d, exist_ok=True)
+        os.chown(d, 0, 0)
+        os.chmod(d, 0o755)
+    # the launcher goes last: a job pointing at a missing launcher would not start backboardd at all
+    for f in BGL_FILES[1:] + BGL_FILES[:1]:
+        install_file(os.path.join(src, f), os.path.join(dst, f))
+    n = 0
+    lpath = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(lpath)
+    plist = load(lpath)
+    # Only the launchd.plist cache is edited (launchd 18 reads that, not the per-job plist; editing the latter in place would also
+    # need an owner-map entry for no gain).
+    for job in [j for j in plist['LaunchDaemons'].values() if j.get('Label') == BACKBOARDD_LABEL]:
+        pa = job.get('ProgramArguments')
+        if pa and pa[0] == BACKBOARDD_PATH:
+            pa[0] = BGL_LAUNCH
+            n += 1
+        elif pa and pa[0] == BGL_LAUNCH:
+            n += 1
+    save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('bglrender: payload from %s installed in /%s; backboardd job -> %s (%d entr%s; inert without boot-arg bglrender=1|soft)' % (
+        src, BGL_DIR, BGL_LAUNCH, n, 'y' if n == 1 else 'ies'))
+
+
+def auto(root):
+    """The Renegade auto-fixes, in build order (the jb payload is copied by jailbreak_userland, it needs a staging
+    step with downloads and an owner map)."""
+    staged_apps(root)
+    if enabled('bluetooth'):
+        bluetooth(root)
+    if enabled('posterboard'):
+        posterboard(root)
+    firstboot(root, appreg=enabled('appreg'), jb=enabled('jb'), wallpaper=enabled('wallpaper'))
+    if enabled('bglrender'):
+        bglrender(root)
+    if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':      # opt-in, off by default
+        cryptexd(root)
 
 
 def main():
@@ -513,13 +967,12 @@ def main():
         quiet(root)
     containers(root)
     launchservices(root)
-    staged_apps(root)
     event_timing(root)
     usbnet(root)
     netcfg(root)
     sweetreboot(root)
     ssh(root)
-    bluetooth(root)
+    auto(root)        # staged apps, bluetooth, PosterBoard, first-boot job (opt-outs: RENEGADE_NO_*)
     activation(root)
     audio(root)
     merge_pref(root, 'com.apple.migration', {

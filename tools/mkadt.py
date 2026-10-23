@@ -35,6 +35,11 @@ QEMU_VTIMER_INTID = 27
 
 # Per-board differences; GIC, UFS, timer and the SoC window are the same on
 # SM7150 (sweet) and SDM845 (beryllium, Poco F1).
+# Synthetic locally administered Bluetooth address (not the phone's): /chosen
+# mac-address-bluetooth0 and /arm-io/bluetooth local-mac-address, and what the
+# kernel writes into the WCN3990 with the QCA set-BD_ADDR vendor command.
+BT_MAC = bytes([0x02, 0x00, 0x5e, 0x77, 0xb0, 0x01])
+
 BOARDS = {
     'sweet': dict(
         fb=(0x9c000000, 0x1700000), fb_wh=(1080, 2400),
@@ -60,8 +65,11 @@ BOARDS = {
         # Synthetic locally administered addresses, not the phone's.
         chosen_extra=[
             ('mac-address-wifi0', bytes([0x02, 0x00, 0x5e, 0x77, 0xe0, 0x01])),
-            ('mac-address-bluetooth0', bytes([0x02, 0x00, 0x5e, 0x77, 0xb0, 0x01])),
-        ]),
+            ('mac-address-bluetooth0', BT_MAC),
+        ],
+        # /arm-io/bluetooth for bluetoothd/BlueTool (docs/BT_IOS_TRANSPORT.md 3.2). Sweet has no
+        # Bluetooth driver: the node is beryllium only.
+        bluetooth=True),
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
@@ -110,6 +118,28 @@ LOWPOOL_MIN, LOWPOOL_MAX = 0x9f800000, 0xfd000000
 def parse_lowpool(text):
     base, size = (int(v, 0) for v in text.split(':'))
     return base, size
+
+
+def bluetooth_node(ph):
+    """Stock D22AP: /arm-io/uart1/bluetooth (compatible bluetooth,n88). bluetoothd finds it by
+    IOServiceNameMatching("bluetooth") and reads local-mac-address, transport-encoding and
+    transport-speed from the registry entry; BlueTool does the same. Our transport is the
+    kernel control socket com.apple.uart.bluetooth (bsd/dev/beryllium_bt_hci.c).
+    transport-encoding 3 = H4BC, the stock iPhone X value and the path the BT_HCI_TRANSPORT
+    override (H4BC:POSIX:com.apple.uart.bluetooth,3000000) selects anyway; 1 = plain H4.
+    No function-* properties: they are consumed by the AppleBluetooth BTReset kext, which this
+    kernel does not have (the kernel owns power and reset); without function-power_enable no
+    /dev/btpoweroff exists and BlueTool's power/reset commands are no-ops."""
+    return node('bluetooth', [
+        ph(),
+        ('device_type', cstr('bluetooth')),
+        ('compatible', cstr('bluetooth,wcn3990')),
+        ('local-mac-address', BT_MAC),
+        ('transport-encoding', u32(3)),
+        ('transport-speed', u32(3000000)),
+        ('vendor-id', u32(0x05ac)),
+        ('product-id', u32(0x12a0)),
+    ])
 
 
 def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, points=(375, 812), lowpool=None):
@@ -221,7 +251,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
         ('ranges', u64(0, SOC_BASE, 0x100000000 - SOC_BASE)),
-    ], [gic,
+    ], [gic] + ([bluetooth_node(ph)] if b.get('bluetooth') and not qemu else []) + [
         # No hardware: watchdogd checks IODeviceTree:/arm-io/wdt for no-pmu and
         # otherwise crashes trying to set the PMU boot stage (customer builds
         # ignore the -wdt_no_pmu boot-arg).

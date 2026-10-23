@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only HFS+/HFSX reader directly on an Android sparse image: no raw image, no mount, no free disk.
 
-  hfsx.py SIMG ls PATH | cat PATH | get PATH OUT | stat PATH | find SUBSTR | dsc OUTDIR
+  hfsx.py SIMG ls PATH | cat PATH | get PATH OUT | getdir PATH OUTDIR | stat PATH | find SUBSTR | dsc OUTDIR
 
 The simg chunk table maps raw offsets (RAW/FILL/DONT_CARE), the catalog B-tree is parsed in memory (hard links
 through the iNode files, symlinks followed, extents-overflow honoured). `dsc OUTDIR` copies the dyld shared cache
@@ -204,6 +204,29 @@ def main():
             b = f.read(1 << 24)
             if not b: break
             out.write(b)
+    elif cmd == 'getdir':
+        # copy a directory tree (files, symlinks, modes; not owners) out of the image: used to build small test images
+        src, dst = sys.argv[3].rstrip('/'), sys.argv[4]
+        def cp(cnid, rt, d, p, out):
+            if rt == 1:
+                os.makedirs(out, exist_ok=True)
+                for nm, (rt2, c2, d2) in sorted(v.children.get(cnid, {}).items()):
+                    cp(c2, rt2, d2, p + '/' + nm, os.path.join(out, nm))
+                return
+            if rt == 2 and struct.unpack_from('>II', v.cat, d + 48) == (0x686C6E6B, 0x6866732B):
+                num = struct.unpack_from('>I', v.cat, d + 32 + 12)[0]
+                rt, cnid, d = v.children[v.private]['iNode%d' % num]
+            mode = struct.unpack_from('>H', v.cat, d + 32 + 10)[0]
+            data = v.read_file(rt, cnid, d)
+            if (mode & 0o170000) == 0o120000:
+                if os.path.lexists(out): os.unlink(out)
+                os.symlink(data.decode(), out)
+            else:
+                with open(out, 'wb') as fh: fh.write(data)
+                os.chmod(out, mode & 0o7777)
+        e = v.lookup(src, follow=False)
+        assert e, src
+        cp(e[1], e[0], e[2], src, dst)
     elif cmd == 'stat':
         e = v.lookup(sys.argv[3], follow=False)
         print(e)

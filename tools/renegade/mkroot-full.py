@@ -11,7 +11,14 @@ No sudo. Stages (each one can be re-run on the same image; the image stays in --
           -> merged view), owner/mode map of everything (lstat of the mounted IPSW volumes, owners on)
   macho   pacstrip + ad-hoc codesign (entitlements kept) of every Mach-O, in parallel, hard links kept
   cache   tools/renegade/pacstrip_cache.py over the dyld shared cache (code sections, signature page hashes)
-  tweaks  the iOS 16 first-boot tweaks (root_tweaks18.py = sweet-root-tweaks.py) + iOS 18 launchd bring-up jobs
+  tweaks  the iOS 16 first-boot tweaks (root_tweaks18.py = sweet-root-tweaks.py) + iOS 18 launchd bring-up jobs +
+          the Renegade auto-fixes (all ON, opt-outs --no-appreg --no-posterboard --no-bluetooth --no-jb): staged apps
+          moved to /Applications, first-boot job that registers them (sweetuicache), PosterBoard + sweetfp.dylib,
+          bluetooth (bluetoothd env, BlueTool stub, hcitest). Build the tools first: tools/sweetnet/build.sh
+          An existing image gets the same changes in place with `renegade update` (tools/renegade/update.py)
+  jb      ON by default (--no-jb / RENEGADE_NO_JB=1 / RENEGADE_JB=0 to skip; inserted before seal when the stages
+          list has none): the jailbreak userland, see tools/renegade/jailbreak.py: /private/var/jb (Procursus rootless
+          bootstrap, /var stays a symlink), Sileo, the TrollStore payload; the first-boot job runs its post-install
   seal    unmount, hfsroot_owners.py (real owners/modes, the rest root:wheel), fsck_hfs, offline checks,
           img2simg --consume (the raw image is turned into the .simg, see tools/renegade/img2simg.py)
 Disk is tight: every stage checks `df` and stops below 5 GiB free.
@@ -185,6 +192,8 @@ def stage_copy(a, img, rootmnt, dmgs):
     """Per source: owners-on mount (owner map; root-only files are unreadable there), then a noowners mount for
     the copy (every file readable by the user). The cryptexes go in first, the OS volume on top."""
     need_free('copy stage')
+    if os.path.exists(JB_OWNERS):
+        os.unlink(JB_OWNERS)
     for k, v in dmgs.items():
         if not os.path.exists(v) and k not in (a.skip_sources or '').split(','):
             sys.exit(f'missing {k} dmg {v}: run tools/renegade/fetch-root.sh')
@@ -412,15 +421,15 @@ def stage_tweaks(a, root):
     rt = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rt)
     rt.SSH_OUT = os.path.join(MAIN_CHECKOUT, 'research/ssh-build/out')
-    rt.NETCFG = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetnetcfg')
-    rt.REBOOT_TOOL = os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetreboot')
-    chowned = {}
-
-    def fake_chown(path, uid, gid, **kw):          # no sudo: owners are written into the HFS catalog at seal time
-        chowned[os.path.abspath(path)] = (uid, gid)
-    rt.os.chown = fake_chown                       # rt.os is the os module: only this process is affected
+    rt.NETCFG = rt.find_sweetnet('sweetnetcfg') or os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetnetcfg')
+    rt.REBOOT_TOOL = rt.find_sweetnet('sweetreboot') or os.path.join(MAIN_CHECKOUT, 'research/sweetnet/sweetreboot')
+    # BlueTool stub, hcitest, ios18/sweetuicache and ios18/sweetfp.dylib: rt.find_sweetnet() (this checkout's
+    # research/sweetnet first, then the main checkout's; tools/sweetnet/build.sh)
+    rec = rt.OwnerRecorder()                       # no sudo: owners are written into the HFS catalog at seal time
+    chowned = rec.owners
+    rec.install()                                  # rt.os is the os module: only this process is affected
     try:
-        log('--- launchd.plist (PanicOnCrash, CommCenter), containers, usbnet, netcfg, sweetreboot, ssh')
+        log('--- launchd.plist (PanicOnCrash, CommCenter), containers, usbnet, netcfg, sweetreboot, ssh, bluetooth')
         rt.launchd(root)
         if os.environ.get('SWEET_QUIET') == '1':       # root_tweaks18.quiet(): crash-looping daemons off/throttled
             rt.quiet(root)
@@ -430,6 +439,10 @@ def stage_tweaks(a, root):
         rt.netcfg(root)
         rt.sweetreboot(root)
         rt.ssh(root)
+        # Renegade auto-fixes, each with an opt-out (RENEGADE_NO_APPREG/POSTERBOARD/BLUETOOTH/JB, --no-* flags):
+        # staged apps -> /Applications, bluetooth (BT_HCI_TRANSPORT, BlueTool stub, hcitest), PosterBoard + sweetfp.dylib,
+        # first-boot job (sweetuicache registration, jailbreak post-install)
+        rt.auto(root)
         rt.audio(root)
         rt.merge_pref(root, 'com.apple.migration', {
             'LastSystemVersion': rt.BUILD, 'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': rt.BUILD}})
@@ -501,6 +514,20 @@ def stage_tweaks(a, root):
     log(f'{len(chowned)} owner overrides in {OWNER_EXTRA}')
 
 
+# --- stage: jb (optional) -------------------------------------------------------------------------------------------
+JB_OWNERS = os.path.join(W, 'owners-jb.tsv')
+
+
+def stage_jb(a, root):
+    need_free('jb stage')
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('root_tweaks18', os.path.join(HERE, 'root_tweaks18.py'))
+    rt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rt)
+    n = rt.jailbreak_userland(root, JB_OWNERS, force=True)
+    log(f'jailbreak userland: {n} paths staged into the image (/private/var/jb), owners in {JB_OWNERS}')
+
+
 def patch_mount_phase2(root):
     """`mount -P 2` (boot task mount-phase-2) ends, after the fstab entries of pass 2, in
     execv("/System/Library/Filesystems/apfs.fs/apfs_boot_util", "2") (mount+0x3a08: `cmp w22,#2; b.ne exit; bl apfs_boot_util`).
@@ -539,6 +566,8 @@ def stage_seal(a, img, rootmnt):
     table = load_map(os.path.join(W, 'owners.tsv'))
     if os.path.exists(OWNER_EXTRA):
         table.update(load_map(OWNER_EXTRA))
+    if os.path.exists(JB_OWNERS):                     # written by stage jb, removed by stage copy
+        table.update(load_map(JB_OWNERS))
     merged = os.path.join(W, 'owners-final.tsv')
     write_map(table, merged)
     run([sys.executable, '-I', os.path.join(HERE, 'hfsroot_owners.py'), img, '--map', merged, '--default-root'])
@@ -705,12 +734,30 @@ def main():
     ap.add_argument('--patch-mount-phase2', action='store_true', help='tweaks: make mount -P 2 skip apfs_boot_util (not needed, see docs)')
     ap.add_argument('--keep-raw', action='store_true', help='simg stage: do not punch holes into the raw image')
     ap.add_argument('--jobs', type=int, default=os.cpu_count())
+    for f_, what in (('appreg', 'first-boot LaunchServices registration of the staged apps (sweetuicache)'),
+                     ('posterboard', 'sweetfp.dylib + the LC_LOAD_DYLIB in PosterBoard'),
+                     ('bluetooth', 'bluetoothd env, BlueTool stub, hcitest'),
+                     ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)'),
+                     ('wallpaper', 'default Gradient wallpaper and icon style at first boot'),
+                     ('bglrender', 'Bergamota GL renderer payload + backboardd launcher (inert without boot-arg bglrender=1|soft)')):
+        ap.add_argument('--no-' + f_, action='store_true', help='opt out: ' + what + ' (same as RENEGADE_NO_' + f_.upper() + '=1)')
+    ap.add_argument('--disable-cryptexd', action='store_true', help='OPT-IN fallback: remove the crash-looping cryptexd job (same as RENEGADE_DISABLE_CRYPTEXD=1)')
     a = ap.parse_args()
+    if a.disable_cryptexd:
+        os.environ['RENEGADE_DISABLE_CRYPTEXD'] = '1'
+    for f_ in ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender'):
+        if getattr(a, 'no_' + f_):
+            os.environ['RENEGADE_NO_' + f_.upper()] = '1'
     os.makedirs(W, exist_ok=True)
     rootmnt = os.path.join(W, 'root')
+    # the jailbreak userland is part of the default build now (opt out: --no-jb / RENEGADE_NO_JB=1 / RENEGADE_JB=0)
+    if (os.environ.get('RENEGADE_NO_JB') != '1' and os.environ.get('RENEGADE_JB') != '0' and 'jb' not in a.stages.split(',')
+            and ('tweaks' in a.stages.split(',') or os.environ.get('RENEGADE_JB') == '1')):
+        st = a.stages.split(',')
+        a.stages = ','.join(st[:st.index('seal')] + ['jb'] + st[st.index('seal'):]) if 'seal' in st else a.stages + ',jb'
     stages = a.stages.split(',')
     dmgs = find_dmgs(a.ipsw_dir)
-    if 'copy' not in stages and stages[0] in ('macho', 'cache', 'tweaks') and not os.path.ismount(rootmnt):
+    if 'copy' not in stages and stages[0] in ('macho', 'cache', 'tweaks', 'jb') and not os.path.ismount(rootmnt):
         attach(a.out, rootmnt, readonly=False)
     for s in stages:
         t0 = time.time()
@@ -723,6 +770,8 @@ def main():
             stage_cache(a, rootmnt)
         elif s == 'tweaks':
             stage_tweaks(a, rootmnt)
+        elif s == 'jb':
+            stage_jb(a, rootmnt)
         elif s == 'seal':
             stage_seal(a, a.out, rootmnt)
         elif s == 'verify':

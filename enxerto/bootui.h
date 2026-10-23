@@ -15,5 +15,7 @@ void bootui_mib(const char *label, uint64_t done, uint64_t total, unsigned from,
 /* Error: red status line, bar stays; the log stays readable. */
 void bootui_fail(const char *msg);
 int bootui_active(void);
+/* Last act before xnu: swap the branded screen for the Apple logo (no-op if applelogo.h was not generated). */
+void bootui_handoff(void);
 /* Draw a palette+RLE picture (tools/mkbootlogo.py format) at x0,y0. */
 void bootui_draw_rle(const unsigned int *pal, const unsigned char *rle, int w, int h, int x0, int y0);

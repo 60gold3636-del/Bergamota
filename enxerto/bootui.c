@@ -6,6 +6,13 @@
 #include "bootui.h"
 #include "console.h"
 #include "bootlogo.h"
+/* Apple logo for the hand-off screen: generated from the iOS root by tools/mkapplelogo.py (git-ignored). */
+#if defined(__has_include)
+#if __has_include("applelogo.h")
+#include "applelogo.h"
+#define HAVE_APPLELOGO 1
+#endif
+#endif
 
 #ifndef BOOTUI_LOG
 #define BOOTUI_LOG	0	/* logo only; the log is recorded and shown if the boot fails */
@@ -95,6 +102,19 @@ void bootui_init(void)
 	if (BOOTUI_LOG)
 		con_replay();	/* lines printed before the boot screen existed (e.g. usb_power_up) */
 	active = 1;
+}
+
+void bootui_handoff(void)
+{
+#ifdef HAVE_APPLELOGO
+	/* iBoot-style: black, Apple logo centred, nothing else. Stays on the panel (xnu keeps the boot
+	 * framebuffer untouched in graphics mode) until backboardd presents its own identical logo. */
+	if (!active)
+		return;
+	con_clear(0xff000000U);
+	bootui_draw_rle(applelogo_pal, applelogo_rle, APPLELOGO_W, APPLELOGO_H,
+			(FB_W - APPLELOGO_W) / 2, (FB_H - APPLELOGO_H) / 2);
+#endif
 }
 
 static void bar_to(unsigned permille)
