@@ -161,7 +161,20 @@ Mapping a BO: `IOConnectMapMemory64(conn, handle, mach_task_self(), &addr, &size
 
 CI run 39981343180 (branch `gpu-kernel`, artifact `xnu-kernel`, sha256 e9c73847...fedb) built 0180-0182. Boot images (kernel above, ADT `beryllium-hi-3x.adt`, the `tools/renegade/mkboot-full.sh` default cmdline + `ufslogsecs=1`) are in `../ios-beryllium/shim/out/`: `shim-boot-gpu-3.img` (`sweetgpu=3`: GMU boots), `shim-boot-gpu-5.img` (`sweetgpu=5`: HFI, GX rail, first GPU registers; needs only gmu.bin), `shim-boot-gpu-8.img` (`sweetgpu=8`: needs the zap too). Run them in this order, one per boot, with `tools/gpu-fw-push.sh` done first.
 
-## 9. Provenance and licences
+## 9. Firmware pull, user-client test, test order
+
+* `tools/gpu-fw-pull.sh` (Mac, phone in OrangeFox with adb root): finds the vendor (or system/modem) partition under `/dev/block/by-name`, mounts it `ro,noload` (never writes a partition), copies
+  `a630_zap.mdt`, `a630_zap.b00..` (+ `a630_gmu.bin`, `a630_sqe.fw` if there) into `research/gpu-fw/`, then verifies the mdt (ELF32, each segment's `bNN` exists with the right size) and prints hashes.
+  If mounting fails it prints a read-only `dd` fallback. Note `backup/vendor.img` had no a630 files, so the files may be elsewhere on the phone; the script searches vendor, system, modem.
+* `gpu/kernel-test/adreno_uc_test.c` (`gpu/kernel-test/build.sh`: arm64e, `renegade strip --sign`): opens `SweetAdreno630` and runs INFO, GET_PARAM (chip id, GMEM, timestamp), error paths, SUBMITQUEUE, GEM_NEW/INFO/map,
+  CPU_PREP/FINI, a submit of CP_NOP + CP_MEM_WRITE (+ one through a relocation), WAIT_FENCE (blocking and polled), content check, GEM_CLOSE. Builds clean; **never run**. Exit status = failures.
+* Order on the phone (one boot each; read `logs/usb-*.txt` after every boot):
+  1. `tools/gpu-fw-pull.sh` in OrangeFox; boot iOS normally; `tools/gpu-fw-push.sh -z research/gpu-fw` (gmu+sqe default to `../ios-beryllium/research/gpu-fw/dl`).
+  2. `shim-boot-gpu11215-3.img` (`sweetgpu=3`) -> `GMU BOOTED`.   3. `shim-boot-gpu11215-5.img` -> `HFI start complete`, `OOB gpu: acknowledged`, `slumber acknowledged`.
+  4. `shim-boot-gpu11215-8.img` -> `SCM PAS ... signed zap authenticated`, `CP NOP test PASSED`, `CP fill test PASSED`, `KEPT UP`, `SweetAdreno630 published`.
+  5. Same boot as 4, over SSH: copy `gpu/kernel-test/out/adreno_uc_test` to the phone and run it (`-v` for numbers); all lines `PASS`, `ALL PASSED`.
+
+## 10. Provenance and licences
 
 * Sequences and register numbers: Linux `drivers/gpu/drm/msm/adreno/{a6xx_gpu.c,a6xx_gmu.c,a6xx_hfi.c}` and generated headers (GPL-2.0): facts only, nothing copied (see `GPU_A630_BRINGUP.md`). `msm_drm.h` structure layouts are the Linux uapi ABI (the UAPI header carries the Linux-syscall-note exception); they are re-declared here with `sweet_` names.
 * Interface shape: `hackios-xnu-kernel-ext` (`bsd/dev/redwood_adreno.c`, `iokit/Kernel/RedwoodGPU.cpp`, APSL-2.0, third-party data) read for the design (selectors = msm request numbers, polling, WC buffers, the kernel as the address allocator, gpu-lost handling); no code copied, all of it is rewritten for SDM845/xnu-11215.
