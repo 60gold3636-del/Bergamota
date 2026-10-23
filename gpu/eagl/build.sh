@@ -20,6 +20,10 @@ python3 "$HERE/tools/gen_gl_stubs.py" > "$HERE/src/gl_stubs.c"
 CF="-O2 -g -fvisibility=hidden -Wall -Wno-deprecated-declarations -I$HERE/src -I$MESA_SRC/include"
 for f in gl_stubs gl_resolve gl_unimpl osm macro_ctx macro_slots; do $CC $CF -c "$HERE/src/$f.c" -o "$OUT/obj/$f.o"; done
 $CC $CF -fno-objc-arc -fobjc-exceptions ${EAGL_DEFS:-} -c "$HERE/src/eagl.m" -o "$OUT/obj/eagl.o"
+EXTRA_OBJ=""
+if [[ "${EAGL_DEFS:-}" == *EAGL_INJECT* ]]; then      # injection build: the render server hook
+  $CC $CF -fno-objc-arc -c "$HERE/src/ca_server_hook.m" -o "$OUT/obj/ca_server_hook.o"; EXTRA_OBJ="$OUT/obj/ca_server_hook.o"
+fi
 cp -f "$OSMESA" "$OUT/libOSMesa.8.dylib"
 xcrun strip -x "$OUT/libOSMesa.8.dylib"          # keeps the exported OSMesa/glapi symbols
 if [ -f "$WORK/drm-standin/libdrm.2.dylib" ]; then      # hardware build: the libdrm stand-in sits next to libOSMesa
@@ -27,7 +31,7 @@ if [ -f "$WORK/drm-standin/libdrm.2.dylib" ]; then      # hardware build: the li
   for rp in $(otool -l "$OUT/libOSMesa.8.dylib" | awk '/LC_RPATH/{f=1} f&&/path /{print $2; f=0}'); do install_name_tool -delete_rpath "$rp" "$OUT/libOSMesa.8.dylib" 2>/dev/null || true; done
   install_name_tool -add_rpath @loader_path "$OUT/libOSMesa.8.dylib" 2>/dev/null || true
 fi
-$CC -dynamiclib -o "$OUT/OpenGLES.framework/OpenGLES" "$OUT"/obj/{gl_stubs,gl_resolve,gl_unimpl,osm,macro_ctx,macro_slots,eagl}.o \
+$CC -dynamiclib -o "$OUT/OpenGLES.framework/OpenGLES" "$OUT"/obj/{gl_stubs,gl_resolve,gl_unimpl,osm,macro_ctx,macro_slots,eagl}.o $EXTRA_OBJ \
     -install_name "$SHIM_INSTALL_NAME" -Wl,-not_for_dyld_shared_cache -compatibility_version 1.0.0 -current_version 1.0.0 \
     -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework IOSurface \
     "$OUT/libOSMesa.8.dylib" -Wl,-rpath,@loader_path/.. -Wl,-undefined,error
