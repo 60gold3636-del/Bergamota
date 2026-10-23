@@ -78,14 +78,14 @@ Sizes (arm64e, after `strip -x`): shim `OpenGLES` 154 KB, `libOSMesa.8.dylib` 13
 
 ## Test
 
-`gpu/eagl/test/eagl_test.m` links the shim by path and runs 34 checks (exit status = failures; `--bench`, `--dump FILE.ppm`):
+`gpu/eagl/test/eagl_test.m` links the shim by path and runs 38 checks (exit status = failures; `--bench`, `--dump FILE.ppm`):
 
 * ES2 and ES3 contexts: create, make current, FBO + `renderbufferStorage:fromDrawable:` (fake `CAEAGLLayer` stand-in), shader compile/link (GLSL ES 1.00 and 3.00),
   clear + triangle, `presentRenderbuffer:` delivers a 128x128 BGRA IOSurface; apex pixel red at the **top**, below the triangle blue, corner blue (orientation, swizzle, alpha).
 * `attachImage:toCoreSurface:invertedRender:` + `glFinish` fills the IOSurface top-down; `texImageIOSurface:` (BGRA to RGBA, `invert:YES` flips); sharegroup visibility
   of textures (shared and unrelated context); ES1 context + fixed-function call.
 
-**[phone, 2026-10-23]** `RESULT: 34 passed, 0 failed`; GL_VERSION `OpenGL ES 3.1 Mesa 25.0.7`, GL_RENDERER `softpipe`; IOSurface creation/locking works from an arm64e tool. Rendered frame
+**[phone, 2026-10-23]** `RESULT: 38 passed, 0 failed` (34 before the macro-context checks); GL_VERSION `OpenGL ES 3.1 Mesa 25.0.7`, GL_RENDERER `softpipe`; IOSurface creation/locking works from an arm64e tool. Rendered frame
 checked visually (red triangle on blue). Speed on one SDM845 core: 128x128 triangle + readback + present about 1 ms/frame; **750x1334 full-screen textured quad + present
 about 560 ms/frame** (softpipe is a reference rasteriser: usable for correctness, not for compositing a UI; that is what phase E is for).
 
@@ -95,8 +95,7 @@ about 560 ms/frame** (softpipe is a reference rasteriser: usable for correctness
 
 1. **Not injected anywhere.** The system framework is unchanged; QuartzCore/backboardd still use their own (Metal-backed, no device) OpenGLES. Whether QuartzCore's GLES renderer is
    enabled without `CA_ENABLE_OGL` on 22H352 is still unverified (see `METAL_ADRENO630.md` b3).
-2. **`getMacroContextPrivate` returns a zeroed 256-byte block.** Apple's `EAGLMacroContext` is the GL "macro" context (dispatch table pointers used by inlined GL calls). If
-   CoreAnimation calls GL through it instead of the `gl*` exports, that structure must be reverse engineered from `GLEngine`/QuartzCore callers (next analysis step before injection).
+2. ~~`getMacroContextPrivate` zeroed block~~ **done 2026-10-23**: the macro context is populated (section "Macro context" below); QuartzCore's `CARenderer` renders through it on the phone.
 3. `attachImage:` takes a GL object name (`Q`): the shim guesses renderbuffer vs texture with `glIsTexture/glIsRenderbuffer`; the real semantics (e.g. mipmap level, MSAA) are unverified.
 4. ES2 contexts report GL_VERSION ES 3.1 (Mesa gives the highest); Apple reports 2.0 for ES2 contexts. `MESA_GLES_VERSION_OVERRIDE` could cap it per process.
 5. Not implemented (forward to a logging stub), computed statically against Mesa's glapi table (the on-phone `EAGL_SHIM_DEBUG=1` listing could not be run, the phone went offline again): 17 of 457, namely the Apple fence extension (`glGenFencesAPPLE`, `glSetFenceAPPLE`, `glTestFenceAPPLE`, `glFinishFenceAPPLE`, `glDeleteFencesAPPLE`, `glIsFenceAPPLE`), `glFinishObjectAPPLE`, `glTestObjectAPPLE`, `glResolveMultisampleFramebufferAPPLE`, `glGetFramebufferParameteriAPPLE` and the matrix-palette OES set (4). Note `GL_APPLE_fence` is one of the extensions QuartzCore probes (section below).
@@ -154,3 +153,39 @@ Method: `tools/renegade/dsctools` + a capstone scan of QuartzCore `__text` (addr
   job) with `EnvironmentVariables: DYLD_INSERT_LIBRARIES=/var/root/gpu-eagl/...` plus `DYLD_FRAMEWORK_PATH`; revert = delete the override file (and `launchctl bootout`/reboot). Fallback is
   automatic in CA (Metal -> GLES -> software), so a failing GLES init should land on the software path, but a crash loop must be assumed possible: keep an SSH session and a
   timed revert (`sleep 120; rm override; launchctl ...`) running before the first try. Do not do this until the on-device test of step 1 passes.
+
+## Macro context and CoreAnimation step 1 (done on the phone, 2026-10-23, xnu-8796 ufsdmasync=1)
+
+**Slot map: complete.** Every `gl*` export of the real OpenGLES.framework is a stub `mrs x8,tpidrro_el0; ldr ctx,[x8,#0xf0]` (current GLI context), then
+`ldr fn,[ctx,#SLOT]` with the renderer at `[ctx,#0x20]`, argument shift, jump. QuartzCore's pointer is `ctx+0x20`, so macro offset = SLOT - 0x20 (checked against the offsets
+QuartzCore uses: bind_texture 0x30, get_string 0x3b0, active_texture 0xab8, tex_parameteri 0x988 ...). `tools/dsc_slotmap.py` reads the 457 slot numbers from the cache and writes
+`src/macro_slots.c` (names and numbers only). The earlier doubt about "ES half not in the public order" is resolved this way: Apple's ES functions simply sit at other offsets of
+the same struct, and the stubs give them all. `src/macro_ctx.c` builds the block per context (`rend` = our private block, ~0x2200 bytes of slots), each slot a generated forwarder
+`ms_glFoo` (drops `rend` by shifting x1..x7 down and tail-calls the Mesa entry); the 11 entry points with 8+ arguments (`glTexImage2D`, `glTexSubImage2D`, `glCopyTexImage2D`,
+`glCopyTexSubImage2D`, `glCompressedTexSubImage2D`, the 3D variants, `glBlitFramebuffer`) have C wrappers because their arguments spill to the stack.
+`eagl_test` checks it: slot 0x3b0 is glGetString, float arguments after `rend` (`glClearColor`), and a 9-argument `glTexImage2D` through the macro block.
+
+**Injection mechanism (works in a single process).** The system OpenGLES lives in the dyld shared cache; `DYLD_FRAMEWORK_PATH` does not override it (tried: the system library
+was loaded). Instead `EAGL_DEFS=-DEAGL_INJECT gpu/eagl/build.sh OUT` builds the shim with classes `BGEAGLContext`/`BGEAGLSharegroup`; its load-time constructor copies every method
+(instance and class) into the REAL `EAGLContext`/`EAGLSharegroup` classes with `class_replaceMethod` (both have the single `_private` ivar). Anything that talks to those classes
+(QuartzCore included) then reaches our code. The C `gl*` symbols of an app still bind to the system library (they use the thread's own TLS context, which is empty): a client of
+the injected shim must reach GL through the macro context (CoreAnimation does) or through the shim's own exports (`dlsym`), as `eagl_ca_test` does.
+
+**Step 1 result [phone].** `test/eagl_ca_test.m` (separate tool, nothing else touched): our context (ES3) + IOSurface-backed FBO (`attachImage:toCoreSurface:`), `+[CARenderer
+rendererWithEAGLContext:options:]` on a layer tree (red root, green 128x128 sublayer), `beginFrame/addUpdateRect/render/endFrame`, `glFinish`. Result: `GL error 0`, IOSurface pixel (10,10) =
+red and (128,128) = green, no "unmapped slot"/"not implemented" message, `RESULT: 0 failed`. So **CoreAnimation's GLES renderer (CA::OGL) runs on Mesa softpipe through this shim**, including
+its extension probing (`GL_APPLE_*` strings are absent from Mesa and CA copes) and shader compilation. Run:
+
+```
+EAGL_DEFS=-DEAGL_INJECT gpu/eagl/build.sh $GPU_EAGL_WORK/out-inj      # also builds eagl_ca_test
+(strip with pacstrip --sign; push eagl_ca_test, libOSMesa.8.dylib and OpenGLES.framework/OpenGLES keeping the layout; verify sha256 on the phone)
+EAGL_INJECT_LIB=/var/root/gpu-eagl-inj/fw/OpenGLES.framework/OpenGLES ./eagl_ca_test
+```
+
+Operational notes: (1) delete a binary on the phone before pushing a new build of it: the kernel keeps the old code-signature limits per vnode and dyld then reports "code signature does not
+cover entire file"; (2) unresolved entry points are now 14 of 457 (measured on the phone with `EAGL_SHIM_DEBUG=1`): the Apple fence set (6), `glFinishObjectAPPLE`, `glTestObjectAPPLE`,
+`glResolveMultisampleFramebufferAPPLE`, `glGetFramebufferParameteriAPPLE`, and the four matrix-palette OES functions; (3) the injection build is for a process we control; backboardd injection stays
+a separate, later, reversible step (launchd environment override, see the proposal above).
+
+Not yet exercised by step 1: layers with image contents (`texImageIOSurface:`), shadows/blur/vibrancy shaders, many layers (the 560 ms/frame softpipe cost applies), `CAEAGLLayer` drawables, and the render
+server's own use (`CA::WindowServer`, display-link, IOMFB swap). The remaining unknown from the static analysis is where the render server creates its `EAGLContext`.

@@ -45,6 +45,12 @@ static void surf_pixel(IOSurfaceRef s, int x, int y, uint8_t out[4]) {   // BGRA
     memcpy(out, p, 4);
     IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
 }
+// The shim exports no table; resolve offsets the way QuartzCore does not: from the known stub offsets (22H352).
+static unsigned macro_find(const char *n) {
+    static const struct { const char *n; unsigned off; } t[] = { { "glClearColor", 0x68 }, { "glClear", 0x58 }, { "glTexImage2D", 0x970 } };
+    for (unsigned i = 0; i < sizeof t / sizeof *t; i++) if (!strcmp(t[i].n, n)) return t[i].off;
+    return 0;
+}
 static int near(int a, int b) { return abs(a - b) <= 2; }
 
 static GLuint compile(GLenum type, const char *src) {
@@ -197,6 +203,39 @@ static void test_attach_and_texture(void) {
     CFRelease(surf); CFRelease(src);
 }
 
+// QuartzCore's way into GL: EAGLMacroContext slots called as fn(rend, args...). Offsets are from the real stubs (22H352).
+static void test_macro_context(void) {
+    EAGLContext *ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
+    [EAGLContext setCurrentContext:ctx];
+    void **m = (void **)[ctx getMacroContextPrivate];
+    CHECK(m != NULL && m[0] != NULL, "getMacroContextPrivate returns a populated block");
+    if (!m) return;
+    #define SLOT(off) (*(void **)((char *)m + (off)))
+    const unsigned char *(*get_string)(void *, unsigned) = SLOT(0x3b0);        // glGetString (CA calls this first)
+    const char *rn = (const char *)get_string(m[0], GL_RENDERER);
+    CHECK(rn && !strcmp(rn, (const char *)glGetString(GL_RENDERER)), "macro slot 0x3b0 = glGetString (%s)", rn ? rn : "null");
+    GLuint fbo, rb;
+    glGenFramebuffers(1, &fbo); glGenRenderbuffers(1, &rb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo); glBindRenderbuffer(GL_RENDERBUFFER, rb);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 16, 16);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+    void (*clear_color)(void *, float, float, float, float) = SLOT(macro_find("glClearColor"));
+    void (*clear)(void *, unsigned) = SLOT(macro_find("glClear"));
+    clear_color(m[0], 0.0f, 1.0f, 0.0f, 1.0f); clear(m[0], GL_COLOR_BUFFER_BIT);
+    uint8_t px[4] = {0};
+    glReadPixels(3, 3, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[1] == 255 && px[0] == 0, "glClearColor/glClear through macro slots (float args after rend) (RGBA %d %d %d %d)", px[0], px[1], px[2], px[3]);
+    // 9-argument call (stack arguments): glTexImage2D through the wide wrapper
+    void (*tex_image_2d)(void *, unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = SLOT(macro_find("glTexImage2D"));
+    GLuint tex; glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
+    uint32_t texel[4] = { 0xff0000ffu, 0xff0000ffu, 0xff0000ffu, 0xff0000ffu };   // RGBA bytes ff 00 00 ff = red
+    tex_image_2d(m[0], GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texel);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0, "glTexImage2D (9 args, stack) through the macro context (RGBA %d %d %d %d)", px[0], px[1], px[2], px[3]);
+    [EAGLContext setCurrentContext:nil]; [ctx release];
+}
+
 static void bench(void) {
     EAGLContext *ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
     [EAGLContext setCurrentContext:ctx];
@@ -241,6 +280,7 @@ int main(int argc, char **argv) {
         test_present(kEAGLRenderingAPIOpenGLES2, VS100, FS100, "ES2");
         test_present(kEAGLRenderingAPIOpenGLES3, VS300, FS300, "ES3");
         test_attach_and_texture();
+        test_macro_context();
         {   // OpenGL ES 1.1 context (fixed function): creation and one fixed-function call
             EAGLContext *c1 = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES1];
             CHECK(c1 != nil && [EAGLContext setCurrentContext:c1], "[ES1] context");

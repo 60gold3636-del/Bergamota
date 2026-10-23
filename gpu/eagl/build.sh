@@ -18,19 +18,24 @@ SHIM_INSTALL_NAME="${SHIM_INSTALL_NAME:-@rpath/OpenGLES.framework/OpenGLES}"
 mkdir -p "$OUT/OpenGLES.framework" "$OUT/obj"
 python3 "$HERE/tools/gen_gl_stubs.py" > "$HERE/src/gl_stubs.c"
 CF="-O2 -g -fvisibility=hidden -Wall -Wno-deprecated-declarations -I$HERE/src -I$MESA_SRC/include"
-for f in gl_stubs gl_resolve gl_unimpl osm; do $CC $CF -c "$HERE/src/$f.c" -o "$OUT/obj/$f.o"; done
-$CC $CF -fno-objc-arc -fobjc-exceptions -c "$HERE/src/eagl.m" -o "$OUT/obj/eagl.o"
+for f in gl_stubs gl_resolve gl_unimpl osm macro_ctx macro_slots; do $CC $CF -c "$HERE/src/$f.c" -o "$OUT/obj/$f.o"; done
+$CC $CF -fno-objc-arc -fobjc-exceptions ${EAGL_DEFS:-} -c "$HERE/src/eagl.m" -o "$OUT/obj/eagl.o"
 cp -f "$OSMESA" "$OUT/libOSMesa.8.dylib"
 xcrun strip -x "$OUT/libOSMesa.8.dylib"          # keeps the exported OSMesa/glapi symbols
-$CC -dynamiclib -o "$OUT/OpenGLES.framework/OpenGLES" "$OUT"/obj/{gl_stubs,gl_resolve,gl_unimpl,osm,eagl}.o \
-    -install_name "$SHIM_INSTALL_NAME" -compatibility_version 1.0.0 -current_version 1.0.0 \
+$CC -dynamiclib -o "$OUT/OpenGLES.framework/OpenGLES" "$OUT"/obj/{gl_stubs,gl_resolve,gl_unimpl,osm,macro_ctx,macro_slots,eagl}.o \
+    -install_name "$SHIM_INSTALL_NAME" -Wl,-not_for_dyld_shared_cache -compatibility_version 1.0.0 -current_version 1.0.0 \
     -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework IOSurface \
     "$OUT/libOSMesa.8.dylib" -Wl,-rpath,@loader_path/.. -Wl,-undefined,error
 # Tests link the shim by path (never the system framework).
 for t in eagl_test; do
   [ -f "$HERE/test/$t.m" ] || continue
+  [ -z "${EAGL_DEFS:-}" ] || continue          # injection builds rename the classes: the by-path test does not apply
   $CC -O1 -g -Wno-deprecated-declarations -fno-objc-arc -I$HERE/src "$HERE/test/$t.m" -o "$OUT/$t" \
       "$OUT/OpenGLES.framework/OpenGLES" -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework IOSurface \
       -Wl,-rpath,@executable_path -Wl,-rpath,@executable_path/..
 done
+# CoreAnimation test: links the SDK's OpenGLES + QuartzCore; at run time DYLD_FRAMEWORK_PATH must point at a shim built with
+# SHIM_INSTALL_NAME=/System/Library/Frameworks/OpenGLES.framework/OpenGLES (see docs/GPU_EAGL.md).
+$CC -O1 -g -Wno-deprecated-declarations -fno-objc-arc -I$HERE/src "$HERE/test/eagl_ca_test.m" -o "$OUT/eagl_ca_test" \
+    -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework IOSurface -framework QuartzCore -framework OpenGLES
 ls -l "$OUT" "$OUT/OpenGLES.framework"

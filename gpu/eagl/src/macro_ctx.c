@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: MIT
+// EAGLMacroContext: the structure QuartzCore's GLES renderer gets from -[EAGLContext getMacroContextPrivate] and calls
+// GL through, as `((fn)ctx->slot[off])(ctx->rend, args...)`. Layout (22H352, see docs/GPU_EAGL.md): rend at +0, one function
+// pointer per entry point at the offsets in macro_slots[] (the same order as macOS's gliDispatch.h for the first ~340 slots,
+// Apple's own ES extension after that). Our slots point at forwarders into the same Mesa entry points the gl* exports use.
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include "gl_tab.h"
+#include "macro_ctx.h"
+
+static void macro_unmapped(void) { static int n; if (n++ < 5) fprintf(stderr, "OpenGLES(shim): call through an unmapped EAGLMacroContext slot\n"); }
+
+void *macro_ctx_new(void *rend) {
+    void **m = calloc(1, MACRO_CTX_SIZE);
+    if (!m) return NULL;
+    m[0] = rend;
+    for (unsigned o = 8; o + 8 <= MACRO_CTX_SIZE; o += 8) m[o / 8] = (void *)macro_unmapped;
+    for (int s = 0; s < macro_nslots; s++) {
+        int k = -1;
+        for (int i = 0; i < gl_nfuncs; i++) if (!strcmp(gl_names[i], macro_slots[s].name)) { k = i; break; }
+        if (k >= 0 && macro_slots[s].off + 8 <= MACRO_CTX_SIZE) {
+            // aliases (glFoo / glFooOES) share a slot: prefer the entry without a vendor suffix
+            void **dst = &m[macro_slots[s].off / 8];
+            if (*dst == (void *)macro_unmapped || strlen(gl_names[k]) < 64) *dst = ms_thunks[k];
+        }
+    }
+    return m;
+}
+void macro_ctx_free(void *m) { free(m); }
+
+// --- wrappers for entry points with 8+ arguments (arguments beyond x7 live on the stack, so the register shift is not enough) ---
+typedef unsigned U; typedef int I; typedef long L;
+static void *target(const char *name) {
+    for (int i = 0; i < gl_nfuncs; i++) if (!strcmp(gl_names[i], name)) return gl_tab[i];
+    return (void *)macro_unmapped;
+}
+#define CACHED(name) static void *t; if (!t) t = target(name)
+
+void mw_TexImage2D(void *r, U a, I b, I c, I d, I e, I f, U g, U h, const void *p) { CACHED("glTexImage2D"); ((void (*)(U, I, I, I, I, I, U, U, const void *))t)(a, b, c, d, e, f, g, h, p); }
+void mw_TexSubImage2D(void *r, U a, I b, I c, I d, I e, I f, U g, U h, const void *p) { CACHED("glTexSubImage2D"); ((void (*)(U, I, I, I, I, I, U, U, const void *))t)(a, b, c, d, e, f, g, h, p); }
+void mw_CopyTexImage2D(void *r, U a, I b, U c, I d, I e, I f, I g, I h) { CACHED("glCopyTexImage2D"); ((void (*)(U, I, U, I, I, I, I, I))t)(a, b, c, d, e, f, g, h); }
+void mw_CopyTexSubImage2D(void *r, U a, I b, I c, I d, I e, I f, I g, I h) { CACHED("glCopyTexSubImage2D"); ((void (*)(U, I, I, I, I, I, I, I))t)(a, b, c, d, e, f, g, h); }
+void mw_CompressedTexSubImage2D(void *r, U a, I b, I c, I d, I e, I f, U g, I h, const void *p) { CACHED("glCompressedTexSubImage2D"); ((void (*)(U, I, I, I, I, I, U, I, const void *))t)(a, b, c, d, e, f, g, h, p); }
+void mw_TexImage3D(void *r, U a, I b, I c, I d, I e, I f, I g, U h, U i, const void *p) { CACHED("glTexImage3D"); ((void (*)(U, I, I, I, I, I, I, U, U, const void *))t)(a, b, c, d, e, f, g, h, i, p); }
+void mw_TexSubImage3D(void *r, U a, I b, I c, I d, I e, I f, I g, I h, U i, U j, const void *p) { CACHED("glTexSubImage3D"); ((void (*)(U, I, I, I, I, I, I, I, U, U, const void *))t)(a, b, c, d, e, f, g, h, i, j, p); }
+void mw_CopyTexSubImage3D(void *r, U a, I b, I c, I d, I e, I f, I g, I h, I i) { CACHED("glCopyTexSubImage3D"); ((void (*)(U, I, I, I, I, I, I, I, I))t)(a, b, c, d, e, f, g, h, i); }
+void mw_CompressedTexImage3D(void *r, U a, I b, U c, I d, I e, I f, I g, I h, const void *p) { CACHED("glCompressedTexImage3D"); ((void (*)(U, I, U, I, I, I, I, I, const void *))t)(a, b, c, d, e, f, g, h, p); }
+void mw_CompressedTexSubImage3D(void *r, U a, I b, I c, I d, I e, I f, I g, I h, U i, I j, const void *p) { CACHED("glCompressedTexSubImage3D"); ((void (*)(U, I, I, I, I, I, I, I, U, I, const void *))t)(a, b, c, d, e, f, g, h, i, j, p); }
+void mw_BlitFramebuffer(void *r, I a, I b, I c, I d, I e, I f, I g, I h, U i, U j) { CACHED("glBlitFramebuffer"); ((void (*)(I, I, I, I, I, I, I, I, U, U))t)(a, b, c, d, e, f, g, h, i, j); }

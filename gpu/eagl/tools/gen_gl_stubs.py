@@ -52,6 +52,34 @@ def main():
     w('')
     for i, s in enumerate(syms):
         w('GL_STUB(%s, %d)' % (s, i))
+    # Macro-context thunks: CoreAnimation calls fn(rend, args...) through EAGLMacroContext; drop `rend` (x0) by
+    # shifting x1..x7 down and tail-call the same entry point. Entry points with 8+ arguments need a C wrapper
+    # (src/macro_ctx.c, mw_<base name>) because their arguments spill to the stack.
+    w('')
+    w('#define GL_MSTUB(name, idx) \\')
+    w('    __attribute__((visibility("hidden"), naked, used)) void ms_##name(void) { __asm__ volatile( \\')
+    w('        "adrp x16, _gl_tab@PAGE\\n" \\')
+    w('        "add x16, x16, _gl_tab@PAGEOFF\\n" \\')
+    w('        "ldr x16, [x16, #" #idx "*8]\\n" \\')
+    w('        "mov x0, x1\\n mov x1, x2\\n mov x2, x3\\n mov x3, x4\\n mov x4, x5\\n mov x5, x6\\n mov x6, x7\\n" \\')
+    w('        GL_BR); }')
+    w('')
+    wide = ['CopyTexImage2D', 'CopyTexSubImage2D', 'CompressedTexSubImage2D', 'TexImage2D', 'TexSubImage2D', 'TexImage3D',
+            'TexSubImage3D', 'CopyTexSubImage3D', 'CompressedTexImage3D', 'CompressedTexSubImage3D', 'BlitFramebuffer']
+    def base(n):
+        for suf in ('OES', 'EXT', 'APPLE', 'ANGLE', 'KHR', 'IMG'):
+            if n.endswith(suf): return n[2:-len(suf)]
+        return n[2:]
+    for i, s in enumerate(syms):
+        if base(s) not in wide:
+            w('GL_MSTUB(%s, %d)' % (s, i))
+    for b in wide:
+        w('extern void mw_%s(void);' % b)
+    w('')
+    w('void *const ms_thunks[GL_NFUNCS + 1] = {')
+    for i, s in enumerate(syms):
+        w('    (void *)%s,' % (('mw_' + base(s)) if base(s) in wide else ('ms_' + s)))
+    w('    0 };')
     sys.stdout.write('\n'.join(out) + '\n')
 
 main()

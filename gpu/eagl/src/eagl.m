@@ -11,6 +11,14 @@
 //                                         on glFlush/glFinish/present (CoreAnimation's GLES renderer path)
 //   texImageIOSurface:...              -> IOSurface pixels uploaded into the bound texture (copy)
 #pragma clang diagnostic ignored "-Wobjc-designated-initializers"
+#ifdef EAGL_INJECT
+// Injection build (-DEAGL_INJECT): the system OpenGLES.framework lives in the dyld shared cache and cannot be replaced by path
+// (dyld ignores DYLD_FRAMEWORK_PATH for cache dylibs). Our classes get other names here and, at load time, their methods are
+// installed into the REAL EAGLContext / EAGLSharegroup classes (same single `_private` ivar), so every caller (QuartzCore
+// included) reaches this implementation. See eagl_inject_patch() at the end of the file.
+#define EAGLContext BGEAGLContext
+#define EAGLSharegroup BGEAGLSharegroup
+#endif
 #import "eagl_private.h"
 #import <objc/runtime.h>
 #import <pthread.h>
@@ -18,6 +26,7 @@
 #import <objc/message.h>
 #import <math.h>
 #include "osm.h"
+#include "macro_ctx.h"
 #import <OpenGLES/ES3/gl.h>
 #import <OpenGLES/ES3/glext.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -271,7 +280,7 @@ static void eagl_install_hooks(void) {
         if (p->osm && g->nlive < 64) g->live[g->nlive++] = p->osm;
         pthread_mutex_unlock(&g->lock);
         if (!p->osm) { EAGL_DEBUG("OSMesaCreateContextAttribs failed (api %d)\n", (int)api); [self release]; return nil; }
-        p->macro = calloc(1, 256);
+        p->macro = macro_ctx_new(p);   // rend = our private block; the slots ignore it (Mesa uses the thread's current context)
     }
     return self;
 }
@@ -293,7 +302,7 @@ static void eagl_install_hooks(void) {
         }
         if (p->osm) osm_destroy(p->osm);
         [p->sg release]; [p->label release];
-        free(p->dummy); free(p->macro); free(p);
+        free(p->dummy); macro_ctx_free(p->macro); free(p);
         _private = NULL;
     }
     [super dealloc];
@@ -493,3 +502,23 @@ void GLCSelectDispatchFunction(void) {}
 void GLCSetCompilationPerformanceCallback(void) {}
 void GLCSetProfilerStorage(void) {}
 #pragma GCC visibility pop
+
+#ifdef EAGL_INJECT
+static void patch_class(Class ours, const char *realName) {
+    Class real = objc_getClass(realName);
+    if (!real || !ours) { fprintf(stderr, "EAGL(shim): cannot patch %s\n", realName); return; }
+    for (int meta = 0; meta < 2; meta++) {
+        Class from = meta ? object_getClass(ours) : ours, to = meta ? object_getClass(real) : real;
+        unsigned n = 0;
+        Method *ms = class_copyMethodList(from, &n);
+        for (unsigned i = 0; i < n; i++)
+            class_replaceMethod(to, method_getName(ms[i]), method_getImplementation(ms[i]), method_getTypeEncoding(ms[i]));
+        free(ms);
+        if (getenv("EAGL_SHIM_DEBUG")) fprintf(stderr, "EAGL(shim): patched %u %s methods of %s\n", n, meta ? "class" : "instance", realName);
+    }
+}
+__attribute__((constructor)) static void eagl_inject_patch(void) {
+    patch_class(objc_getClass("BGEAGLContext"), "EAGLContext");
+    patch_class(objc_getClass("BGEAGLSharegroup"), "EAGLSharegroup");
+}
+#endif
