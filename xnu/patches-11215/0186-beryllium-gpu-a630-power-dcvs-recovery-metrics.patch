@@ -474,7 +474,7 @@ diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
  	printf("SWEET GPU: KEPT UP: GX on (OOB_GPU held, GMU keep-alive), ring %u dwords at RPTR=WPTR=%u, client VA 0x%llx-0x%llx, %u table pages\n",
  	    RING_SIZE / 4, ring_wptr, GVM_BASE, GVM_END, PTP_PAGES);
  	sweet_log_sync();
-@@ -2816,6 +3071,333 @@
+@@ -2816,6 +3071,337 @@
  }
  
  /* ------------------------------------------------------------------ */
@@ -728,7 +728,11 @@ diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
 +	    a630_suspends, a630_resumes, a630_recoveries, a630_dev.hangs, a630_idle_ms, a630_hwcg, tot / NSEC_PER_MSEC);
 +	(void)now_in;
 +	for (unsigned i = 0; i < 8 && n > 0 && (size_t)n < sizeof(buf); i++) {
-+		n += snprintf(buf + n, sizeof(buf) - n, "%s%s:%llu", i ? "," : "", i ? "L" : "slumber", res_ns[i] / NSEC_PER_MSEC);
++		if (i) {
++			n += snprintf(buf + n, sizeof(buf) - n, ",L%u:%llu", i, res_ns[i] / NSEC_PER_MSEC);
++		} else {
++			n += snprintf(buf + n, sizeof(buf) - n, "slumber:%llu", res_ns[0] / NSEC_PER_MSEC);
++		}
 +	}
 +	return sysctl_handle_string(oidp, buf, sizeof(buf), req);
 +}
@@ -808,7 +812,7 @@ diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
  /* Driver                                                              */
  /* ------------------------------------------------------------------ */
  
-@@ -2897,7 +3479,12 @@
+@@ -2897,7 +3483,12 @@
  	}
  	gpu_hfi_table();
  	bool booted = gpu_gmu_boot((const uint32_t *)fw, fwsize, false);
@@ -822,7 +826,7 @@ diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
  	bool rail = false, gx = false;
  	if (booted && mode >= 5) {
  		rail = gpu_gx_rail_on();
-@@ -2972,6 +3559,42 @@
+@@ -2972,6 +3563,42 @@
  		mode = 8;
  	}
  	a630_mode = mode;

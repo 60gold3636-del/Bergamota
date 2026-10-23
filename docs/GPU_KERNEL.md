@@ -205,7 +205,7 @@ Read-only string, one line of space-separated `key=value`, always present (`stat
 
 ```
 state=on level=3 mhz=414 max_level=7 freq=gov busy_pct=42 clients=2 pids=123,456 submitted=1030 completed=1030
-suspends=2 resumes=2 recoveries=0 hangs=0 idle_ms=2000 hwcg=1 total_ms=91000 res_ms=slumber:61000,L:0,L:12000,L:9000,...
+suspends=2 resumes=2 recoveries=0 hangs=0 idle_ms=2000 hwcg=1 total_ms=91000 res_ms=slumber:61000,L1:0,L2:12000,L3:9000,L4:0,L5:0,L6:0,L7:0
 ```
 
 * `state`: `on` (GX powered), `slumber` (idle, GX off), `off` (interface never came up), `lost` (reset failed or `sweetgpurecover` used up).
@@ -214,7 +214,7 @@ suspends=2 resumes=2 recoveries=0 hangs=0 idle_ms=2000 hwcg=1 total_ms=91000 res
 * `clients`/`pids`: open user clients (connections) and the comma-separated pids that own them (`-` if none, cut after 96 bytes).
 * `submitted`/`completed`: last submitted / last completed fence number (equal = idle).
 * `suspends`/`resumes`/`recoveries`/`hangs`: counters since boot.
-* `total_ms` and `res_ms`: milliseconds since the PM thread started, and per state: first `slumber`, then levels 1..7 in order (the key text of the level entries is `L`; position = level). `res_ms` fields are present only after a PM thread exists (any of `sweetgpuidle`, `sweetgpufreq=gov`, `sweetgpuhb`), otherwise all zero. A 30 s rate-limited kernel log line `SWEET GPU: pm: ...` prints the same as percentages.
+* `total_ms` and `res_ms`: milliseconds since the PM thread started, and per state: `slumber`, `L1` .. `L7`. `res_ms` fields are present only after a PM thread exists (any of `sweetgpuidle`, `sweetgpufreq=gov`, `sweetgpuhb`), otherwise all zero. A 30 s rate-limited kernel log line `SWEET GPU: pm: ...` prints the same as percentages.
 
 ### Heartbeat line (`sweetgpuhb=S`)
 
