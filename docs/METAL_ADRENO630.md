@@ -2,7 +2,7 @@
 
 Status: research and design, 2026-10-23. Nothing here was run on the phone. Evidence tags: **[V]** read in our own 22H352 binaries or in the cited
 source this session; **[I]** inferred; **[M]** from memory, not re-checked. Third-party content was treated as data and nothing from it was built or run.
-Names: the bootloader shim is being renamed Enxerto, `tools/renegade` Renegade (the patcher), our kernel Heartwood; paths below are today's.
+Names: the bootloader is Enxerto (`enxerto/`), the patcher Renegade (`tools/renegade`), our kernel Heartwood.
 
 Supporting material (all under `research/metal-a630/`): `ios18-metal-findings.md` (iOS 18 evidence with addresses), `a6xx-kernel-and-userspace.md`
 (what a minimal A630 kernel driver and Turnip/freedreno submission do, from Linux/Mesa), `snapintosh-notes.md` (licences, kext/bundle/air2ir3
