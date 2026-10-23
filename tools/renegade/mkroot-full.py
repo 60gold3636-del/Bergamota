@@ -449,7 +449,8 @@ def stage_tweaks(a, root):
             'LastSystemVersion': rt.BUILD, 'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': rt.BUILD}})
         rt.merge_pref(root, 'com.apple.springboard', {
             'BKNoWatchdogs': True, 'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
-            'MCForceShowCloudConfigurationUI': False})
+            'MCForceShowCloudConfigurationUI': False, 'SBShowBatteryPercentage': True})
+        rt.sweetprefs_tool(root)
         rt.merge_pref(root, 'com.apple.purplebuddy', {
             'SetupDone': True, 'SetupFinishedAllSteps': True, 'SetupVersion': 11, 'daemonizeNeedsToRun': False})
         rt.merge_pref(root, 'com.apple.purplebuddy.notbackedup', {

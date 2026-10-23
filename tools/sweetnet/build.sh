@@ -30,6 +30,11 @@ if [ "${IOS18:-1}" = 1 ]; then
 	out18=$out/ios18
 	pacstrip=$here/../renegade/pacstrip.py
 	mkdir -p "$out18"
+	# sweetprefs: set/read a user default through cfprefsd (installed in /usr/local/bin by root_tweaks18.base())
+	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall -framework CoreFoundation \
+		"$here/sweetprefs.c" -o "$out18/sweetprefs"
+	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetprefs"
+	python3 -I "$pacstrip" --sign "$out18/sweetprefs"
 	# sweetuicache: LaunchServices registration, run by the first-boot job (root_tweaks18.firstboot)
 	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -fobjc-arc \
 		-framework Foundation "$here/sweetuicache.m" -o "$out18/sweetuicache"

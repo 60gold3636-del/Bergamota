@@ -990,7 +990,8 @@ def prefs(root):
         'LastSystemVersion': BUILD, 'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}})
     merge_pref(root, 'com.apple.springboard', {
         'BKNoWatchdogs': True, 'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
-        'MCForceShowCloudConfigurationUI': False})
+        'MCForceShowCloudConfigurationUI': False,
+        'SBShowBatteryPercentage': True})        # status-bar battery percentage (live: sweetprefs mobile com.apple.springboard SBShowBatteryPercentage bool 1)
     merge_pref(root, 'com.apple.purplebuddy', {
         'SetupDone': True, 'SetupFinishedAllSteps': True, 'SetupVersion': 11, 'daemonizeNeedsToRun': False})
     merge_pref(root, 'com.apple.purplebuddy.notbackedup', {
@@ -999,6 +1000,16 @@ def prefs(root):
                            'SilentICDPUpgrade')})
     merge_pref(root, 'com.apple.managedconfiguration.notbackedup',
                {'LockdownActivationIndicatesCloudConfigurationAvailable': False})
+
+
+def sweetprefs_tool(root):
+    """/usr/local/bin/sweetprefs (tools/sweetnet/sweetprefs.c, arm64e + pacstrip): set/read a user default through cfprefsd."""
+    src = find_sweetnet('ios18/sweetprefs')
+    if not src:
+        print('sweetprefs: not built (tools/sweetnet/build.sh): skipped')
+        return
+    install_file(src, os.path.join(root, 'usr/local/bin/sweetprefs'))
+    print('sweetprefs: /usr/local/bin/sweetprefs installed')
 
 
 def base(root):
@@ -1020,6 +1031,7 @@ def base(root):
     audio(root)
     activation(root)
     prefs(root)
+    sweetprefs_tool(root)
     iosroot_dirs(root)
 
 
