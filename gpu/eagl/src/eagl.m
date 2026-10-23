@@ -838,12 +838,13 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
 - (BOOL)texImageIOSurface:(IOSurfaceRef)ioSurface target:(NSUInteger)target internalFormat:(NSUInteger)internalFormat
                     width:(uint32_t)width height:(uint32_t)height format:(NSUInteger)format type:(NSUInteger)type
                     plane:(uint32_t)plane invert:(BOOL)invert {
+    if (ioSurface) EAGL_DEBUG("texImageIOSurface source: surface %u fourcc %08x planes %zu %zux%zu bpr %zu\n", IOSurfaceGetID(ioSurface), (unsigned)IOSurfaceGetPixelFormat(ioSurface), IOSurfaceGetPlaneCount(ioSurface), IOSurfaceGetWidth(ioSurface), IOSurfaceGetHeight(ioSurface), IOSurfaceGetBytesPerRow(ioSurface));
     EAGL_DEBUG("texImageIOSurface %p target 0x%lx ifmt 0x%lx %ux%u fmt 0x%lx type 0x%lx invert %d\n", ioSurface, (unsigned long)target, (unsigned long)internalFormat, width, height, (unsigned long)format, (unsigned long)type, invert);
-    if (cur_ctx() != self || !ioSurface || plane != 0) return NO;
+    if (cur_ctx() != self || !ioSurface || plane != 0) do { EAGL_DEBUG("texImageIOSurface: refused (reason 1) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     OSType pf = IOSurfaceGetPixelFormat(ioSurface);
     size_t sw = IOSurfaceGetWidth(ioSurface), sh = IOSurfaceGetHeight(ioSurface);
     uint32_t w = width < sw ? width : (uint32_t)sw, h = height < sh ? height : (uint32_t)sh;
-    if (!w || !h) return NO;
+    if (!w || !h) do { EAGL_DEBUG("texImageIOSurface: refused (reason 2) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     // Bytes per texel from the GL format/type CoreAnimation asks for (it uploads A8 masks, LA8, RGBA half float gradients, BGRA ...).
     size_t comps = 0, csz = 1;
     switch (format) {
@@ -851,7 +852,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     case 0x190a: case 0x8227: comps = 2; break;                              // LUMINANCE_ALPHA, RG
     case 0x1907: comps = 3; break;                                           // RGB
     case 0x1908: case GL_BGRA_EXT: comps = 4; break;                         // RGBA, BGRA
-    default: return NO;
+    default: do { EAGL_DEBUG("texImageIOSurface: refused (reason 3) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     }
     switch (type) {
     case 0x1401: csz = 1; break;                                             // UNSIGNED_BYTE
@@ -859,20 +860,20 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     case 0x1406: csz = 4; break;                                             // FLOAT
     case 0x8363: case 0x8033: case 0x8034: comps = 1; csz = 2; break;        // packed 16 bit
     case 0x8368: comps = 1; csz = 4; break;                                  // UNSIGNED_INT_2_10_10_10_REV
-    default: return NO;
+    default: do { EAGL_DEBUG("texImageIOSurface: refused (reason 4) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     }
     size_t bpp = comps * csz, bpr = IOSurfaceGetBytesPerRow(ioSurface);
-    if (w * bpp > bpr) return NO;
+    if (w * bpp > bpr) do { EAGL_DEBUG("texImageIOSurface: refused (reason 5) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     BOOL bgra8 = (format == GL_BGRA_EXT && type == 0x1401);                  // swizzled to RGBA below (portable across ES implementations)
     uint8_t *tmp = malloc((size_t)w * h * bpp);
-    if (!tmp) return NO;
+    if (!tmp) do { EAGL_DEBUG("texImageIOSurface: refused (reason 6) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     kern_return_t lk = IOSurfaceLock(ioSurface, kIOSurfaceLockReadOnly, NULL);
     const uint8_t *src = lk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(ioSurface) : NULL;
     if (!src) {                         // not CPU-mappable here (the render server's display surfaces): nothing to read
         if (lk == KERN_SUCCESS) IOSurfaceUnlock(ioSurface, kIOSurfaceLockReadOnly, NULL);
         EAGL_DEBUG("texImageIOSurface: surface %u has no CPU mapping (lock %x)\n", IOSurfaceGetID(ioSurface), lk);
         free(tmp);
-        return NO;
+        do { EAGL_DEBUG("texImageIOSurface: refused (reason 7) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     }
     for (uint32_t y = 0; y < h; y++) {
         const uint8_t *sp = src + ((invert || g_target_attach) ? y : (h - 1 - y)) * bpr;   // render server (target-form attach): images keep their native top-down rows; CARenderer-style clients: flipped unless invert
