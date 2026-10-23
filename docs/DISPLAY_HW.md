@@ -168,6 +168,70 @@ Refusals / fallbacks: `SWEET SURF: low pool 0x... refused: overlaps <name> ...`,
 Reverts: `sweetfb_hw` / `sweetfb_zc` / `sweetfb_smmu` / `sweetfb_lowpool*` / `sweetfb_zcforce` / `sweetfb_lowwc` are absent by default; `sweetfb_blfade=0` disables the only default-on part. Risks not testable offline: whether the window 0xb0400000-0xc0000000 is free of TZ/hyp protection, write-back mapping of a non-managed range through `IOMemoryDescriptor` (by analysis of `pmap_enter_options`, same path as the write-combined splash mapping), MDP fetch from outside ABL's mapping, half-drawn frames when scanning CoreAnimation's own surfaces, QSEED3 register semantics (bilinear, alpha bits, PE registers), LM border write (BIT6 flush), EE ownership of the WLED APIDs, and the read of the ABL-owned context banks at `sweetfb_smmu=2`.
 
 
+## 5. Direct scanout at 60 Hz (`sweetfb_direct=1`) - patches 0210, 0211, 0212
+
+**Not booted.** Compile-checked with `tools/xnu-cc.py` against the 11215 CI buildtree. The pieces already existed (0126 VIG0/QSEED3 canvas scaler, 0127 low-pool zero-copy); these patches measure them, make them the default shape of a 60 Hz GPU path and remove the CPU work that is no longer needed.
+
+| boot-arg | meaning |
+|---|---|
+| `sweetfb_direct=1` (default 0) | implies `sweetfb_hw=1`, page flipping and `sweetfb_zc=1`; a swap is scanned in place as soon as it arrives (below). Any frame that cannot be scanned is copied, per frame, at the `sweetfb_hz` rate. `sweetfb_vsync=1` is ignored (the vsync timer stays at 60 Hz) |
+| `sweetfb_hz=60` | 60 = copy (fallback) frames every vsync tick; with `sweetfb_direct=0` this is the copy path at 60 Hz |
+| `sweetfb_zcclean=0/1/2` | cache clean of a scanned surface: 0 never, 1 always (0127 behaviour, default without direct), 2 only frames the GPU did not announce through BO_SYNC (default with direct) |
+| `sweetfb_statlog=N` | seconds between `SWEET FB: stats ...` log lines (default 10, 0 = sysctl only) |
+
+### 5.1 Design
+
+1. `swap()` (IOMFB SwapEnd) records the frame as before (holds the surfaces in use, counts `swaps`, counts `coalesced` when it replaces a frame that never reached the panel) and, with `fEarly` (zero-copy armed and the MDP SMMU streams verified bypass), arms `fSwapTimer`.
+2. `swapFired` runs on the framebuffer work loop (same loop as the vsync timer, so scan state has one owner and needs no new lock). It takes the pending frame and calls `zcPresent`: one full-canvas layer in a low-pool surface -> `scanAddr` = write `SRC0_ADDR`/`YSTRIDE0` of VIG0, then `CTL0 FLUSH`; the MDP latches both at its next panel vsync. If `zcPresent` declines (several layers, surface not pooled, pool full, SMMU not bypass, 4 frames still waiting for a latch) the frame goes back to pending unless a newer swap arrived, and the vsync tick copies it exactly as before (per frame fallback; nothing about the pipe setup changes for the copy: `scanTo`).
+3. No 30 Hz throttle on that path: it runs once per swap, i.e. at the rate backboardd presents (display link = the 16667 us vsync timer). Pending-latch bookkeeping is unchanged: the in-use hold (state page +0x18) and the reference of every scanned surface last until the MDP latched a later frame (`zcPoll`), so CoreAnimation/the GPU render into another surface of its pool and the pool cannot recycle the one on the panel.
+4. Surfaces: backboardd's 1125x2436 BGRA IOSurfaces are created by our IOSurface stand-in; `sweet_surface_try_pool` (0127) already puts every canvas-sized BGRA surface with a 64-byte row stride (4544 B at @3x) into the contiguous low pool (below 4 GiB, `SRC0_ADDR` is 32 bit). The GPU blit (patch 0182 SURFACE_BO) maps exactly those pages.
+5. Crop/scale: the pipe is programmed once (`hwProgram`) with SRC 1125x2436 -> 1037x2246 at x=21 (`sweetfb_scale=1` fit, aspect kept, black border from the mixer) through the QSEED3 scaler; that is the same rectangle the CPU scaler and touch mapping use, so direct and copy frames are pixel-compatible.
+
+### 5.2 MDP registers (offsets from 0x0ae00000; reimplemented from the Linux sources, not copied; the register names are from `dpu_hw_sspp.c`, `dpu_hw_util.c`, `dpu_hw_ctl.c` of Linux drivers/gpu/drm/msm/disp/dpu1 and the older `mdp5_plane.c`/`mdp5_ctl.c` of disp/mdp5; offsets recalled from those files, not re-checked against hardware)
+
+| register | use | Linux counterpart |
+|---|---|---|
+| VIG0 `+0x5000`: `SRC_SIZE` 0x00, `SRC_XY` 0x08, `OUT_SIZE` 0x0c, `OUT_XY` 0x10 | once: canvas -> panel rectangle | `dpu_hw_sspp_setup_rects` |
+| VIG0 `SRC0_ADDR` 0x14, `SRC_YSTRIDE0` 0x24 | **per frame**: physical address (offset included) and stride of the swapped surface | `dpu_hw_sspp_setup_sourceaddress` (stride in `dpu_hw_sspp_setup_rects`); mdp5 `REG_MDP5_PIPE_SRC0_ADDR`/`SRC_STRIDE_A` |
+| VIG0 `PE` 0x100..0x128 | once, zero extension, REQ_PIXELS = source size | `dpu_hw_sspp_setup_pe_config` |
+| VIG0 `+0xa00` QSEED3: `OP_MODE` 0x04, `PHASE_STEP_Y_H/V` 0x10/0x14, `PRELOAD` 0x20, `SRC_SIZE_Y_RGB_A` 0x40, `DST_SIZE` 0x48, `PHASE_INIT` 0x90.. | once, bilinear (0129) | `dpu_hw_setup_scaler3`, `_dpu_plane_setup_scaler3` |
+| `CTL0 +0x2000`, `FLUSH` +0x18: VIG0 bit 0 | CTL bit 17, per frame, after the address writes | `dpu_hw_ctl_update_pending_flush_sspp`, `dpu_hw_ctl_trigger_flush` |
+
+Flip on vsync: in video mode the timing generator free-runs and the flush bits are consumed at the next frame start, so writing address + FLUSH from the swap path is the flip; the "latched" state is the flush bits reading back 0 (polled, `zcPoll` per tick and `waitLatch` before a buffer is reused, the same polling `sweetfb_vsync` mode used). A vsync interrupt (INTF vsync, `dpu_hw_intr`) is not needed for correctness and not wired. `scan_replaced` counts frames whose address was overwritten before the previous one was latched (never shown).
+
+Pipe choice: VIG0 stays (the only pipe with QSEED3, and ABL already scans it). A DMA pipe cannot scale; it would only be an option for a canvas equal to the panel (the @3x surface is wider, so no).
+
+### 5.3 SMMU and contiguity
+
+Live DT (`dtb/beryllium/live.dts`): mdss `iommus = <&apps_smmu 0x880 0x8>, <&apps_smmu 0xc80 0x8>` (`qcom,iommu-earlymap`, two streams, mask 8). The question is whether ABL left them in bypass or in a translating context bank that only maps the splash region. `sweet_smmu_probe_sid` (read-only SMR/S2CR scan, boot-arg path of 0126/0127) answers it at boot; the result is in the log (`MDP SMMU streams 0x880 -> N, 0xc80 -> N`) and in `kern.sweet_fb` (`smmu=bypass|translate-or-unknown|untested`). Direct scanout only arms when both are bypass (IOVA = PA); otherwise `mode=copy` and every frame is copied (the safe outcome; `sweetfb_zcforce=1` stays a one-shot experiment). A translated MDP would need a context-bank mapping of the pool (per-frame IOVA window): not implemented, switching a live scanning stream is the risky part. Contiguity is by construction (pool block), no IOMMU scatter-gather.
+
+### 5.4 Cache coherence (0212)
+
+* GPU side: the A630 SMMU context (`MAIR0_CB`, PTE attr 0) maps non-cacheable and the GPU's own caches are flushed by the fence/CACHE_FLUSH events of the submit; the GPU writes DRAM without snooping the CPU.
+* MDP side: reads DRAM, never the CPU caches.
+* So the only CPU cache hazard is a **dirty CPU line** that is evicted later over a GPU-written frame (or a stale line the CPU later reads). 0212 removes that hazard once, at allocation: after the zero fill of a pool surface the whole block is cleaned+invalidated (`dc civac`, one time per surface, ~11 MB).
+* BO_SYNC (`SweetAdrenoUserClient::boSync`, 0182: clean+invalidate of the whole surface after every blit, an 11 MB walk per frame) now only counts the GPU write for a pool surface that has already been scanned in place and returns; the first blit of each surface still does the full sync. `sweetfb_zcclean=1` restores the old behaviour.
+* The framebuffer's per-frame `dc cvac` over the canvas (0127) is skipped when the GPU wrote the surface since the last scan (`gpuBlits != gpuBlitsSeen`), and still done for frames nobody announced (CPU-drawn CoreAnimation, mode 2). `kern.sweet_fb` shows `cleans` / `clean_skips` / `clean_us`.
+* Cost of this choice: a CPU reader of a scanned surface (a screenshot taken through the CPU mapping) can see stale lines. The display path itself does not read through the CPU.
+
+### 5.5 `sysctl kern.sweet_fb`
+
+One line, `key=value` words, refreshed about once per second (`sweet_fb v1 mode=off` before the framebuffer exists). Totals since boot plus `_s` rates over the last window (x100 fixed point, e.g. `swaps_s=58.30`):
+
+`mode` (direct | zc | copy: what is armed), `hz`, `flushticks` (vsync ticks per copied frame), `hw`, `flip`, `smmu`, `clean` (never|always|auto), `up_s`, `win_ms`, `swaps`, `swaps_s`, `coalesced`, `coalesced_s` (swaps that replaced an unpresented frame: dropped by the pacing), `zc_frames`, `zc_s`, `copy_frames`, `copy_s`, `scan_replaced`, `scan_replaced_s`, `copy_us` (average CPU time of a copied frame, latch waits excluded), `copy_us_max` (window), `zc_us`, `zc_us_max` (cache clean + register programming of a scanned frame), `clean_us`, `cleans`, `clean_skips`, `latch_waits`, `latch_wait_us`, `latch_timeouts`, `vsync_s`, `pool_used`, `pool_total`, `pool_surfaces`, `pool_fallbacks`. Readers must ignore unknown keys. The same line is logged as `SWEET FB: stats ...` every `sweetfb_statlog` seconds.
+
+### 5.6 What to expect (estimates, not measured)
+
+* Copy path (`sweetfb_direct=0 sweetfb_hz=60`): `copy_us` about 5-10 ms per 10.7 MiB frame through write-combined stores (0127's estimate), i.e. 30-60 percent of one A75 at 60 swaps/s; if the CPU cannot keep up `coalesced_s` grows (frames dropped) and `swaps_s` stays near what backboardd manages.
+* Direct (`sweetfb_direct=1`): `copy_frames` near 0, `zc_s` = `swaps_s` up to 60, `zc_us` tens of microseconds on GPU frames (about a dozen MMIO writes and two `dsb`), 2-4 ms only for a frame that needed the clean; `clean_skips` tracks `zc_frames`. `coalesced_s` should be near 0 below 60 swaps/s, `scan_replaced_s` near 0 unless backboardd swaps twice within one panel frame. `latch_waits` should stay near 0.
+* Panel: Tianma NT36672A video mode, `timing@0` in the live DT: 1080x2246, 60 fps (`qcom,mdss-dsi-panel-framerate = <0x3c>`), h porch 40/44/20, v porch 15/8/2; the vsync timer period (16667 us) matches it. The software timer and the hardware frame start are not phase locked; with scanning on swap this costs at most one frame of latency drift, never a torn frame (address and flush are latched together).
+
+### 5.7 Test order and risks
+
+1. `sweetfb_direct=0 sweetfb_hz=60` first: confirms the stats (`copy_us`, `coalesced_s`) and the hw scaler path from 0126/0129 at 60 Hz.
+2. `sweetfb_direct=1`: read `smmu=` and the `low pool` lines first. `mode=copy` with `smmu=translate-or-unknown` means direct is not possible on this ABL (safe, copy at `sweetfb_hz`).
+3. Risks: a wrong pipe setup can blank the screen. The pipe is only ever pointed at memory that passed every `zcPresent` check (pooled, below 4 GiB, 64-byte aligned, block long enough) and the SMMU gate; the panic hook and `blackout` restore ABL's registers and frame exactly as for 0126. Unverified on hardware: the pool window being free of TZ/hyp protection, MDP fetch from the pool, QSEED3 downscale underflow at the ABL's MDP clock (1125 source pixels per 1037 output pixels, 4.2 percent more fetch per line than 1080), write-back mapping of the pool, stale CPU lines in screenshots, and the GPU's own cache flush being complete before the swap (the shim waits for the fence in `st_finish` before BO_SYNC). Reverts: `sweetfb_direct` is off by default; `sweetfb_zcclean=1` restores per-frame maintenance.
+
 ## 0129: QSEED3 filter fix (image quality)
 
 Patch `xnu/patches/0129-beryllium-fb-scaler-quality.patch` (diff against `research/bt127/xnu` = 0001-0128; `git apply --check` verified; `SweetFramebuffer.cpp` compiles). Not booted.
