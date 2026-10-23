@@ -82,33 +82,64 @@ python3 tools/extract-dtb.py backup/boot.img dtb/beryllium --live dtb/beryllium/
 
 Without `--live`, it lists every blob (model, `qcom,msm-id`, `qcom,board-id`) and you choose with `--pick N`. `dtb/` and `backup/` are git-ignored, because they hold your phone's serial and calibration data. Enxerto's `build.sh` reads `dtb/beryllium/dtb`, or takes the path from `DTB=`.
 
-**1. Heartwood.** The kernel builds on GitHub's macOS runners:
+**1. Heartwood (the kernel).** `develop` builds xnu-11215 (`xnu/patches-11215/`) on GitHub's macOS runners:
 
 ```sh
 gh workflow run xnu.yml -R ry-diffusion/Bergamota -r develop
-gh run download -R ry-diffusion/Bergamota -n xnu-kernel -D xnu/out-develop
+gh run list -R ry-diffusion/Bergamota -b develop -L 1                       # wait for it, ~20 min
+gh run download <RUN_ID> -R ry-diffusion/Bergamota -n xnu-kernel -D xnu/out-develop
 ```
 
-**2. Renegade.** Download the iOS 18.7.8 root and build the image. No sudo is needed, but you need about 20 GB free:
+For a local single-file compile check before spending a CI run, see `tools/xnu-cc.py` and `docs/XNU11215_MIGRATION.md`.
+
+**2. The Apple Device Tree.** Our ADT carries the iPhone identity (`/product`, copied from the real iPhone X device tree) and the Poco F1 hardware:
 
 ```sh
-tools/renegade/renegade fetch        # root dmg + SystemOS/AppOS cryptexes, decrypted
-tools/renegade/renegade root         # -> research/ios18/ios18-root-full.simg
+python3 tools/remotezip.py IPSW_URL DeviceTree.d22ap.im4p research/ipsw-x/dt      # any iPhone X (iPhone10,3) IPSW
+ipsw img4 im4p extract research/ipsw-x/dt/Firmware/all_flash/DeviceTree.d22ap.im4p -o research/ipsw-x/d22ap.adt
+python3 tools/mkadt.py enxerto/out/beryllium-hi-3x.adt --board beryllium --highmem --display-scale 3
 ```
 
-**3. Enxerto.** Pack the kernel, the device tree and the boot-args into a boot image:
+**2b. GPU firmware (optional, for the Adreno 630).** It goes into the ADT, so nothing is written to the iOS root. It is Qualcomm's, so keep it out of git:
 
 ```sh
-tools/renegade/renegade boot xnu/out-develop/kernel.development.sweet   # -> research/ios18/enxerto-boot-ios18full.img
+# a630_gmu.bin + a630_sqe.fw from linux-firmware (qcom/), the zap from sdm845-mainline/firmware-xiaomi-beryllium
+python3 tools/zap-split.py a630_zap.mbn research/gpu-fw/zap
+python3 tools/adt-gpufw.py enxerto/out/beryllium-hi-3x.adt enxerto/out/beryllium-hi-3x-gpu.adt \
+    --fw research/gpu-fw/dl --zap research/gpu-fw/zap
 ```
 
-**4. Bergamota.** Open `apps/Bergamota/Bergamota.xcodeproj` and run it. Add the root image (to `userdata`) and the boot image to the queue. When the phone shows up in fastboot, Bergamota flashes and boots it, with a progress bar and ETA. The same queue works from the terminal:
+**3. Renegade (the iOS root).** Download the iOS 18.7.8 root and build the image. No sudo is needed, but you need about 20 GB free. Renegade bakes everything in: app registration on first boot, the PosterBoard fix, the Bluetooth setup, Procursus + Sileo + TrollStore, the default wallpaper, and the `bglrender` launcher (see `tools/renegade/README.md`):
 
 ```sh
-apps/Bergamota/scripts/bergamota flash-userdata research/ios18/ios18-root-full.simg --then-boot enxerto/out/enxerto-boot-N.img
+tools/sweetnet/build.sh               # the small on-device tools Renegade installs
+tools/renegade/renegade fetch         # root dmg + SystemOS/AppOS cryptexes, decrypted
+tools/renegade/renegade root          # -> research/ios18/ios18-root-full.simg
+tools/renegade/renegade update research/ios18/ios18-root-full.simg   # later: re-apply the tweaks in place
 ```
 
-The first boot takes a few minutes. Then `ssh root@192.168.7.2`.
+**4. Enxerto (the boot image).** Pack the kernel, the ADT and the boot-args into an Enxerto boot image. It also takes the Apple logo for the boot screen from your root image, so it is never committed:
+
+```sh
+# plain iOS
+DTB=dtb/beryllium/dtb tools/renegade/mkboot-full.sh xnu/out-develop/kernel.development.sweet \
+    enxerto/out/beryllium-hi-3x.adt enxerto/out/enxerto-boot-develop.img
+# with the GPU kept up (sweetgpu=8) and its firmware ADT, as in our tests
+CMDLINE="$(sed -n 's/^CMDLINE=${CMDLINE:-"\(.*\)"}$/\1/p' tools/renegade/mkboot-full.sh) sweetgpu=8 ufslogsecs=1" \
+DTB=dtb/beryllium/dtb tools/renegade/mkboot-full.sh xnu/out-develop/kernel.development.sweet \
+    enxerto/out/beryllium-hi-3x-gpu.adt enxerto/out/enxerto-boot-develop-gpu.img
+```
+
+**5. Flash and boot with Bergamota.** Open `apps/Bergamota/Bergamota.xcodeproj` and run it. Bergamota fastboot (`enxerto/out/bergamota-fastboot.img`, built by `enxerto/build.sh`) can flash `userdata`, `boot` and `logo` itself. It flashes `userdata` as a **delta**: it hashes what is on the phone and sends only the changed blocks:
+
+```sh
+fastboot boot enxerto/out/bergamota-fastboot.img                                  # from ABL fastboot (Power + Volume Down)
+python3 tools/bergamota-flash.py flash userdata research/ios18/ios18-root-full.simg   # delta, verified
+python3 tools/bergamota-flash.py flash boot enxerto/out/enxerto-boot-develop-gpu.img  # optional: make it the cold-boot image
+apps/Bergamota/scripts/bergamota enqueue enxerto/out/enxerto-boot-develop-gpu.img     # or just RAM-boot it from the queue
+```
+
+The first boot takes a few minutes while the first-boot job registers the apps. Then `ssh root@192.168.7.2`. On iOS with an xnu-11215 kernel, `sweetreboot fastboot` and `sweetreboot bergamota` get you back to fastboot without the buttons.
 
 ## Troubleshooting
 
@@ -146,6 +177,8 @@ It does this for every Mach-O in the root and for all of the dyld shared cache. 
 | `enxerto/` | Enxerto, the bare-metal bootloader (C + asm): loader, inflate, UFS, USB/DWC3, fastboot, PMIC, boot UI |
 | `xnu/patches-11215/` | Heartwood, the XNU patch series (xnu-11215), applied in order by `.github/workflows/xnu.yml`; `xnu/patches/` is the older xnu-8796 series |
 | `tools/renegade/` | Renegade: `pacstrip*`, `fips_rehmac`, root build, HFS+ and sparse-image tools, `dsctools` (shared-cache symbolication) |
+| `tools/adt-gpufw.py`, `zap-split.py` | GPU firmware into the ADT (`/sweet-gpu`); split a squashed `.mbn` into `.mdt` + `.bNN` |
+| `tools/bergamota-flash.py` | Delta/full flashing of userdata, boot and logo through Bergamota fastboot |
 | `tools/extract-dtb.py` | Extracts the stock DTBs from a boot.img (also the Poco F1's appended Image.gz-dtb) and picks yours |
 | `tools/mkadt.py`, `mkpayload.py` | Apple Device Tree generator; kernel + ADT + boot-args payload packer |
 | `tools/sweetnet/` | Small on-device tools (`sweetps`, `sweetprefs`, `sweetuicache`, …) |
