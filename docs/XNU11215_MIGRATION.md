@@ -88,6 +88,7 @@ diagnostics kept in the same pass, **B** device drivers (display, touch, keys, b
 | 0142 | `hw.optional.arm.caps`, FEAT_SME... sysctls | C | native |
 | 0143 | `kern.exclaves_status/boot_stage`, osenvironment | C | native (non-exclaves path returns NOT_SUPPORTED) |
 | 0154 | watchport count 128 | C | native (`TASK_MAX_WATCHPORT_COUNT 128`) |
+| 0171 | new: SweetCPU for 11215: `processor_start` from a kext is a no-op returning KERN_FAILURE (hardware boot 1 panicked `processor_start failed: 5`); `ml_processor_register()` now calls `processor_boot()` itself, so secondaries are registered only after the boot CPU, startAll just waits, boot-CPU `initCPU` waits for its self-IPI and calls `ml_cpu_up()` like AppleARMSMP | A | new |
 | 0170 | new: `vm_kern_xnu.h` / `vm_map_internal.h` includes for driver files | - | new |
 
 ## 4. Boot image
