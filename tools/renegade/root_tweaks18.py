@@ -531,6 +531,8 @@ def event_timing(root):
 #
 # All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER) or the
 # --no-<feature> flags of `renegade root` and `renegade update`, which set the same variables.
+# Opt-in (off by default): RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd, cryptexd(): fallback that removes the
+# crash-looping cryptexd job.
 # Every function is idempotent: `renegade update` runs them again on a finished image.
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -745,6 +747,8 @@ while [ $n -lt 20 ]; do
 	sleep 10
 done
 echo "sweetposterset rc=$ok"
+# "already selected" counts as done (rc 0); drop duplicate Gradient configurations an older tool left behind
+[ $ok = 0 ] && /usr/local/bin/sweetposterset --cleanup com.apple.GradientPoster.GradientPosterExtension darkBlue.preset1
 /usr/local/bin/sweeticonstyle default || ok=1
 echo $ok >/private/var/tmp/renegade-poster.rc
 EOS
@@ -846,6 +850,33 @@ def jailbreak_userland(root, owners_out, force=False, prestaged=False):
     return n
 
 
+CRYPTEXD_LABEL = 'com.apple.security.cryptexd'
+
+
+def cryptexd(root):
+    """OPT-IN fallback (RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd): cryptexd cannot personalize or graft cryptexes
+    without Apple's secure boot and traps (sig 5) in a respawn loop; Renegade has already merged the cryptex contents
+    into the root. Removes its job from the launchd.plist cache (the one launchd 18 reads) and moves
+    /System/Library/LaunchDaemons/com.apple.security.cryptexd.plist to cryptexd.plist.renegade-disabled. The real fix
+    (stubbing the trap) lives on the cryptexd branch; this is only the fallback."""
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = load(path)
+    jobs = plist['LaunchDaemons']
+    gone = [k for k, j in jobs.items() if j.get('Label') == CRYPTEXD_LABEL]
+    for k in gone:
+        del jobs[k]
+    if gone:
+        save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    jp = os.path.join(root, 'System/Library/LaunchDaemons/%s.plist' % CRYPTEXD_LABEL)
+    moved = os.path.exists(jp)
+    if moved:
+        os.replace(jp, jp + '.renegade-disabled')
+        os.chown(jp + '.renegade-disabled', 0, 0)
+    print('cryptexd: %d launchd.plist job(s) removed, LaunchDaemons plist %s' % (
+        len(gone), 'moved aside' if moved else 'not present (already disabled)'))
+
+
 def auto(root):
     """The Renegade auto-fixes, in build order (the jb payload is copied by jailbreak_userland, it needs a staging
     step with downloads and an owner map)."""
@@ -855,6 +886,8 @@ def auto(root):
     if enabled('posterboard'):
         posterboard(root)
     firstboot(root, appreg=enabled('appreg'), jb=enabled('jb'), wallpaper=enabled('wallpaper'))
+    if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':      # opt-in, off by default
+        cryptexd(root)
 
 
 def main():

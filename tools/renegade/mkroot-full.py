@@ -740,7 +740,10 @@ def main():
                      ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)'),
                      ('wallpaper', 'default Gradient wallpaper and icon style at first boot')):
         ap.add_argument('--no-' + f_, action='store_true', help='opt out: ' + what + ' (same as RENEGADE_NO_' + f_.upper() + '=1)')
+    ap.add_argument('--disable-cryptexd', action='store_true', help='OPT-IN fallback: remove the crash-looping cryptexd job (same as RENEGADE_DISABLE_CRYPTEXD=1)')
     a = ap.parse_args()
+    if a.disable_cryptexd:
+        os.environ['RENEGADE_DISABLE_CRYPTEXD'] = '1'
     for f_ in ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper'):
         if getattr(a, 'no_' + f_):
             os.environ['RENEGADE_NO_' + f_.upper()] = '1'

@@ -206,10 +206,13 @@ def main():
                      ('jb', 'jailbreak userland (Procursus rootless, Sileo, TrollStore)'),
                      ('wallpaper', 'default Gradient wallpaper and icon style at first boot')):
         ap.add_argument('--no-' + f_, action='store_true', help='skip: ' + what)
+    ap.add_argument('--disable-cryptexd', action='store_true', help='OPT-IN fallback: remove the crash-looping cryptexd job (same as RENEGADE_DISABLE_CRYPTEXD=1)')
     ap.add_argument('--force-jb', action='store_true', help='reinstall /private/var/jb even when it is at the pinned versions')
     ap.add_argument('--mnt', help='mount point (default: IMAGE.mnt next to the image)')
     ap.add_argument('--check', action='store_true', help='preflight only (read only), consume nothing')
     a = ap.parse_args()
+    if a.disable_cryptexd:
+        os.environ['RENEGADE_DISABLE_CRYPTEXD'] = '1'
     rt_features = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper')
     for f_ in rt_features:
         if getattr(a, 'no_' + f_):
@@ -295,6 +298,8 @@ def main():
         if feats['posterboard']:
             rt.posterboard(mnt)
         rt.firstboot(mnt, appreg=feats['appreg'], jb=feats['jb'], wallpaper=feats['wallpaper'])
+        if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':
+            rt.cryptexd(mnt)
         jb_table = {}
         if feats['jb']:
             rt.jailbreak_userland(mnt, jb_owners, force=a.force_jb, prestaged=jb_prestaged)
