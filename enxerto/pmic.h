@@ -7,9 +7,10 @@
  * PMIC arbiter v5, apps EE observer reads, MMU-off safe, aligned 32-bit MMIO, no interrupts.
  *
  * Everything is READ ONLY (battery fuel gauge + SCHG status on PMI8998 = SID 2, PM8998 PON =
- * SID 0) except the PMI8998 WLED backlight brightness (SID 3, peripheral 0xd9), which
- * pmic_wled_set() writes through the arbiter's write channel. No other write is reachable:
- * the write whitelist is the same five registers the kernel's backlight fade may touch.
+ * SID 0) except (a) the PMI8998 WLED backlight brightness (SID 3, peripheral 0xd9), which
+ * pmic_wled_set() writes through the arbiter's write channel (the five registers of the kernel's
+ * backlight fade) and (b) the seven SMB2 charger registers of the kernel's sweetcharger=2 control,
+ * through pmic_chg_write() (charger.c). No other write is reachable.
  */
 
 /* Charger state, from BATTERY_CHARGER_STATUS_1 + USBIN plug-in. */
@@ -48,3 +49,11 @@ int pmic_pon_reason(void);
 int pmic_wled_get(uint16_t v[2]);
 int pmic_wled_set(const uint16_t v[2]);	/* 0 = written, latched and read back, -1 = not (originals restored) */
 int pmic_wled_enabled(void);		/* MOD_EN bit 7 */
+
+/* SMB2 charger (SID 2): read any readable register (CHGR 0x10, USBIN 0x13, MISC 0x16, FG 0x40/0x41). */
+int pmic_chg_read(unsigned addr, uint8_t *v);
+/*
+ * Write one of exactly 0x1042 0x1061 0x1070 0x1340 0x1365 0x1366 0x1370 (see pmic.c), only through an
+ * APID the apps EE owns, then read it back. 0 = written and verified, -1 = refused / failed / mismatch.
+ */
+int pmic_chg_write(unsigned addr, uint8_t v);

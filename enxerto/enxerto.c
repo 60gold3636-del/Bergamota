@@ -14,6 +14,7 @@
 #include "loader.h"
 #include "bergamota.h"
 #include "charge_mode.h"
+#include "charger.h"
 #include "usb_power.h"
 #include "ufs.h"
 #include "fdt.h"
@@ -376,6 +377,12 @@ static uint32_t to_us(uint64_t ticks)
 void enxerto_main(uint64_t dtb)
 {
 	struct mmu_info mi;
+
+	/*
+	 * Fast charging from the very first moment (charger.c): ABL leaves the PMI8998 on its slow defaults.
+	 * Re-checked from the fastboot / charging loops, handed back to the kernel in loader_boot_payload.
+	 */
+	enxerto_charger_init(dtb);
 
 	/*
 	 * Off-mode charging (docs/BERGAMOTA_CHARGE.md): ABL's charger path adds androidboot.mode=charger.

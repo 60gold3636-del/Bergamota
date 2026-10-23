@@ -102,7 +102,8 @@ static void fb_drop_session(struct fb *fb)
  * Variable table as code: a static array of string pointers would need absolute
  * relocations, and the shim image runs wherever ABL put it (build.sh rejects ABS64).
  */
-#define FB_NVARS 13
+#define FB_NVARS 15
+#define FB_VBUF 48	/* value buffer of fb_getvar */
 
 static const char *fb_var(struct fb *fb, unsigned i, const char **name, char *buf)
 {
@@ -125,6 +126,14 @@ static const char *fb_var(struct fb *fb, unsigned i, const char **name, char *bu
 	case 10: *name = "verify"; return fb->verify ? "on" : "off";
 	case 11: *name = "slot-count"; return "0";	/* the Poco F1 is not A/B */
 	case 12: *name = "usb-speed"; return fb->p->usb_speed ? fb->p->usb_speed(fb->p->ctx) : "unknown";
+	case 13:
+	case 14:
+		*name = i == 13 ? "bergamota-charger" : "bergamota-charger-raw";
+		buf[0] = 0;
+		if (!fb->p->charger)
+			return "unavailable";
+		fb->p->charger(fb->p->ctx, i == 14, buf, FB_VBUF);
+		return buf[0] ? buf : "unavailable";
 	}
 	return 0;
 }
@@ -181,7 +190,7 @@ static void fb_getvar_part(struct fb *fb, const char *want)
 
 static void fb_getvar(struct fb *fb, const char *want)
 {
-	char vbuf[24], line[FB_PKT];
+	char vbuf[FB_VBUF], line[FB_PKT];
 	const char *name;
 
 	if (fb_eq(want, "all")) {

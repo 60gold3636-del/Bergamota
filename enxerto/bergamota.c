@@ -18,6 +18,7 @@
 #include "bergamota.h"
 #include "bootui.h"
 #include "cache.h"
+#include "charger.h"
 #include "console.h"
 #include "fastboot.h"
 #include "fbui.h"
@@ -357,6 +358,12 @@ static void ui_update(void)
 		sb_str(&bd, "plug in the USB cable");
 	}
 	fbui_status(text, detail, permille, fg);
+	{
+		static char chg[48];
+
+		enxerto_charger_line(chg, sizeof chg);	/* cached text, no hardware access */
+		fbui_charge(chg);
+	}
 	ui_diag(st, st != USB_ST_CONFIGURED && now - ui_start_ms > 20000);
 }
 
@@ -367,10 +374,21 @@ static void ui_tick(void)
 	if (t - ui_last_ms < 250)
 		return;
 	ui_last_ms = t;
+	enxerto_charger_tick(0);	/* re-plug / APSD / temperature re-check, at most every 5 s */
 	ui_update();
 }
 
 /* ---- transport + platform callbacks ---- */
+
+static void p_charger(void *ctx, int raw, char *buf, unsigned n)
+{
+	(void)ctx;
+	enxerto_charger_tick(1);	/* a getvar answers with fresh registers */
+	if (raw)
+		enxerto_charger_raw(buf, n);
+	else
+		enxerto_charger_status(buf, n);
+}
 
 static int t_recv_cmd(void *ctx, char *buf, unsigned max)
 {
@@ -829,6 +847,7 @@ const char *bergamota_fastboot(uintptr_t dtb)
 	pl.set_ufs_depth = p_set_ufs_depth;
 	pl.gpt_info = p_gpt_info;
 	pl.usb_speed = p_usb_speed;
+	pl.charger = p_charger;
 	fb_init(&fb, &tr, &pl);
 	g_fb = &fb;
 	ui_last_ms = ms_now();

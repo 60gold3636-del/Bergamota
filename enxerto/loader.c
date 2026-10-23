@@ -14,6 +14,7 @@
  */
 #include <stdint.h>
 #include "bootui.h"
+#include "charger.h"
 #include "console.h"
 #include "fdt.h"
 #include "inflate.h"
@@ -281,6 +282,7 @@ const char *loader_boot_payload(uintptr_t rd_start, uintptr_t rd_end, int verify
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	con_hex("JUMP", entry_pa);
 	bootui_progress(1000, "STARTING IOS");
+	enxerto_charger_handoff();	/* the kernel's sweetcharger=2 finds the charger registers as ABL left them */
 	con_str("XNU", "jumping (fbcon clears screen)");
 	bootui_handoff();
 

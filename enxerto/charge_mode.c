@@ -9,6 +9,7 @@
 #include "bergamota.h"
 #include "charge.h"
 #include "charge_mode.h"
+#include "charger.h"
 #include "console.h"
 #include "fbui.h"
 #include "fdt.h"
@@ -283,6 +284,7 @@ void charge_run(uintptr_t dtb)
 
 		if (t - last_batt >= BATT_MS) {
 			last_batt = t;
+			enxerto_charger_tick(0);
 			refresh();
 		}
 		if (screen_on && keys_ok && t - last_input >= IDLE_MS)
