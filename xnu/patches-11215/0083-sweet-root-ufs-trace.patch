@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index b226dd54ed53465591d0d1d83788ae016dfa4250..5b1b0e95c697bf87cacf16a0c56ff0ae4de6ce35 100644
+index 32c3f697dc14b3c3175dbb8c5225921ad79ebd19..c6f584d8b4ddc0e62265db7296ac4c589aa2732f 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -603,7 +603,11 @@ sweet_ufs_init(void)
+@@ -604,7 +604,11 @@ sweet_ufs_init(void)
  	su.cache = (cache == 1);
  	su.wait = (wait == 1);
  
@@ -14,7 +14,7 @@ index b226dd54ed53465591d0d1d83788ae016dfa4250..5b1b0e95c697bf87cacf16a0c56ff0ae
  	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
  	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
  		printf("SWEET UFS: no contiguous DMA memory\n");
-@@ -614,6 +618,7 @@ sweet_ufs_init(void)
+@@ -615,6 +619,7 @@ sweet_ufs_init(void)
  		return ENOMEM;
  	}
  	su.dma_pa = ptoa_64(pn);
@@ -22,7 +22,7 @@ index b226dd54ed53465591d0d1d83788ae016dfa4250..5b1b0e95c697bf87cacf16a0c56ff0ae
  	su.lun = 0;
  	su.secsize = DEV_BSIZE;
  
-@@ -622,8 +627,10 @@ sweet_ufs_init(void)
+@@ -623,8 +628,10 @@ sweet_ufs_init(void)
  	if (!error) {
  		static const uint8_t tur[6] = { 0x00 };
  		/* The first command after the bootloader may report a unit attention. */

@@ -12,10 +12,10 @@ index e45150e75edd4a4a640affb2754f87850f5c5ec7..fd2c8a8064c795eea0c8caf6a7324dbf
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8f200c644b30c3b150564165255ea42cc83d1eb9
+index 0000000000000000000000000000000000000000..9f4665b2e5a3e2975b837c461ad0df20133b4ef9
 --- /dev/null
 +++ b/bsd/dev/sweet_ufs.c
-@@ -0,0 +1,536 @@
+@@ -0,0 +1,537 @@
 +/*
 + * SWEET internal UFS root device (read-only).
 + *
@@ -48,6 +48,7 @@ index 0000000000000000000000000000000000000000..8f200c644b30c3b150564165255ea42c
 +#include <arm/caches_internal.h>
 +#include <vm/pmap.h>
 +#include <vm/vm_kern.h>
++#include <vm/vm_kern_xnu.h>
 +#include <pexpert/pexpert.h>
 +#include <pexpert/device_tree.h>
 +#include <libkern/libkern.h>

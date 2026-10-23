@@ -40,10 +40,10 @@ index 597256bd7c560dfcce2ce0f95e7834d147d55df2..3d9c06a5b0d33107a60f46bc9a8089ce
  sweet_board_is(const char *want)
  {
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 5b1b0e95c697bf87cacf16a0c56ff0ae4de6ce35..125c2b128a79ea8a279f44abb432f4521f9b2170 100644
+index c6f584d8b4ddc0e62265db7296ac4c589aa2732f..53292208e1f24711aa8cba50ebb32bd68c8f6bb3 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -40,6 +40,7 @@
+@@ -41,6 +41,7 @@
  #include <libkern/libkern.h>
  #include <machine/atomic.h>
  
@@ -51,7 +51,7 @@ index 5b1b0e95c697bf87cacf16a0c56ff0ae4de6ce35..125c2b128a79ea8a279f44abb432f452
  extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
  /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
  extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-@@ -105,6 +106,7 @@ static struct {
+@@ -106,6 +107,7 @@ static struct {
  	bool writable;                          /* boot-arg ufsrw=1 */
  	bool cache;                             /* boot-arg ufscache=1 */
  	bool wait;                              /* boot-arg ufswait=1 */
@@ -59,7 +59,7 @@ index 5b1b0e95c697bf87cacf16a0c56ff0ae4de6ce35..125c2b128a79ea8a279f44abb432f452
  	int bmajor, cmajor;
  	dev_t bdev;
  	bool ready;
-@@ -125,15 +127,26 @@ ufs_wr(uint32_t off, uint32_t v)
+@@ -126,15 +128,26 @@ ufs_wr(uint32_t off, uint32_t v)
  	*(volatile uint32_t *)(su.regs + off) = v;
  }
  
@@ -86,7 +86,7 @@ index 5b1b0e95c697bf87cacf16a0c56ff0ae4de6ce35..125c2b128a79ea8a279f44abb432f452
  	clean_dcache64((addr64_t)(su.dma_pa + off), len, TRUE);
  }
  
-@@ -602,6 +615,9 @@ sweet_ufs_init(void)
+@@ -603,6 +616,9 @@ sweet_ufs_init(void)
  	PE_parse_boot_argn("ufswait", &wait, sizeof(wait));
  	su.cache = (cache == 1);
  	su.wait = (wait == 1);

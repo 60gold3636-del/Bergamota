@@ -45,7 +45,7 @@ index 58f43d6830b4c8540d027bc8b0c627675e50a5bb..b92e609a3f493ce5387e2629e231b28a
  		args->scalarOutputCount = 0;
  		ret = sweet_aks_device_state(args);
 diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
-index b724c1c29099b286691a9dcde64c2e9e119d5ae8..dc0cfcfab0d17794d6721496ff045d32b5cc70de 100644
+index b724c1c29099b286691a9dcde64c2e9e119d5ae8..73a2aaa1a7d37d4c91c2152b6c856bfbfe192005 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
 @@ -908,6 +908,60 @@ exception_triage(
@@ -53,7 +53,7 @@ index b724c1c29099b286691a9dcde64c2e9e119d5ae8..dc0cfcfab0d17794d6721496ff045d32
  }
  
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
-+#include <vm/vm_shared_region.h>
++#include <vm/vm_shared_region_xnu.h>
 +#include <arm/thread.h>
 +
 +/*
