@@ -384,7 +384,21 @@ class Linux(Backend):
         so one mount serves both the owner map and the copy."""
         if not self.dry:
             os.makedirs(mnt, exist_ok=True)
-        self.run(self.apfs_fuse_cmd(dmg, mnt), fake='')
+        r = self.run(self.apfs_fuse_cmd(dmg, mnt), fake='', check=False)
+        if r.returncode and not self.dry:
+            # apfs-fuse says nothing without -d: run it again with debug output so the reason shows
+            mounted = [l for l in open('/proc/mounts').read().splitlines() if f' {mnt} ' in l]
+            d = self.run(['apfs-fuse', '-d', '1'] + self.apfs_fuse_cmd(dmg, mnt)[1:], check=False, capture_output=True, text=True)
+            if d.returncode == 0:
+                pass                                   # the retry mounted it
+            else:
+                tail = '\n'.join(((d.stderr or '') + (d.stdout or '')).strip().splitlines()[-15:])
+                raise SystemExit(f'apfs-fuse could not mount {dmg} at {mnt} (exit {r.returncode}).\n'
+                                 + (f'{mnt} is still mounted from an earlier run: `umount -l {mnt}` (or fusermount3 -u) and retry.\n'
+                                    if mounted else '')
+                                 + f'apfs-fuse -d 1 says:\n{tail}\n'
+                                 'Check: /dev/fuse exists (modprobe fuse, package fuse3); a current apfs-fuse from git master; '
+                                 'RENEGADE_APFS_VOLUME=N if the container has several volumes.')
         if not self.dry:
             t0 = time.time()
             while not os.path.ismount(mnt):
