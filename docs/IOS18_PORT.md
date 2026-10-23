@@ -325,3 +325,7 @@ recomputes and stores the HMAC and refreshes the CodeDirectory page hashes of th
 No other Mach-O in the root has a `__fips_hmacs` section. Applied to the existing image (simg -> raw -> patch -> fsck -> simg), 0 wrong page hashes.
 Not verifiable offline: whether further POST steps fail (photo lacks `fipspost_post_ffdh` in the PASSED list; scrolled-off lines unknown).
 Fallback (not needed): `fips_mode` boot-arg only selects/forces-fail POST variants (bit 0x10 flips the computed MAC), there is no skip switch.
+
+## Boot logo: why iOS 18 shows no Apple logo phase (2026-10-23)
+
+backboardd draws the boot Apple logo itself (`BKBootUIPresenter` -> `BKBootUIOverlayVendor` -> `BKDisplayRenderOverlayAppleLogo`, ProgressUI `apple-logo-n84@2x~iphone.png`, unified log category `BootUI`) on iOS 16 and 18 alike, and our display path does present it. It stays up only until SpringBoard dismisses it (`Dismissing boot logo (pid)` / `First boot is finished`, 0.2-2 s after backboardd starts on 18; on 16 SpringBoard sat minutes in LaunchServices, which is why the logo seemed to last). On a real phone iBoot draws the long logo; here that phase (kernel + launchd, minutes before backboardd) showed the Enxerto Bergamota screen. `tools/mkapplelogo.py` (run by `mkboot-full.sh`, git-ignored `enxerto/applelogo.h`, `APPLE_LOGO=0` to skip) turns that screen into the Apple logo at "STARTING IOS", read from the iOS root at image build time.
