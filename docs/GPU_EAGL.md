@@ -1,4 +1,4 @@
-# GPU_EAGL: replacement OpenGLES.framework over Mesa (phases A + B of `METAL_ADRENO630.md`)
+# GPU_EAGL: replacement OpenGLES.framework over Mesa (phases A + B of `METAL_ADRENO630.md`; phase E software side at the end)
 
 Status 2026-10-23, branch `gpu-eagl`. Everything below marked **[phone]** was run on the Poco F1 (iOS 18.7.8 22H352 on Heartwood xnu-11215) with the test tool only;
 the system OpenGLES.framework was not touched and nothing runs inside backboardd yet.
@@ -226,3 +226,51 @@ Goal: let the live render server (backboardd, which draws SpringBoard) load the 
 4. **What the user will see:** at the moment of the restart the screen goes black/blank for a few seconds while backboardd and SpringBoard restart (same as a respring). Then either (a) the normal UI, drawn by softpipe: slow (hundreds of ms per frame, so visibly laggy animations), or (b) a black/frozen screen or a respring loop if CA's GLES path misbehaves; then after at most 3 minutes the dead-man switch restarts backboardd without injection and the software renderer UI returns. SSH is expected to keep working throughout (backboardd is not on the SSH path).
 5. **Undo by hand:** `ssh root@192.168.7.2 /var/root/gpu-eagl-inj/revert.sh` (or: delete the override plist / restore `<plist>.orig`, then `killall backboardd`); full cleanup: `rm -rf /var/root/gpu-eagl-inj`. If SSH is unavailable, a normal reboot loads the unmodified system (see item 3 for the volatile-override design).
 6. **Success criteria / data collected:** backboardd log lines with `EAGL(shim)` messages (`EAGL_SHIM_DEBUG=1` in the override), whether `Failed to initialize Metal or OpenGLES contexts!` disappears, whether the display shows content, frame time from the swap path. Abort criteria: respring loop, panic, or SSH loss.
+
+## CARenderer scenes after the orientation fixes (softpipe, phone, 2026-10-23, kernel stage 8)
+
+With the two shim fixes (no flip on sync for `invertedRender:YES`, flip on `texImageIOSurface:...invert:NO` upload) `eagl_ca_test` is **0 failed**: solid layers, CGImage layer (top green/bottom blue), IOSurface contents
+(top red/bottom green), shadow, gaussianBlur backdrop, colorSaturate, 300 layers. `eagl_test` 41/41. Frame times on a busy phone (other agents run on it), 256x256: solid 97 ms, image 108, IOSurface 42, shadow 117,
+blur 326, saturate 471, 300 layers 390 ms. These are the softpipe baseline for phase E.
+
+## Phase E, software side: freedreno (Adreno 630) under the same shim
+
+Status 2026-10-23: **builds on the Mac; screen creation and rendering on the GPU NOT yet run** (the kernel's user submissions did not execute when this was written: fence timeout; a hung submit marks the GPU lost and needs a reboot, so no
+freedreno run was made on the shared phone). The softpipe path with the new libOSMesa was re-tested on the phone (below).
+
+**Design (smallest working option):** no new frontend. The OSMesa frontend stays (it already drives `st_api` with our GLES context profile); only its screen changes.
+`osmesa_create_screen()` (targets/osmesa) first asks `sweet_hw_create_screen()` (new `targets/osmesa/sweet_hw.c`): unless `SWEET_GPU=0`, it opens the libdrm stand-in (`drmOpenWithType`) and creates the
+freedreno pipe_screen with `fd_drm_screen_create_renderonly(fd, NULL, config)`; any failure (no `SweetAdreno630`, screen creation failed) falls back to softpipe, so one libOSMesa serves both. `SWEET_GPU_DEBUG=1` prints the
+screen name or the fallback reason. The EAGL shim above is unchanged in structure.
+
+Pieces (all in git):
+* `gpu/freedreno-sweet/sweet_drm.c`: libdrm stand-in (cherry-picked from `origin/gpu-kernel` 5ee7615, then extended): msm requests -> `IOConnectCallStructMethod`; new direct entry points `sweet_drm_mmap/munmap` (the Mesa
+  patch calls them, so no dependency on dyld interposing, which is kept as well), `sweet_drm_surface_bo` (SURFACE_BO), `sweet_drm_bo_sync` (BO_SYNC), `sweet_drm_info`; syncobj stubs; install name `@rpath/libdrm.2.dylib`.
+  It reports msm 1.3 (no softpin): freedreno asks `GEM_INFO(GET_IOVA)` and patches relocations, as the kernel supports.
+* `gpu/eagl/mesa/bergamota-mesa-25.0.7.patch` (9 files, applied by `build-mesa.sh`): (a) OSMesa ES profile (phase A/B); (b) `meson.build`: iOS counts as a DRM-capable system when freedreno is built, so freedreno's msm backend and
+  `libdrm` are used; computerator/libarchive are skipped; (c) `freedreno_bo.c`: BO map/unmap through the stand-in's direct calls; (d) `freedreno_screen.c`: `sysctl hw.memsize` instead of `sysinfo`, and the KMS handle import
+  keeps the BO size; (e) `ir3_disk_cache.c`: no disk cache on Mach-O (no ELF build-id); (f) `targets/osmesa`: hardware screen with fallback (`sweet_hw.c`), freedreno/libdrm dependencies; (g) `frontends/osmesa/osmesa.c`:
+  `OSMesaSweetActive()`, `OSMesaSweetBlit()`, `OSMesaSweetForgetSurface()`.
+* Build: `GPU_EAGL_WORK=... gpu/eagl/mesa/build-mesa.sh` (default `GPU_EAGL_HW=1`: clone mesa 25.0.7 and libdrm-2.4.124 headers, build the stand-in, `meson ... -Dgallium-drivers=softpipe,freedreno -Dfreedreno-kmds=msm -Dgallium-xa=disabled`), then
+  `MESA_BLD=$GPU_EAGL_WORK/build-hw gpu/eagl/build.sh $GPU_EAGL_WORK/out-hw` (the shim, `libOSMesa.8.dylib` 15.3 MB stripped, `libdrm.2.dylib` 87 KB; libOSMesa carries rpath `@loader_path` so libdrm sits next to it).
+  Mesa needed `pkgconf`, python `lxml`. Build tree 146 MB.
+
+**Render targets are IOSurfaces, no CPU copy:** `presentRenderbuffer:` and `attachImage:` sync call `OSMesaSweetBlit(name, is_texture, IOSurfaceGetID(surface), flip, opaque)`. Inside Mesa it takes the renderbuffer's (or the
+texture's) `pipe_resource`, wraps the IOSurface memory as a second `pipe_resource` (SURFACE_BO gives a BO handle + stride + offset; `resource_from_handle` with `WINSYS_HANDLE_TYPE_KMS`, modifier LINEAR, i.e. UBWC off, format
+B8G8R8A8 or B8G8R8X8 when the layer is opaque), runs one `pipe->blit` (the blitter does the RGBA->BGRA conversion and the vertical flip through a negative destination height), waits (`st_finish`) and calls BO_SYNC so the CPU
+and the display see the pixels. A GPU render-to-surface directly (no blit) is not possible in GL ES semantics without an FBO attachment of the surface, which the shim cannot express for the app's own FBO; the blit is GPU-to-GPU. Surfaces
+the GPU cannot use (planes, other pixel formats, stride the freedreno layout rejects) make `OSMesaSweetBlit` return 0 and the shim uses the old CPU readback, per call. `texImageIOSurface` still uploads with `glTexImage2D` (a CPU copy into
+a GPU texture; zero-copy sampling of the surface is a later step).
+
+Test plan once the kernel agent reports that submits run (nothing below was run):
+```
+GPU_EAGL_WORK=... MESA_BLD=$GPU_EAGL_WORK/build-hw gpu/eagl/build.sh $GPU_EAGL_WORK/out-hw      # + EAGL_DEFS=-DEAGL_INJECT ... out-hwi for eagl_ca_test
+push with sha256 verification (scratchpad deploy-gen.sh: strip --sign, rm remote dir, scp, sha256sum compare) to /var/root/gpu-eagl-hw and -hwi
+SWEET_GPU_DEBUG=1 ./eagl_test                       # GL_RENDERER must say Adreno/FD630; 41 checks; clear + triangle read back from an IOSurface
+SWEET_GPU_DEBUG=1 EAGL_INJECT_LIB=... ./eagl_ca_test  # six CA scenes with timings, compare with the softpipe table above
+SWEET_GPU=0 ...                                       # same binaries on softpipe for the comparison
+```
+First things to look at on failure: `SWEET_DRM_TRACE=1` (failing msm requests), `SWEET_GPU_DEBUG=1`, `INFO.flags` bit1 (GPU lost), freedreno's own `FD_MESA_DEBUG`/`IR3_SHADER_DEBUG` environment.
+Known risks: freedreno's resource layout for BGRA linear with a pitch that is not a multiple of 64 bytes (the shim's own pool surfaces use multiples of 64; surfaces made by other processes may be rejected -> CPU fallback);
+a6xx features Mesa assumes that the kernel/CP setup of stage 8 does not program yet (HWCG, CP_PROTECT, UBWC config, GBIF/UCHE minimum; see GPU_KERNEL.md risk 2); GET_PARAMs the kernel answers `kIOReturnUnsupported` for
+(UBWC_*, HIGHEST_BANK_BIT, MACROTILE_MODE: Mesa then uses defaults which may be wrong for the SDM845 memory config); no fence fds/syncobj (freedreno falls back to its own); 32-bit GPU VA space; one ring.
