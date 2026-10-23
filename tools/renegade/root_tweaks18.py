@@ -48,6 +48,7 @@ import glob, os, plistlib, shutil, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import renegade_platform as rplat
+import berga_tools
 
 # What was skipped and why, printed at the end of `renegade root` / `renegade update` (skip_summary()).
 SKIPPED = []
@@ -60,9 +61,9 @@ def note_skip(feature, reason):
 def not_built(what='tools/sweetnet/build.sh'):
     """Why a prebuilt on-device binary is missing. They are built with xcrun (a Mac with Xcode); nothing is compiled here."""
     if rplat.is_linux():
-        return ('no prebuilt binary (they are built on a Mac with Xcode: %s; Linux only installs prebuilt artifacts found in '
-                'research/sweetnet/ or $RENEGADE_SWEETNET)' % what)
-    return 'not built (%s)' % what
+        return ('no prebuilt binary (they are built on a Mac with Xcode: %s; Linux installs prebuilt ones: run `renegade fetch-tools` to '
+                'download berga-tools.zip, or drop artifacts in research/sweetnet/ or $RENEGADE_SWEETNET)' % what)
+    return 'not built (%s; or `renegade fetch-tools` for the prebuilt berga-tools.zip)' % what
 
 
 def skip_summary():
@@ -647,7 +648,8 @@ REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender')
 SWEETNET_DIRS = [os.environ.get('RENEGADE_SWEETNET'),
                  os.path.join(REPO, 'research/sweetnet'),
-                 os.path.join(REPO, '..', 'ios-beryllium', 'research/sweetnet')]
+                 os.path.join(REPO, '..', 'ios-beryllium', 'research/sweetnet'),
+                 berga_tools.search_dirs()[0]]          # last: local builds win over the berga-tools cache (renegade fetch-tools)
 
 
 def enabled(feature):
@@ -1019,7 +1021,8 @@ def cryptexd(root):
 BGL_DIRS = [os.environ.get('RENEGADE_BGL'),
             os.path.join(REPO, 'research/bergamota-gl'),
             os.path.join(REPO, '..', 'ios-beryllium', 'research/bergamota-gl'),
-            os.path.join(REPO, '..', 'ios-beryllium-gpu-eagl', 'research/bergamota-gl')]
+            os.path.join(REPO, '..', 'ios-beryllium-gpu-eagl', 'research/bergamota-gl'),
+            berga_tools.search_dirs()[1]]               # last: the berga-tools cache (renegade fetch-tools)
 BGL_FILES = ('bgl-launch', 'OpenGLES.framework/OpenGLES', 'libOSMesa.8.dylib', 'libdrm.2.dylib')
 BGL_DIR = 'usr/local/lib/bergamota-gl'
 BGL_LAUNCH = '/usr/local/lib/bergamota-gl/bgl-launch'
@@ -1046,7 +1049,7 @@ def bglrender(root):
     if not src:
         print('bglrender: payload not built (gpu/eagl/make-payload.sh): backboardd job left alone')
         note_skip('bglrender', 'no prebuilt payload (gpu/eagl/make-payload.sh, needs a Mac; or a CI artifact in research/bergamota-gl/ '
-                  'or $RENEGADE_BGL); backboardd job left alone')
+                  'or $RENEGADE_BGL, or `renegade fetch-tools`); backboardd job left alone')
         return
     dst = os.path.join(root, BGL_DIR)
     for d in (dst, os.path.join(dst, 'OpenGLES.framework')):
@@ -1092,7 +1095,7 @@ def tool_gaps(feats):
         gaps['posterboard'] = 'sweetfp.dylib ' + not_built() + '; PosterBoard is left alone'
     if feats.get('bglrender') and not find_bgl():
         gaps['bglrender'] = ('payload: no prebuilt bergamota-gl (gpu/eagl/make-payload.sh needs a Mac; or a CI artifact in '
-                             'research/bergamota-gl/ or $RENEGADE_BGL)')
+                             'research/bergamota-gl/ or $RENEGADE_BGL, or `renegade fetch-tools`)')
     for f, r in gaps.items():
         note_skip(f, r)
     return gaps

@@ -8,6 +8,7 @@ The Bergamota Project's patcher. iOS 18 ships every system binary as **arm64e** 
 | `renegade cache DIR` | `pacstrip_cache.py` | Does the same over the dyld shared cache (main + sub-caches) and refreshes the CodeDirectory page hashes |
 | `renegade fips DIR --patch` | `fips_rehmac.py` | Recomputes corecrypto's FIPS POST HMAC over the rewritten `__text` |
 | `renegade fetch` | `fetch-root.sh` | Downloads and decrypts the 22H352 iPhone11,8 root and cryptex dmgs |
+| `renegade fetch-tools` | `berga_tools.py` | Downloads `berga-tools.zip` (the prebuilt on-device binaries) from the newest `berga-tools-vN` GitHub release (`--tag`, `--zip FILE`, `--status`), verifies SHA-256 and the manifest, unpacks it into `~/.cache/bergamota/berga-tools`. Python stdlib only |
 | `renegade root` | `mkroot-full.py` | Full root image: stages `copy, macho, cache, tweaks, seal`. macOS: no sudo (owners are set in the HFS+ catalog by `hfsroot_owners.py`); Linux: root, see Platforms |
 | `renegade boot` | `mkboot-full.sh` | Enxerto boot image for the root on `userdata` |
 | `renegade jb fetch\|stage\|live\|remove\|status` | `jailbreak.py` | Jailbreak userland (below); `mkroot-full.py` stage `jb`, on by default (`--no-jb`) |
@@ -38,7 +39,7 @@ Everything that differs between the two hosts lives in `renegade_platform.py` (n
 
 **Unjournaled volume.** The image is formatted without a journal. That is what lets `hfsroot_owners.py` edit the catalog offline (it asserts the journaled bit is clear), and it is also what makes a read-write mount with the Linux hfsplus driver safe: the driver mounts journaled volumes read-only unless forced, and `force` is only there for the "not cleanly unmounted" flag of an image that came from macOS. Do not use `force` on a journaled volume.
 
-**Feature gating (any host).** Features that install a prebuilt on-device binary switch themselves off when the binary is missing, with a message at the point of the skip and a summary at the end of `renegade root` / `renegade update`; they never fail the run. Binaries are looked for in `research/sweetnet/` (also `ios18/`), the main checkout's, `$RENEGADE_SWEETNET`, `research/ssh-build/out/`, `research/bergamota-gl/` / `$RENEGADE_BGL`. On Linux nothing is compiled, so these are skipped unless a prebuilt artifact (for example from CI) was dropped into those directories.
+**Feature gating (any host).** Features that install a prebuilt on-device binary switch themselves off when the binary is missing, with a message at the point of the skip and a summary at the end of `renegade root` / `renegade update`; they never fail the run. Binaries are looked for in `research/sweetnet/` (also `ios18/`), the main checkout's, `$RENEGADE_SWEETNET`, `research/ssh-build/out/`, `research/bergamota-gl/` / `$RENEGADE_BGL`. Last of all, the cache of `renegade fetch-tools` (`<cache>/<tag>/sweetnet` and `<cache>/<tag>/bergamota-gl`; `$RENEGADE_TOOLS_CACHE`, `$RENEGADE_BERGA_TOOLS`): a local build always wins. On Linux nothing is compiled, so these are skipped unless `renegade fetch-tools` was run or a prebuilt artifact was dropped into those directories. `tools/berga-tools/package.sh` makes the zip.
 
 | Part | Needs | Without it |
 | --- | --- | --- |
