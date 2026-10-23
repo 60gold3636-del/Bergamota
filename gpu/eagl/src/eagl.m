@@ -284,6 +284,25 @@ static void frame_stats(Attach *a, double t_start, double t_end, int gpu) {
         lum = sum / cnt; black = (double)blk / cnt;
     }
     if (lk == KERN_SUCCESS) IOSurfaceUnlock(a->surf, kIOSurfaceLockReadOnly, NULL);
+    // thumbnails (1/16 scale) of the first 80 syncs: /private/var/tmp/bgl-thumbs.bin = repeated { u32 index, u32 surface, u32 w, u32 h, w*h*3 RGB } (contact sheet on the Mac)
+    {
+        static uint8_t *tb; static size_t tlen; enum { TW = 71, TH = 153, MAXF = 80 };
+        if (n < MAXF && sp == NULL) { /* surface unreadable: nothing */ }
+        if (n < MAXF) {
+            if (!tb) tb = malloc((size_t)MAXF * (16 + TW * TH * 3));
+            kern_return_t lk2 = IOSurfaceLock(a->surf, kIOSurfaceLockReadOnly, NULL);
+            const uint8_t *sp2 = lk2 == KERN_SUCCESS ? IOSurfaceGetBaseAddress(a->surf) : NULL;
+            if (tb && sp2 && IOSurfaceGetPixelFormat(a->surf) == 'BGRA') {
+                size_t bpr = IOSurfaceGetBytesPerRow(a->surf);
+                uint32_t *hd = (uint32_t *)(tb + tlen); hd[0] = n + 1; hd[1] = IOSurfaceGetID(a->surf); hd[2] = TW; hd[3] = TH;
+                uint8_t *o = tb + tlen + 16;
+                for (int y = 0; y < TH; y++) for (int x = 0; x < TW; x++) { const uint8_t *q = sp2 + (size_t)(y * 16) * bpr + (size_t)(x * 16) * 4; *o++ = q[2]; *o++ = q[1]; *o++ = q[0]; }
+                tlen += 16 + TW * TH * 3;
+                if (n + 1 == MAXF) { FILE *f = fopen("/private/var/tmp/bgl-thumbs.bin", "wb"); if (f) { fwrite(tb, 1, tlen, f); fclose(f); } fprintf(stderr, "EAGL(shim): thumbnails written (%zu bytes)\n", tlen); }
+            }
+            if (lk2 == KERN_SUCCESS) IOSurfaceUnlock(a->surf, kIOSurfaceLockReadOnly, NULL);
+        }
+    }
     fprintf(stderr, "EAGL(shim): FS #%d t=%.0f dt=%.1f blit=%.1fms surf=%u gpu=%d lum=%.1f black=%.2f\n", ++n, t_end - t0, last_t ? t_start - last_t : 0.0, t_end - t_start, IOSurfaceGetID(a->surf), gpu, lum, black);
     last_t = t_start;
 }
