@@ -200,6 +200,54 @@ kv_khz(const char *s, const char *key)
 	return (long)(v < 10000 ? v * 1000 : v);
 }
 
+/* `key=value` word of one line (value up to the next space/newline/NUL, truncated to n-1); 1 if found. The key must start a word. */
+static int kvs_multi;       /* 1: kvs_get searches the whole text (kern.sweet_gpu may wrap), 0: only the first line (cpufreq clusters) */
+
+static int
+kvs_get(const char *line, const char *key, char *out, size_t n)
+{
+	size_t kl = strlen(key);
+	for (const char *p = line; *p && (kvs_multi || *p != '\n'); p++) {
+		if ((p == line || p[-1] == ' ' || p[-1] == '\n') && !strncmp(p, key, kl) && p[kl] == '=') {
+			const char *q = p + kl + 1;
+			size_t i = 0;
+			while (*q && *q != ' ' && *q != '\n' && i + 1 < n) {
+				out[i++] = *q++;
+			}
+			out[i] = 0;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static long
+kvs_long(const char *line, const char *key, long dflt)
+{
+	char v[32];
+	return kvs_get(line, key, v, sizeof(v)) && (isdigit((unsigned char)v[0]) || v[0] == '-') ? strtol(v, NULL, 10) : dflt;
+}
+
+/* sysctl string of any length (the v1 cpufreq string has the whole LUT and time-in-state), malloc'ed; NULL if absent */
+static char *
+sysctl_text(const char *name)
+{
+	size_t n = 0;
+	if (sysctlbyname(name, NULL, &n, NULL, 0) != 0) {
+		note("%s: %s", name, strerror(errno));
+		return NULL;
+	}
+	n += 512;
+	char *b = calloc(1, n + 1);
+	if (!b || sysctlbyname(name, b, &n, NULL, 0) != 0) {
+		note("%s: read failed: %s", name, strerror(errno));
+		free(b);
+		return NULL;
+	}
+	b[n] = 0;
+	return b;
+}
+
 /* ---- CPU ---- */
 
 struct cluster {
@@ -211,10 +259,14 @@ struct cluster {
 	char governor[32];
 	int seen;
 	double load;            /* mean of the cluster's CPUs, -1 unknown */
+	/* v1 string extras (-1 / empty when not reported) */
+	int idx, kload, changes;
+	long cap_khz;
+	char lut[400];          /* "a,b,c" kHz in index order */
 };
 static struct cluster cl[MAXCL];
 static int ncl;
-static char cpu_raw[512];
+static char *cpu_raw;
 static int ncpu_load;
 static double cpu_load[MAXCPU];
 
@@ -225,7 +277,7 @@ static double cpu_load[MAXCPU];
  * and "N%" are picked up when a governor build prints them.
  */
 static void
-parse_cpufreq(const char *raw)
+parse_cpufreq_legacy(const char *raw)
 {
 	char buf[512];
 	snprintf(buf, sizeof(buf), "%s", raw);
@@ -241,6 +293,8 @@ parse_cpufreq(const char *raw)
 		memset(c, 0, sizeof(*c));
 		c->cur_khz = c->min_khz = c->max_khz = c->req_khz = -1;
 		c->state = c->nstates = c->cap_pct = -1;
+		c->idx = c->kload = c->changes = -1;
+		c->cap_khz = -1;
 		c->load = -1;
 		int n = sscanf(seg, "domain%u %15s %15[a-z]", &id, name, status);
 		if (n < 1) {
@@ -293,17 +347,77 @@ parse_cpufreq(const char *raw)
 	}
 }
 
+/*
+ * kern.sweet_cpufreq v1 (patch 0190, governor): lines separated by '\n', each a sequence of key=value words:
+ *   sweet_cpufreq v1 mode=<gov|fixed|off> period_ms=N
+ *   cluster0 name=A55 cpus=0-3 state=<applied|off|skipped|pending> mode=<gov|fixed|off> idx=I cur_khz=K min_khz=K max_khz=K
+ *            cap_khz=K lut_n=N load=P changes=N lut_khz=a,b,.. tis_ms=khz:ms,..
+ *   cluster1 ... (A75, cpus=4-7)
+ * cur_khz/idx are 0 unless state=applied (then curKhz is null). The older "domainN NAME applied: state 3/12 1209600 kHz ..."
+ * string (first 0190 version) goes through parse_cpufreq_legacy().
+ */
+static void
+parse_cpufreq(const char *raw)
+{
+	if (strncmp(raw, "sweet_cpufreq", 13) != 0) {
+		parse_cpufreq_legacy(raw);
+		return;
+	}
+	ncl = 0;
+	for (const char *ln = strchr(raw, '\n'); ln && ncl < MAXCL; ln = strchr(ln, '\n')) {
+		ln++;
+		unsigned id;
+		if (sscanf(ln, "cluster%u ", &id) != 1) {
+			continue;
+		}
+		struct cluster *c = &cl[ncl];
+		memset(c, 0, sizeof(*c));
+		char v[48];
+		c->id = (int)id;
+		snprintf(c->name, sizeof(c->name), "%s", kvs_get(ln, "name", v, sizeof(v)) ? v : (id ? "A75" : "A55"));
+		snprintf(c->status, sizeof(c->status), "%s", kvs_get(ln, "state", v, sizeof(v)) ? v : "unknown");
+		char kmode[16] = "";
+		kvs_get(ln, "mode", kmode, sizeof(kmode));
+		int applied = !strcmp(c->status, "applied");
+		c->cur_khz = applied ? kvs_long(ln, "cur_khz", -1) : -1;
+		c->idx = applied ? (int)kvs_long(ln, "idx", -1) : -1;
+		c->min_khz = kvs_long(ln, "min_khz", -1);
+		c->max_khz = kvs_long(ln, "max_khz", -1);
+		c->cap_khz = kvs_long(ln, "cap_khz", -1);
+		c->nstates = (int)kvs_long(ln, "lut_n", -1);
+		c->state = c->idx;
+		c->kload = (int)kvs_long(ln, "load", -1);
+		c->changes = (int)kvs_long(ln, "changes", -1);
+		c->req_khz = -1;
+		c->load = -1;
+		c->cap_pct = -1;
+		if (c->cap_khz > 0 && c->max_khz > 0) {
+			c->cap_pct = (int)((c->cap_khz * 100 + c->max_khz / 2) / c->max_khz);
+		}
+		if (!kvs_get(ln, "lut_khz", c->lut, sizeof(c->lut))) {
+			c->lut[0] = 0;
+		}
+		/* mode: the cluster's own mode word wins: gov -> governor (named "gov"), fixed -> static, off -> off */
+		if (applied && !strcmp(kmode, "gov")) {
+			snprintf(c->governor, sizeof(c->governor), "gov");
+		} else if (applied && !strcmp(kmode, "fixed")) {
+			snprintf(c->status, sizeof(c->status), "applied");      /* mode "static" below */
+		} else if (!applied && !strcmp(kmode, "off") && !strcmp(c->status, "unknown")) {
+			snprintf(c->status, sizeof(c->status), "off");
+		}
+		c->seen = 1;
+		ncl++;
+	}
+}
+
 static void
 read_cpufreq(void)
 {
-	size_t n = sizeof(cpu_raw) - 1;
-	cpu_raw[0] = 0;
-	if (sysctlbyname("kern.sweet_cpufreq", cpu_raw, &n, NULL, 0) != 0) {
-		note("kern.sweet_cpufreq: %s", strerror(errno));
+	cpu_raw = sysctl_text("kern.sweet_cpufreq");
+	if (!cpu_raw) {
 		ncl = 0;
 		return;
 	}
-	cpu_raw[n < sizeof(cpu_raw) ? n : sizeof(cpu_raw) - 1] = 0;
 	parse_cpufreq(cpu_raw);
 	if (ncl == 0) {
 		note("kern.sweet_cpufreq: unparsed: %.100s", cpu_raw);
@@ -426,6 +540,15 @@ emit_cpu(void)
 		jk_oint("capPercent", c ? c->cap_pct : -1);
 		jk_oint("perfState", c ? c->state : -1);
 		jk_oint("perfStates", c ? c->nstates : -1);
+		jk_oint("capKhz", c ? c->cap_khz : -1);
+		jk_oint("kernelLoadPct", c ? c->kload : -1);
+		jk_oint("changes", c ? c->changes : -1);
+		jkey("lutKhz");
+		if (c && c->lut[0]) {
+			jput("[%s]", c->lut);
+		} else {
+			jput("null");
+		}
 		jk_onum("loadPct", cnt ? sum / cnt : -1, 0);
 		jput("}");
 	}
@@ -437,15 +560,17 @@ emit_cpu(void)
 
 struct gpu {
 	int have_sysctl;
-	char raw[256];
 	int level, nlevels;
 	double mhz, min_mhz, max_mhz, busy;
 	char state[16];
 	int abi_ok, info_ready, info_lost;
 	int service_present;
 	int info_tried;
+	char freq_mode[8];
+	char pids[100];
+	long suspends, recoveries, hangs;
 };
-static struct gpu gpu = { .level = -1, .nlevels = -1, .mhz = -1, .min_mhz = -1, .max_mhz = -1, .busy = -1 };
+static struct gpu gpu = { .level = -1, .nlevels = -1, .mhz = -1, .min_mhz = -1, .max_mhz = -1, .busy = -1, .suspends = -1, .recoveries = -1, .hangs = -1 };
 
 /*
  * kern.sweet_gpu (not shipped yet): tolerant "key value" text, e.g.
@@ -453,12 +578,68 @@ static struct gpu gpu = { .level = -1, .nlevels = -1, .mhz = -1, .min_mhz = -1, 
  * level N or N/M, freq|mhz|clock N, busy|load|util N, min/max N (MHz), and a state word:
  * on | active | slumber | idle | off | lost.
  */
+static void parse_gpu_legacy(const char *raw);
+
+/*
+ * kern.sweet_gpu (patch 0186, docs/GPU_KERNEL.md section 11): key=value words, e.g.
+ *   state=on level=3 mhz=414 max_level=7 freq=gov busy_pct=42 clients=2 pids=123,456 submitted=1030 completed=1030
+ *   suspends=2 resumes=2 recoveries=0 hangs=0 idle_ms=2000 hwcg=1 total_ms=.. res_ms=slumber:61000,L1:0,..
+ * (one or two lines). level/mhz are 0 in slumber; levels run 1..max_level (1 = 257 MHz, 7 = 710 MHz), so `levels` = max_level.
+ * Anything without `state=` goes through the older tolerant parser.
+ */
+static const int gpu_mhz_tab[8] = { 0, 257, 342, 414, 520, 596, 675, 710 };
+
 static void
 parse_gpu(const char *raw)
 {
+	char w[64];
+	if (!strstr(raw, "state=") || !strstr(raw, "max_level=")) {
+		parse_gpu_legacy(raw);
+		return;
+	}
+	gpu.have_sysctl = 1;
+	kvs_multi = 1;
+	if (kvs_get(raw, "state", w, sizeof(w))) {
+		snprintf(gpu.state, sizeof(gpu.state), "%s", w);
+	}
+	gpu.level = (int)kvs_long(raw, "level", -1);
+	long ml = kvs_long(raw, "max_level", -1);
+	gpu.nlevels = (int)ml;
+	long mhz = kvs_long(raw, "mhz", -1);
+	gpu.mhz = mhz < 0 ? -1 : (double)mhz;
+	gpu.min_mhz = gpu_mhz_tab[1];
+	gpu.max_mhz = ml >= 1 && ml <= 7 ? gpu_mhz_tab[ml] : gpu_mhz_tab[7];
+	long busy = kvs_long(raw, "busy_pct", -1);
+	/* busy_pct is stale while slumbering and 0 unless freq=gov: report what the governor measured, 0 in slumber */
+	gpu.busy = !strcmp(gpu.state, "slumber") ? 0 : (busy < 0 ? -1 : (double)busy);
+	gpu.freq_mode[0] = 0;
+	if (kvs_get(raw, "freq", w, sizeof(w))) {
+		snprintf(gpu.freq_mode, sizeof(gpu.freq_mode), "%s", w);
+	}
+	gpu.pids[0] = 0;
+	if (kvs_get(raw, "pids", w, sizeof(w)) && strcmp(w, "-") != 0) {
+		size_t k = 0;
+		for (const char *q = w; *q && k + 1 < sizeof(gpu.pids); q++) {      /* digits and commas only; the kernel cuts the list at 96 bytes */
+			if (isdigit((unsigned char)*q) || (*q == ',' && k > 0)) {
+				gpu.pids[k++] = *q;
+			}
+		}
+		while (k > 0 && gpu.pids[k - 1] == ',') {
+			k--;
+		}
+		gpu.pids[k] = 0;
+	}
+	gpu.suspends = kvs_long(raw, "suspends", -1);
+	gpu.recoveries = kvs_long(raw, "recoveries", -1);
+	gpu.hangs = kvs_long(raw, "hangs", -1);
+	kvs_multi = 0;
+}
+
+static void
+parse_gpu_legacy(const char *raw)
+{
 	double v;
 	char w[32];
-	snprintf(gpu.raw, sizeof(gpu.raw), "%s", raw);
 	gpu.have_sysctl = 1;
 	const char *lv = strcasestr(raw, "level");
 	if (lv) {
@@ -574,11 +755,10 @@ read_gpu_registry(int want_info)
 static void
 read_gpu(int want_info)
 {
-	char raw[256] = "";
-	size_t n = sizeof(raw) - 1;
-	if (sysctlbyname("kern.sweet_gpu", raw, &n, NULL, 0) == 0) {
-		raw[n < sizeof(raw) ? n : sizeof(raw) - 1] = 0;
+	char *raw = sysctl_text("kern.sweet_gpu");
+	if (raw) {
 		parse_gpu(raw);
+		free(raw);
 	}
 	read_gpu_registry(want_info);
 	if (!gpu.state[0] && gpu.info_tried && gpu.abi_ok) {
@@ -606,6 +786,16 @@ emit_gpu(void)
 	jk_onum("maxMhz", gpu.max_mhz, 0);
 	jk_onum("busyPct", gpu.busy, 0);
 	jk_int("clients", nclients);
+	jk_str("freqMode", gpu.freq_mode[0] ? gpu.freq_mode : NULL);
+	jkey("pids");
+	if (gpu.pids[0]) {
+		jput("[%s]", gpu.pids);
+	} else {
+		jput("null");
+	}
+	jk_oint("suspends", gpu.suspends);
+	jk_oint("recoveries", gpu.recoveries);
+	jk_oint("hangs", gpu.hangs);
 	jput("}");
 }
 
