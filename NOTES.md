@@ -584,3 +584,5 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
      cpu_init, before arm_vm_init.
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
+
+**2026-10-23: 🍏 iOS 18.7.8 SPRINGBOARD ON THE POCO F1.** Full iOS 18 system from userdata, kernel xnu-8796 + ios18 patches through 0160, booted via Bergamota. The last blocker was the IOMobileFramebuffer swap record: iOS 18's SwapEnd record (0x514) moved every field 0x48 later and dropped the layer mask, so our driver saw empty swaps (0160). The chain from launchd to pixels: 0154 watchports 128 (SpringBoard spawn), 0156 mach_port_is_connection_for_service (every XPC listener dropped clients), 0157 IOSurface limits v2, 0158 ue0 BPF tap (configd kept 192.168.7.2, SSH works), 0159 IOSurface result layout (SpringBoard CoreUI crash), 0160 swap record. Branch develop = ios18 at this point. Next: xnu-11215 migration (branch xnu11215), Metal on Adreno 630 study.
