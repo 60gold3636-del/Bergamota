@@ -314,7 +314,7 @@ static void frame_stats(Attach *a, double t_start, double t_end, int gpu) {
 // Pipeline statistics (EAGL_SHIM_DEBUG): per interval of 60 display-size syncs, where the time goes. glflush = time inside Mesa's glFlush (batch
 // submit), blit = enqueue / render-wait (GPU time of the client's drawing, forced by a finish) / copy-wait (GPU time of the blit) / BO_SYNC,
 // cpu = surfaces copied through the CPU (read_image + rgba_to_surface). In this mode the extra finish makes frames slower than they are normally.
-static unsigned g_mark_hit, g_mark_miss;
+static unsigned g_mark_hit, g_mark_miss, g_draw_seen;
 static double g_ps_flush_ms, g_ps_cpu_ms; static int g_ps_cpu_n, g_ps_syncs, g_ps_skipped;
 static void pipe_stats_report(void) {
     static double last[8], last_flush, last_cpu, last_t; static int last_cpu_n, last_syncs;
@@ -330,9 +330,16 @@ static void pipe_stats_report(void) {
 // Flush every attachImage: association of this context into its IOSurface.
 static void sync_attached(EAGLContext *c) {
     struct _EAGLContextPrivate *p = c->_private;
+    // Safety net: GL work happened but nothing was attributed to an attachment (a render path the tracking does not see): copy everything this flush.
+    BOOL force_all = NO;
+    if (g_dirty_track) {
+        BOOL any = NO; for (int i = 0; i < p->natt; i++) if (p->att[i].dirty) any = YES;
+        force_all = !any && g_draw_seen > 0 && p->cur_att < 0;
+        g_draw_seen = 0;
+    }
     for (int i = 0; i < p->natt; i++) {
         Attach *a = &p->att[i];
-        if (g_dirty_track && !a->dirty && IOSurfaceGetWidth(a->surf) * IOSurfaceGetHeight(a->surf) >= 1000000) { g_ps_skipped++; continue; }   // display buffer nobody drew into
+        if (g_dirty_track && !force_all && !a->dirty && IOSurfaceGetWidth(a->surf) * IOSurfaceGetHeight(a->surf) >= 1000000) { g_ps_skipped++; continue; }   // display buffer nobody drew into
         a->dirty = 0;
         BOOL isTex = a->kind ? (a->kind == 1) : (glIsTexture(a->name) && !glIsRenderbuffer(a->name));
         // Hardware path: the GPU copies the image into the surface (no readback); GL rows are bottom-up, `inverted` means the surface wants them as they are.
@@ -382,7 +389,7 @@ static void update_cur_target(EAGLContext *c) {
     for (int i = 0; i < p->natt; i++) if ((GLint)p->att[i].name == name && att_is_tex(&p->att[i]) == (type == GL_TEXTURE)) { p->cur_att = i; break; }
     if (g_debug) { static int n; if (n++ < 60) fprintf(stderr, "EAGL(shim): FBO %d colour0 type 0x%x name %d -> attachment %d (of %d)\n", fb, type, name, p->cur_att, p->natt); }
 }
-static inline void mark_cur_dirty(void) { EAGLContext *c = cur_ctx(); if (c && c->_private->cur_att >= 0 && c->_private->cur_att < c->_private->natt) { c->_private->att[c->_private->cur_att].dirty = 1; g_mark_hit++; } else g_mark_miss++; }
+static inline void mark_cur_dirty(void) { EAGLContext *c = cur_ctx(); if (c && c->_private->cur_att >= 0 && c->_private->cur_att < c->_private->natt) { c->_private->att[c->_private->cur_att].dirty = 1; g_mark_hit++; } else g_mark_miss++; g_draw_seen++; }
 static void (*o_DrawArrays)(GLenum, GLint, GLsizei);
 static void h_DrawArrays(GLenum a, GLint b, GLsizei c) { mark_cur_dirty(); o_DrawArrays(a, b, c); }
 static void (*o_DrawElements)(GLenum, GLsizei, GLenum, const void *);
@@ -397,6 +404,26 @@ static void (*o_Clear)(GLbitfield);
 static void h_Clear(GLbitfield m) { mark_cur_dirty(); o_Clear(m); }
 static void (*o_ClearBufferfv)(GLenum, GLint, const GLfloat *);
 static void h_ClearBufferfv(GLenum a, GLint b, const GLfloat *c) { mark_cur_dirty(); o_ClearBufferfv(a, b, c); }
+static void mark_bound_texture_dirty(void) {     // texture writes (upload / copy) land in the texture bound to GL_TEXTURE_2D
+    EAGLContext *c = cur_ctx(); if (!c || !c->_private->natt) return;
+    GLint t = 0; glGetIntegerv(GL_TEXTURE_BINDING_2D, &t);
+    for (int i = 0; i < c->_private->natt; i++) if ((GLint)c->_private->att[i].name == t && att_is_tex(&c->_private->att[i])) c->_private->att[i].dirty = 1;
+    g_draw_seen++;
+}
+static void (*o_ClearBufferiv)(GLenum, GLint, const GLint *);
+static void h_ClearBufferiv(GLenum a, GLint b, const GLint *c) { mark_cur_dirty(); o_ClearBufferiv(a, b, c); }
+static void (*o_ClearBufferuiv)(GLenum, GLint, const GLuint *);
+static void h_ClearBufferuiv(GLenum a, GLint b, const GLuint *c) { mark_cur_dirty(); o_ClearBufferuiv(a, b, c); }
+static void (*o_ClearBufferfi)(GLenum, GLint, GLfloat, GLint);
+static void h_ClearBufferfi(GLenum a, GLint b, GLfloat c, GLint d) { mark_cur_dirty(); o_ClearBufferfi(a, b, c, d); }
+static void (*o_BlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
+static void h_BlitFramebuffer(GLint a, GLint b, GLint c, GLint d, GLint e, GLint f, GLint g, GLint h, GLbitfield i, GLenum j) { mark_cur_dirty(); o_BlitFramebuffer(a, b, c, d, e, f, g, h, i, j); }
+static void (*o_CopyTexImage2D)(GLenum, GLint, GLenum, GLint, GLint, GLsizei, GLsizei, GLint);
+static void h_CopyTexImage2D(GLenum a, GLint b, GLenum c, GLint d, GLint e, GLsizei f, GLsizei g, GLint h) { o_CopyTexImage2D(a, b, c, d, e, f, g, h); mark_bound_texture_dirty(); }
+static void (*o_CopyTexSubImage2D)(GLenum, GLint, GLint, GLint, GLint, GLint, GLsizei, GLsizei);
+static void h_CopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h) { o_CopyTexSubImage2D(a, b, c, d, e, f, g, h); mark_bound_texture_dirty(); }
+static void (*o_TexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
+static void h_TexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const void *i) { o_TexSubImage2D(a, b, c, d, e, f, g, h, i); mark_bound_texture_dirty(); }
 static void (*o_BindFramebuffer)(GLenum, GLuint);
 static void h_BindFramebuffer(GLenum t, GLuint f) { o_BindFramebuffer(t, f); EAGLContext *c = cur_ctx(); if (c) update_cur_target(c); }
 static void (*o_FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
@@ -409,6 +436,9 @@ static const struct { const char *name; void **orig; void *hook; } g_dirty_hooks
     { "glDrawArrays", (void **)&o_DrawArrays, h_DrawArrays }, { "glDrawElements", (void **)&o_DrawElements, h_DrawElements },
     { "glDrawArraysInstanced", (void **)&o_DrawArraysInstanced, h_DrawArraysInstanced }, { "glDrawElementsInstanced", (void **)&o_DrawElementsInstanced, h_DrawElementsInstanced },
     { "glDrawRangeElements", (void **)&o_DrawRangeElements, h_DrawRangeElements }, { "glClear", (void **)&o_Clear, h_Clear }, { "glClearBufferfv", (void **)&o_ClearBufferfv, h_ClearBufferfv },
+    { "glClearBufferiv", (void **)&o_ClearBufferiv, h_ClearBufferiv }, { "glClearBufferuiv", (void **)&o_ClearBufferuiv, h_ClearBufferuiv }, { "glClearBufferfi", (void **)&o_ClearBufferfi, h_ClearBufferfi },
+    { "glBlitFramebuffer", (void **)&o_BlitFramebuffer, h_BlitFramebuffer }, { "glCopyTexImage2D", (void **)&o_CopyTexImage2D, h_CopyTexImage2D },
+    { "glCopyTexSubImage2D", (void **)&o_CopyTexSubImage2D, h_CopyTexSubImage2D }, { "glTexSubImage2D", (void **)&o_TexSubImage2D, h_TexSubImage2D },
     { "glBindFramebuffer", (void **)&o_BindFramebuffer, h_BindFramebuffer }, { "glFramebufferTexture2D", (void **)&o_FramebufferTexture2D, h_FramebufferTexture2D },
     { "glFramebufferRenderbuffer", (void **)&o_FramebufferRenderbuffer, h_FramebufferRenderbuffer }, { "glDeleteFramebuffers", (void **)&o_DeleteFramebuffers, h_DeleteFramebuffers },
 };
@@ -679,6 +709,14 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
         idx = p->natt++;
     } else { osm_sweet_forget(IOSurfaceGetID(p->att[idx].surf)); CFRelease(p->att[idx].surf); }
     p->att[idx].name = name; p->att[idx].kind = kind; p->att[idx].surf = (IOSurfaceRef)CFRetain(surface); p->att[idx].inverted = inverted; p->att[idx].dirty = 1;
+    // CoreAnimation attaches a NEW texture to the same display surface every frame; the earlier textures keep older pixels. Syncing them all wrote
+    // those stale images over the surface in array order (the flicker, the black wallpaper): only the latest attachment of a surface is valid.
+    for (int j = p->natt - 1; j >= 0; j--) {
+        if (j == idx || IOSurfaceGetID(p->att[j].surf) != IOSurfaceGetID(surface)) continue;
+        CFRelease(p->att[j].surf);
+        if (idx == p->natt - 1) idx = j;      // the last entry moves into slot j
+        p->att[j] = p->att[--p->natt];
+    }
     update_cur_target(self);
     EAGL_DEBUG("attachImage %lu -> %s %u, IOSurface %u (%zux%zu) inverted=%d\n", (unsigned long)image, kind == 2 ? "renderbuffer" : kind == 1 ? "texture" : "object", name,
                IOSurfaceGetID(surface), IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), inverted);
