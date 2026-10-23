@@ -443,7 +443,7 @@ QUIET_THROTTLE = {      # label -> ThrottleInterval seconds (default 10, replica
     'com.apple.spaceattributiond': 60, 'com.apple.fairplayd.H2': 60, 'com.apple.PerfPowerServices': 60,
     'com.apple.webinspectord': 60,
 }
-QUIET_REMOVE = ('com.apple.security.cryptexd',)     # libimage4 trap in img4_firmware_new_from_fd (no Image4 environment), nothing to verify here
+QUIET_REMOVE = ('com.apple.security.cryptexd',)     # libimage4 panics 'failed to get manifest properties' (no ADT /chosen/manifest-properties); fixed by tools/mkpayload.py add_img4_nodes (rebuild the boot image), so removing the job is no longer needed
 
 
 def quiet(root):
