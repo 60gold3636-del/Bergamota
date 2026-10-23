@@ -4,11 +4,12 @@
  * host test (fastboot_test.c) compiles this file unchanged.
  */
 #include "fastboot.h"
+#include "sparse.h"
 
 #ifndef FB_PRODUCT
 #define FB_PRODUCT	"beryllium"
 #endif
-#define FB_VERSION_BL	"bergamota-1"
+#define FB_VERSION_BL	"bergamota-2"
 #define FB_SERIAL	"bergamota0001"
 #define FB_PKT		64	/* fastboot packet limit: 4 byte status + 60 */
 
@@ -58,6 +59,15 @@ void fb_init(struct fb *fb, const struct fb_transport *t, const struct fb_platfo
 	fb->dl_len = fb->dl_want = fb->dl_got = 0;
 	fb->last_cmd[0] = fb->last_resp[0] = 0;
 	fb->n_cmds = fb->n_links = 0;
+	fb->op_kind = FB_OP_NONE;
+	fb->op_name[0] = 0;
+	fb->op_done = fb->op_total = fb->op_sub = fb->wr_bytes = fb->staged_len = 0;
+	fb->verify = 0;
+}
+
+int fb_part_allowed(const char *name)
+{
+	return fb_eq(name, "userdata") || fb_eq(name, "boot") || fb_eq(name, "logo");
 }
 
 /* "OKAY" / "FAIL" / "INFO" / "DATA" + text, at most 64 bytes. */
@@ -76,9 +86,15 @@ static int fb_resp(struct fb *fb, const char *kind, const char *text)
 	return fb->t->send(fb->t->ctx, buf, n);
 }
 
+void fb_info(struct fb *fb, const char *text)
+{
+	fb_resp(fb, "INFO", text);
+}
+
 static void fb_drop_session(struct fb *fb)
 {
-	fb->dl_len = fb->dl_want = fb->dl_got = 0;
+	fb->dl_len = fb->dl_want = fb->dl_got = fb->staged_len = 0;
+	fb->op_kind = FB_OP_NONE;
 	fb->n_links++;
 }
 
@@ -86,7 +102,7 @@ static void fb_drop_session(struct fb *fb)
  * Variable table as code: a static array of string pointers would need absolute
  * relocations, and the shim image runs wherever ABL put it (build.sh rejects ABS64).
  */
-#define FB_NVARS 9
+#define FB_NVARS 13
 
 static const char *fb_var(struct fb *fb, unsigned i, const char **name, char *buf)
 {
@@ -105,8 +121,62 @@ static const char *fb_var(struct fb *fb, unsigned i, const char **name, char *bu
 		return buf;
 	case 7: *name = "is-userspace"; return "no";
 	case 8: *name = "bergamota"; return "1";
+	case 9: *name = "bergamota-flash"; return "1";	/* flash/erase/upload/oem hash exist (userdata, boot, logo) */
+	case 10: *name = "verify"; return fb->verify ? "on" : "off";
+	case 11: *name = "slot-count"; return "0";	/* the Poco F1 is not A/B */
+	case 12: *name = "usb-speed"; return fb->p->usb_speed ? fb->p->usb_speed(fb->p->ctx) : "unknown";
 	}
 	return 0;
+}
+
+#define FB_NOT_ALLOWED	"partition not allowed (only userdata, boot, logo)"
+
+/* partition-size:/partition-type:/has-slot:/is-logical: for the three allowed partitions */
+static void fb_getvar_part(struct fb *fb, const char *want)
+{
+	const char *name;
+	int kind;
+	uint64_t size = 0;
+	char buf[24];
+
+	if (fb_starts(want, "partition-size:")) {
+		kind = 0;
+		name = want + 15;
+	} else if (fb_starts(want, "partition-type:")) {
+		kind = 1;
+		name = want + 15;
+	} else if (fb_starts(want, "has-slot:")) {
+		kind = 2;
+		name = want + 9;
+	} else {
+		kind = 3;
+		name = want + 11;
+	}
+	if (!fb_part_allowed(name)) {
+		fb_resp(fb, "FAIL", FB_NOT_ALLOWED);
+		return;
+	}
+	if (kind >= 2) {
+		fb_resp(fb, "OKAY", "no");
+		return;
+	}
+	if (!fb->p->part_info) {
+		fb_resp(fb, "FAIL", "no storage");
+		return;
+	}
+	const char *e = fb->p->part_info(fb->p->ctx, name, &size);
+	if (e) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	if (kind == 1) {
+		fb_resp(fb, "OKAY", "raw");
+		return;
+	}
+	buf[0] = '0';
+	buf[1] = 'x';
+	fb_hex(buf + 2, size, 1);
+	fb_resp(fb, "OKAY", buf);
 }
 
 static void fb_getvar(struct fb *fb, const char *want)
@@ -128,6 +198,11 @@ static void fb_getvar(struct fb *fb, const char *want)
 			fb_resp(fb, "INFO", line);
 		}
 		fb_resp(fb, "OKAY", "");
+		return;
+	}
+	if (fb_starts(want, "partition-size:") || fb_starts(want, "partition-type:") ||
+	    fb_starts(want, "has-slot:") || fb_starts(want, "is-logical:")) {
+		fb_getvar_part(fb, want);
 		return;
 	}
 	for (unsigned i = 0; i < FB_NVARS; i++) {
@@ -171,6 +246,7 @@ static int fb_download(struct fb *fb, const char *arg)
 	char buf[12];
 
 	fb->dl_len = 0;
+	fb->staged_len = 0;
 	if (!fb_parse_hex(arg, &n)) {
 		fb_resp(fb, "FAIL", "bad download size");
 		return 0;
@@ -215,6 +291,314 @@ static int fb_download(struct fb *fb, const char *arg)
 	fb->dl_want = fb->dl_got = 0;
 	fb_resp(fb, "OKAY", "");
 	return 0;
+}
+
+/* ---- storage commands ---- */
+
+/* 1..16 hex digits */
+static int fb_parse_hex64(const char *s, uint64_t *out, const char **end)
+{
+	uint64_t v = 0;
+	int n = 0;
+
+	for (;; s++) {
+		char c = *s;
+		int d;
+		if (c >= '0' && c <= '9')
+			d = c - '0';
+		else if (c >= 'a' && c <= 'f')
+			d = c - 'a' + 10;
+		else if (c >= 'A' && c <= 'F')
+			d = c - 'A' + 10;
+		else
+			break;
+		if (++n > 16)
+			return 0;
+		v = v << 4 | (uint64_t)d;
+	}
+	*out = v;
+	*end = s;
+	return n > 0;
+}
+
+static unsigned fb_dec(char *out, uint64_t v)
+{
+	char tmp[20];
+	unsigned n = 0, o = 0;
+	do
+		tmp[n++] = (char)('0' + v % 10);
+	while ((v /= 10) && n < 20);
+	while (n)
+		out[o++] = tmp[--n];
+	out[o] = 0;
+	return o;
+}
+
+/* "<prefix><n> MiB<suffix>" into line */
+static void fb_line_mib(char *line, const char *prefix, uint64_t bytes, const char *suffix)
+{
+	unsigned n = 0;
+	while (*prefix && n < 40)
+		line[n++] = *prefix++;
+	n += fb_dec(line + n, bytes >> 20);
+	for (const char *m = " MiB"; *m;)
+		line[n++] = *m++;
+	while (*suffix && n < FB_PKT - 5)
+		line[n++] = *suffix++;
+	line[n] = 0;
+}
+
+static void fb_op_begin(struct fb *fb, int kind, const char *name, uint64_t total)
+{
+	fb->op_kind = kind;
+	fb_copy(fb->op_name, name, sizeof fb->op_name);
+	fb->op_done = fb->op_sub = 0;
+	fb->op_total = total;
+}
+
+static void fb_op_end(struct fb *fb)
+{
+	fb->op_kind = FB_OP_NONE;
+	fb->op_sub = 0;
+}
+
+struct fb_fl {
+	struct fb *fb;
+	const char *name;
+};
+
+static const char *fl_raw(void *c, uint64_t off, const uint8_t *data, uint64_t len)
+{
+	struct fb_fl *f = c;
+	const char *e = f->fb->p->part_write(f->fb->p->ctx, f->name, off, data, len);
+
+	f->fb->op_done += len;
+	f->fb->op_sub = 0;
+	f->fb->wr_bytes += len;
+	if (f->fb->p->idle)
+		f->fb->p->idle(f->fb->p->ctx, f->fb);
+	return e;
+}
+
+static const char *fl_fill(void *c, uint64_t off, uint64_t len, uint32_t pat)
+{
+	struct fb_fl *f = c;
+	const char *e = f->fb->p->part_fill(f->fb->p->ctx, f->name, off, len, pat);
+
+	f->fb->op_done += len;
+	f->fb->op_sub = 0;
+	f->fb->wr_bytes += len;
+	if (f->fb->p->idle)
+		f->fb->p->idle(f->fb->p->ctx, f->fb);
+	return e;
+}
+
+/* flash:<partition> of the downloaded raw or sparse image */
+static void fb_flash(struct fb *fb, const char *name)
+{
+	const struct fb_platform *p = fb->p;
+	struct sparse_stats st;
+	uint64_t psize = 0, total;
+	const char *e;
+	int sparse;
+
+	if (!fb_part_allowed(name)) {
+		fb_resp(fb, "FAIL", FB_NOT_ALLOWED);
+		return;
+	}
+	if (!p->part_info || !p->part_write || !p->part_fill || !p->flash_begin || !p->flash_end) {
+		fb_resp(fb, "FAIL", "no storage");
+		return;
+	}
+	if (!fb->dl_len) {
+		fb_resp(fb, "FAIL", "no image downloaded");
+		return;
+	}
+	if ((e = p->part_info(p->ctx, name, &psize))) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	sparse = sparse_is(p->dl_buf, fb->dl_len);
+	if (sparse) {
+		if ((e = sparse_apply(p->dl_buf, fb->dl_len, psize, 0, &st))) {
+			fb_resp(fb, "FAIL", e);
+			return;
+		}
+		total = st.raw + st.fill;
+	} else {
+		if (fb->dl_len > psize) {
+			fb_resp(fb, "FAIL", "image is larger than the partition");
+			return;
+		}
+		total = (fb->dl_len + 4095) & ~4095ULL;
+		for (uint64_t i = fb->dl_len; i < total; i++)	/* pad the last block with zeros (buffer has slack) */
+			p->dl_buf[i] = 0;
+	}
+	{
+		char line[FB_PKT];
+		if (sparse) {
+			fb_line_mib(line, "sparse: write ", total, "");
+			fb_info(fb, line);
+		}
+	}
+	if ((e = p->flash_begin(p->ctx, name, p->dl_buf, fb->dl_len, total))) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	fb_op_begin(fb, FB_OP_FLASH, name, total);
+	{
+		struct fb_fl f = { fb, name };
+		if (sparse) {
+			struct sparse_ops ops = { &f, fl_raw, fl_fill };
+			e = sparse_apply(p->dl_buf, fb->dl_len, psize, &ops, 0);
+		} else {
+			e = fl_raw(&f, 0, p->dl_buf, total);
+		}
+	}
+	const char *e2 = p->flash_end(p->ctx, name, e == 0);
+	fb_op_end(fb);
+	if (e || e2)
+		fb_resp(fb, "FAIL", e ? e : e2);
+	else
+		fb_resp(fb, "OKAY", "");
+}
+
+static void fb_erase(struct fb *fb, const char *name)
+{
+	const struct fb_platform *p = fb->p;
+	uint64_t psize = 0;
+	const char *e;
+
+	if (!fb_part_allowed(name)) {
+		fb_resp(fb, "FAIL", FB_NOT_ALLOWED);
+		return;
+	}
+	if (!p->part_info || !p->part_erase) {
+		fb_resp(fb, "FAIL", "no storage");
+		return;
+	}
+	if ((e = p->part_info(p->ctx, name, &psize))) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	fb_op_begin(fb, FB_OP_ERASE, name, psize);
+	e = p->part_erase(p->ctx, name);
+	fb_op_end(fb);
+	fb_resp(fb, e ? "FAIL" : "OKAY", e ? e : "");
+}
+
+/*
+ * oem hash:<partition>:<offset>:<length>:<blocksize>   (hex; length 0 = to the end of the partition)
+ * Stages 16 bytes per block (BLAKE2b-128 of the block, the last block may be shorter) at the start of the
+ * download buffer (the downloaded image is lost) and answers OKAY; `upload` (fastboot get_staged FILE)
+ * then returns them. Read-only.
+ */
+static void fb_oem_hash(struct fb *fb, const char *a)
+{
+	const struct fb_platform *p = fb->p;
+	char name[16];
+	uint64_t off, len, bs, psize = 0, nblk;
+	const char *e, *end;
+	unsigned n = 0;
+
+	while (a[n] && a[n] != ':' && n < sizeof name - 1) {
+		name[n] = a[n];
+		n++;
+	}
+	name[n] = 0;
+	if (a[n] != ':' || !fb_part_allowed(name)) {
+		fb_resp(fb, "FAIL", a[n] == ':' ? FB_NOT_ALLOWED : "usage: oem hash:<part>:<off>:<len>:<bs> (hex)");
+		return;
+	}
+	a += n + 1;
+	if (!fb_parse_hex64(a, &off, &end) || *end != ':' || !fb_parse_hex64(end + 1, &len, &end) || *end != ':' ||
+	    !fb_parse_hex64(end + 1, &bs, &end) || *end) {
+		fb_resp(fb, "FAIL", "usage: oem hash:<part>:<off>:<len>:<bs> (hex)");
+		return;
+	}
+	if (!p->part_info || !p->part_hash) {
+		fb_resp(fb, "FAIL", "no storage");
+		return;
+	}
+	if ((e = p->part_info(p->ctx, name, &psize))) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	if ((off & 4095) || off > psize) {
+		fb_resp(fb, "FAIL", "bad offset");
+		return;
+	}
+	if (!len)
+		len = psize - off;
+	len &= ~4095ULL;
+	if (!len || len > psize - off) {
+		fb_resp(fb, "FAIL", "bad length");
+		return;
+	}
+	if (bs < 4096 || bs > (2u << 20) || (bs & (bs - 1))) {
+		fb_resp(fb, "FAIL", "block size must be a power of two, 4 KiB..2 MiB");
+		return;
+	}
+	nblk = (len + bs - 1) / bs;
+	if (nblk * 16 > p->dl_max) {
+		fb_resp(fb, "FAIL", "hash table does not fit the buffer: ask for less");
+		return;
+	}
+	fb->dl_len = fb->staged_len = 0;	/* the table overwrites the download buffer */
+	fb_op_begin(fb, FB_OP_HASH, name, len);
+	e = p->part_hash(p->ctx, name, off, len, (uint32_t)bs, p->dl_buf);
+	fb_op_end(fb);
+	if (e) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	fb->staged_len = nblk * 16;
+	{
+		char buf[24];
+		buf[0] = 'n';
+		buf[1] = '=';
+		fb_hex(buf + 2, nblk, 1);
+		fb_resp(fb, "OKAY", buf);
+	}
+}
+
+/* upload: DATA<len>, the staged bytes, OKAY. Returns 0 or FB_LINK_LOST / FB_EOF. */
+static int fb_upload(struct fb *fb)
+{
+	char buf[12];
+	int r;
+
+	if (!fb->staged_len || !fb->t->send_data) {
+		fb_resp(fb, "FAIL", "no staged data");
+		return 0;
+	}
+	fb_hex(buf, fb->staged_len, 8);
+	if (fb_resp(fb, "DATA", buf) < 0)
+		return FB_LINK_LOST;
+	r = fb->t->send_data(fb->t->ctx, fb->p->dl_buf, fb->staged_len);
+	if (r < 0)
+		return r == FB_EOF ? FB_EOF : FB_LINK_LOST;
+	fb_resp(fb, "OKAY", "");
+	return 0;
+}
+
+static void fb_oem(struct fb *fb, const char *a)
+{
+	if (fb_starts(a, "hash:")) {
+		fb_oem_hash(fb, a + 5);
+	} else if (fb_starts(a, "verify:")) {
+		int on = a[7] == '1' || fb_eq(a + 7, "on");
+		fb->verify = on;
+		if (fb->p->set_verify)
+			fb->p->set_verify(fb->p->ctx, on);
+		fb_resp(fb, "OKAY", on ? "verify on" : "verify off");
+	} else if (fb_eq(a, "gpt")) {
+		if (fb->p->gpt_info)
+			fb->p->gpt_info(fb->p->ctx, fb);
+		fb_resp(fb, "OKAY", "");
+	} else {
+		fb_resp(fb, "FAIL", "unknown oem command");
+	}
 }
 
 enum fb_result fb_run(struct fb *fb)
@@ -272,12 +656,20 @@ enum fb_result fb_run(struct fb *fb)
 			if (fb->p->reboot)
 				fb->p->reboot(fb->p->ctx, 1);
 			return FB_R_REBOOT_BL;
-		} else if (fb_starts(cmd, "flash:") || fb_starts(cmd, "erase:") || fb_starts(cmd, "format") ||
+		} else if (fb_starts(cmd, "flash:")) {
+			fb_flash(fb, cmd + 6);
+		} else if (fb_starts(cmd, "erase:")) {
+			fb_erase(fb, cmd + 6);
+		} else if (fb_starts(cmd, "oem ")) {
+			fb_oem(fb, cmd + 4);
+		} else if (fb_eq(cmd, "upload")) {
+			rc = fb_upload(fb);
+		} else if (fb_starts(cmd, "format") ||
 			   fb_starts(cmd, "set_active") || fb_starts(cmd, "oem") || fb_starts(cmd, "flashing") ||
 			   fb_starts(cmd, "create-logical") || fb_starts(cmd, "delete-logical") ||
 			   fb_starts(cmd, "resize-logical") || fb_starts(cmd, "update-super") ||
 			   fb_starts(cmd, "snapshot-update")) {
-			fb_resp(fb, "FAIL", "not supported: bergamota never writes storage");
+			fb_resp(fb, "FAIL", "not supported: only flash/erase of userdata, boot, logo");
 		} else {
 			fb_resp(fb, "FAIL", "unknown command");
 		}

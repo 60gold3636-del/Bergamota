@@ -1,6 +1,6 @@
 # Bergamota
 
-A native macOS (14+) SwiftUI control panel for the iOS-on-Poco-F1 project: phone status, live kernel log, CI runs, and a boot queue that schedules `fastboot boot` (and, as one narrowly guarded exception, `fastboot flash userdata`).
+A native macOS (14+) SwiftUI control panel for the iOS-on-Poco-F1 project: phone status, live kernel log, CI runs, and a boot queue that schedules `fastboot boot` (and, behind a typed confirmation, flashes of userdata, boot and logo, through Bergamota fastboot with ABL fastboot as the fallback).
 No third-party packages. The app is **not sandboxed** (it runs `fastboot`, `adb`, `ssh`, `gh` and `python3`) and is ad-hoc signed ("Sign to Run Locally").
 
 ## Build
@@ -70,17 +70,24 @@ scripts/bergamota stop
 scripts/bergamota status
 ```
 
-## Flash userdata (the one flash exception)
+## Flashing (userdata, boot, logo): Bergamota fastboot first
 
-The app otherwise never flashes. At the owner's explicit request there is exactly ONE exception: `fastboot -s <serial> flash userdata <img>` for the iOS root image. Guards:
+The app otherwise never flashes. The only partitions it can write are **`userdata`** (the iOS root), **`boot`** (Enxerto's boot.img) and **`logo`** (splash): a hard allowlist in code (`UserdataFlash.partitions`, enforced in both argument builders), repeated inside Enxerto itself. There is no free partition field; `erase`/`format` are never run by the app.
 
-- The partition name is the literal `userdata` in code (`UserdataFlash.flashArguments`); there is no partition field, request key or setting. No other partition can be flashed, and `erase`, `format` and `oem` are never run.
-- Image: an existing `.img`/`.simg` (sparse images are fine, fastboot splits them) of at least 64 MiB; name and size are shown. Picker, drop, path field or presets (`*.simg`/`*.img` in the repo root and `research/ipsw-x/`).
-- Only while the phone is in fastboot (Boot Queue > **Flash** tab; Control Plane **Flash userdata** button, shown only in fastboot). A sheet says it replaces the iOS install, shows file name, size and SHA-256 (computed in the background) and enables the Flash button only after you type `userdata`.
-- One flash command, no retries, output streamed live with progress from `Sending sparse ... (n/m)`. The activity banner shows `FLASHING USERDATA n/m` (red), then `FLASHED` or `FAILED`. While flashing the queue sends nothing, Send now is disabled, and auto-reboot is not started. After a manual flash the queue stays latched until the phone leaves fastboot (no boot follows by itself).
-- Queue items may carry a userdata image: `flash userdata X, then boot Y` runs the flash first and then exactly one `fastboot boot` in the same fastboot appearance (a failed flash skips the boot and marks the item failed). The boot image is optional (flash only). Stored in `queue.json` (`userdataImage`). Add from the Flash tab (also behind the typed confirmation).
-- Inbox: `{"kind":"flash_userdata","path":"<img under the repo>","then_boot":"enxerto/out/x.img","label":"...","confirm":"userdata","arm":true}`. `confirm` must be exactly `"userdata"`, otherwise the request is rejected (reason in `inbox/failed` and `lastRequest` in `status.json`). It only enqueues. CLI: `scripts/bergamota flash-userdata IMG [--then-boot BOOTIMG] [--label L] [--no-arm] [--wait]` (adds `confirm` itself: running the CLI is the explicit act).
-- `status.json` has a `flash` entry (`active`, `file`, `current`, `total`, `progress`, `last` = FLASHED/FAILED) and queue items carry `flashUserdata`/`flashUserdataBytes`.
+**Main route: Bergamota fastboot** (Enxerto writes the phone's UFS itself, see `docs/BERGAMOTA_FASTBOOT.md`). The app runs `python3 tools/bergamota-flash.py -s bergamota0001 --fastboot <fastboot> flash <partition> <image> --delta|--full` (python3 stdlib only; `UserdataFlash.bergamotaFlashArguments`). Userdata defaults to **delta**: the tool reads per-block hashes of the phone's real contents, hashes the new image (raw or sparse, streamed), builds a sparse image with only the changed blocks and sends it with `fastboot -S 512M flash`, then verifies by hashing the phone again. boot and logo are always sent in full. The script is found at Settings > Boot queue > `tools/bergamota-flash.py` (empty = `tools/` of the repo path, then sibling worktrees); missing = Bergamota flashing is unavailable and ABL is used.
+
+**Fallback: ABL fastboot** (`fastboot -s <serial> -S 512M flash <partition> <img>`, `UserdataFlash.flashArguments`), used when the route is `abl`, or `auto` and Bergamota fastboot cannot be reached or the tool is missing (the fallback is written in the item/flash output).
+
+How the route is chosen (setting **Flash route**, per-item/request `via`, CLI `--via`): `auto` (default) = Bergamota fastboot with ABL fallback; `abl` = ABL only; `bergamota` = Bergamota fastboot or fail. Phone already in Bergamota fastboot: flash there. Phone in ABL fastboot: the app runs the existing "Enter Bergamota fastboot" (`fastboot boot bergamota-fastboot-flash.img`, searched next to the configured Bergamota image, in `shim/out/` and `enxerto/out/`; otherwise the configured image), waits up to 60 s for the re-enumeration and flashes there; if that fails, `auto` flashes through ABL. Phone in iOS with a flash item queued: the auto-reboot uses `sweetreboot bergamota` (ABL fastboot only if that fails and the route is not `bergamota`). `then boot` items boot from the same Bergamota fastboot session.
+
+Guards:
+
+- Image: an existing `.img`/`.simg` (userdata at least 64 MiB; boot is an Android boot image of 1-64 MiB; logo 1-32 MiB). Picker, drop, path field or presets.
+- Explicit confirmation per flash: Boot Queue > **Flash** tab or Control Plane **Flash userdata** (any fastboot kind); a sheet says it replaces the iOS install, shows name, size, SHA-256, route and mode (both changeable there) and enables the button only after you type the partition name (`userdata`). The CLI/inbox adds `confirm` itself / requires it.
+- One flash, no retries. The activity banner shows the phases `READING THE PHONE`, `COMPARING WITH THE PHONE`, `FLASHING USERDATA n%` (MB/s and ETA over the delta bytes) and `VERIFYING`, fed by the tool's `PROGRESS`/`DELTA`/`RESULT` lines (ABL route: `Sending sparse n/m` as before), then `FLASHED` or `FAILED`. While flashing the queue sends nothing and auto-reboot is not started. After a manual flash the queue stays latched until the phone leaves fastboot.
+- Queue items may carry a flash: `flash userdata X, then boot Y` flashes first, then exactly one `fastboot boot` (a failed flash skips the boot). The boot image is optional. Stored in `queue.json` (`userdataImage`, `flashPartition`, `flashVia`, `flashMode`).
+- Inbox: `{"kind":"flash_userdata","path":"<img>","partition":"userdata","then_boot":"enxerto/out/x.img","mode":"delta|full","via":"auto|abl|bergamota","label":"...","confirm":"userdata","arm":true}`. `confirm` must equal the partition, `mode`/`via` are validated and optional (defaults from Settings), otherwise the request is rejected (`inbox/failed`, `lastRequest`). It only enqueues. CLI: `scripts/bergamota flash-userdata IMG [--partition userdata|boot|logo] [--then-boot BOOTIMG] [--full|--delta] [--via abl|bergamota] [--label L] [--no-arm] [--wait]`.
+- `status.json` `flash`: `active`, `file`, `partition`, `route` (`bergamota`/`abl`), `mode` (`delta`/`full`), `phase`, `phaseDoneBytes`, `phaseTotalBytes`, `deltaBytes`, `imageBytes`, `progress`, `last`; queue items carry `flashUserdata`, `flashPartition`, `flashVia`, `flashMode`.
 
 ## Reboot to fastboot
 
@@ -97,9 +104,9 @@ The phone can be in two different fastboots, and the app tells them apart (state
 | What it is | Qualcomm ABL (bootloader) | Enxerto, our bootloader, speaks fastboot itself |
 | Serial (`fastboot devices`) | the phone's real serial (e.g. `9ce49433`) | `bergamota0001` |
 | `getvar version-bootloader` | ABL's own version | `bergamota-1` (`getvar bergamota` = 1) |
-| Max download | ~64 MiB images are unreliable (large-image warning) | 1 GiB (no warning) |
+| Max download | ~64 MiB images are unreliable (large-image warning) | ~1 GiB (no warning) |
 | `fastboot boot` | yes | yes |
-| flash commands (`flash userdata`) | yes | **none**: userdata flashing stays an ABL-fastboot action |
+| flash (`userdata`, `boot`, `logo` only) | yes (fallback route) | **yes, the main route** (own UFS driver, delta hashing via `oem hash`) |
 
 How the app tells them apart: serial starting with `bergamota`, or (once per appearance, read-only) `getvar version-bootloader` starting with `bergamota`.
 
@@ -109,7 +116,7 @@ Getting into each:
 - **Bergamota fastboot from ABL**: **Enter Bergamota fastboot** (Dashboard card, Control Plane; only shown in ABL fastboot) runs `fastboot -s <serial> boot <bergamota-fastboot.img>`. The image path is in Settings > Boot queue (default `/Users/zesmoi/git/iAndroid/ios-beryllium-ios18/enxerto/out/bergamota-fastboot.img`); a missing file gives a message and nothing runs.
 - **Bergamota fastboot from iOS**: **Reboot to Bergamota fastboot** (`sweetreboot bergamota` over SSH; kernel patch 0140 writes IMEM `restart_reason` = `BERG` and PON reason 0 so ABL boots the shim, which enters its fastboot; see `docs/REBOOT_MODE.md`).
 
-The queue sends one `fastboot boot` per fastboot appearance to either kind. Settings > Boot queue > **Prefer Bergamota fastboot for the auto-reboot** (default on) makes the auto-reboot of queued boots use `sweetreboot bergamota`; if the phone's `sweetreboot` does not list `bergamota` (checked over SSH while iOS is up) it is not tried, and if it fails (old kernel/tool) the app falls back to `sweetreboot fastboot` (ABL). The 64 MiB large-image warning is shown only when the target is ABL fastboot (the phone is in ABL fastboot, or the target is not known to be Bergamota). Flash userdata (Boot Queue > Flash, Control Plane) is only offered in ABL fastboot.
+The queue sends one `fastboot boot` per fastboot appearance to either kind. Settings > Boot queue > **Prefer Bergamota fastboot for the auto-reboot** (default on) makes the auto-reboot of queued boots use `sweetreboot bergamota`; if the phone's `sweetreboot` does not list `bergamota` (checked over SSH while iOS is up) it is not tried, and if it fails (old kernel/tool) the app falls back to `sweetreboot fastboot` (ABL). The 64 MiB large-image warning is shown only when the target is ABL fastboot (the phone is in ABL fastboot, or the target is not known to be Bergamota). Flashing (Boot Queue > Flash, Control Plane) is offered in both fastboots.
 
 Inbox kinds: `{"kind":"reboot","to":"bergamota"}` (iOS up) and `{"kind":"enter_bergamota"}` (ABL fastboot). CLI: `scripts/bergamota reboot bergamota [--wait]`, `scripts/bergamota enter-bergamota [--wait]`.
 
@@ -119,4 +126,4 @@ Inbox kinds: `{"kind":"reboot","to":"bergamota"}` (iOS up) and `{"kind":"enter_b
 - The live log is saved automatically to `logs/usb-<timestamp>.txt` (Settings > Live log; turning Record off in the Live Log pauses it until the next launch).
 - The phone has no `sysctl`, so uptime is shown only if `ps -o etime= -p 1` is sane; the Dashboard also shows when Bergamota first saw iOS up.
 
-The app only ever runs `fastboot devices`, `fastboot boot` and (the single exception above, confirmed) `fastboot flash userdata`, plus `adb devices`, (opt-in) `adb reboot bootloader` `fastboot boot` of the Bergamota fastboot image (Enter Bergamota fastboot) and, over SSH, `sweetreboot fastboot|bergamota|recovery` (button, inbox request, auto-reboot). It never flashes any other partition, and never erases, formats or sends `oem` commands.
+The app only ever runs `fastboot devices`, `fastboot boot`, the confirmed flashes above (`fastboot flash` of userdata/boot/logo directly, or through `tools/bergamota-flash.py`, which also sends Bergamota fastboot's read-only `oem hash`/`getvar`/`upload` commands), plus `adb devices`, (opt-in) `adb reboot bootloader` `fastboot boot` of the Bergamota fastboot image (Enter Bergamota fastboot) and, over SSH, `sweetreboot fastboot|bergamota|recovery` (button, inbox request, auto-reboot). It never writes any other partition, and the app itself never erases or formats.

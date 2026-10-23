@@ -128,10 +128,20 @@ final class RemoteControl {
             case .success(let i): info = i
             case .failure(let e): throw RemoteError(e.message)
             }
+            var via: UserdataFlash.Via?
+            if let v = req["via"] as? String {
+                guard let x = UserdataFlash.Via(rawValue: v) else { throw RemoteError("flash rejected: \"via\" must be auto, abl or bergamota") }
+                via = x
+            } else if req["via"] != nil { throw RemoteError("flash rejected: \"via\" must be a string") }
+            var mode: UserdataFlash.Mode?
+            if let m = req["mode"] as? String {
+                guard let x = UserdataFlash.Mode(rawValue: m) else { throw RemoteError("flash rejected: \"mode\" must be delta or full") }
+                mode = x
+            } else if req["mode"] != nil { throw RemoteError("flash rejected: \"mode\" must be a string") }
             var boot = ""
             if let b = req["then_boot"] as? String, !b.isEmpty { boot = try resolveBoot(b, suffix: ".img") }
-            queue.addFlash(userdata: info, bootPath: boot, label: (req["label"] as? String) ?? "")
-            return "queued flash \(info.partition) \(info.name)" + (boot.isEmpty ? "" : ", then boot \((boot as NSString).lastPathComponent)") + largeNote(boot) + armNote(req)
+            queue.addFlash(userdata: info, bootPath: boot, label: (req["label"] as? String) ?? "", via: via, mode: mode)
+            return "queued flash \(info.partition) \(info.name) (via \((via ?? settings.flashViaValue).rawValue), \(info.partition == "userdata" ? (mode ?? settings.flashModeValue).rawValue : "full"))" + (boot.isEmpty ? "" : ", then boot \((boot as NSString).lastPathComponent)") + largeNote(boot) + armNote(req)
         case "orangefox_reboot":
             guard let en = req["enabled"] as? Bool else { throw RemoteError("missing boolean \"enabled\"") }
             settings.rebootFromRecovery = en
@@ -268,12 +278,17 @@ final class RemoteControl {
                     "state": st, "sentAt": iso(it.sentAt), "result": String(it.output.suffix(400)),
                     "sizeBytes": it.size, "warning": queue.largeWarns(it) ? BootQueue.largeWarning : "",
                     "needsManualFastboot": it.needsManualFastboot, "autoRebootTried": it.autoRebootTried]
-            if let u = it.userdataImage { d["flashUserdata"] = u; d["flashUserdataBytes"] = it.userdataSize; d["flashPartition"] = it.flashTarget }
+            if let u = it.userdataImage { d["flashUserdata"] = u; d["flashUserdataBytes"] = it.userdataSize; d["flashPartition"] = it.flashTarget
+                d["flashVia"] = queue.effectiveVia(it).rawValue; d["flashMode"] = queue.effectiveMode(it).rawValue }
             return d
         }
         let f = queue.flasher
         var flash: [String: Any] = ["active": f.active, "file": f.fileName, "current": f.current, "total": f.total,
-                                    "progress": f.active ? f.progressText : ""]
+                                    "progress": f.active ? f.progressText : "", "partition": f.partition,
+                                    "route": f.route == .bergamota ? "bergamota" : "abl", "mode": f.mode.rawValue,
+                                    "phase": f.phase, "phaseDoneBytes": f.phaseDone, "phaseTotalBytes": f.phaseTotal,
+                                    "deltaBytes": (f.deltaBytes as Any?) ?? NSNull(), "imageBytes": f.bytes,
+                                    "defaultRoute": settings.flashVia, "defaultMode": settings.flashMode]
         if let l = f.last { flash["last"] = ["result": l.ok ? "FLASHED" : "FAILED", "at": iso(l.at), "message": l.message] }
         else { flash["last"] = NSNull() }
         return [
