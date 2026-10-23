@@ -463,6 +463,39 @@ def quiet(root):
     print(f'quiet: removed {len(gone)} job(s) {QUIET_REMOVE}, ThrottleInterval set on {n}')
 
 
+def staged_apps(root):
+    # The removable built-in apps (Safari, Photos, Messages, Camera, ...) ship in
+    # /private/var/staged_system_apps; iOS installs them during first-boot setup, which our
+    # boot never runs, so SpringBoard only showed Settings. Moving them into /Applications
+    # (root:wheel) lets lsd register them like system apps (done live on the phone 2026-10-23:
+    # 39 apps, all registered).
+    src = os.path.join(root, 'private/var/staged_system_apps')
+    dst = os.path.join(root, 'Applications')
+    if not os.path.isdir(src):
+        return
+    for name in sorted(os.listdir(src)):
+        if not name.endswith('.app') or os.path.exists(os.path.join(dst, name)):
+            continue
+        os.rename(os.path.join(src, name), os.path.join(dst, name))
+        for d, dirs, files in os.walk(os.path.join(dst, name)):
+            for n in dirs + files:
+                os.lchown(os.path.join(d, n), 0, 0)
+        os.lchown(os.path.join(dst, name), 0, 0)
+        print('staged app ->', name)
+
+
+def event_timing(root):
+    # UIKit looks up /System/Library/EventTimingProfiles/<target>.Default.plist with the ADT
+    # target-type (D22, iPhone X) while the 22H352 userland ships N841 profiles only:
+    # 'Misconfigured Device: Default Event Timing Profile is missing'.
+    d = os.path.join(root, 'System/Library/EventTimingProfiles')
+    for kind in ('Default', 'Touch'):
+        s, t = os.path.join(d, 'N841.%s.plist' % kind), os.path.join(d, 'D22.%s.plist' % kind)
+        if os.path.exists(s) and not os.path.exists(t):
+            shutil.copy2(s, t)
+            print('event timing profile', t)
+
+
 def main():
     if len(sys.argv) == 4 and sys.argv[1] == '--bt-plist':
         plist = load(sys.argv[2])
@@ -480,6 +513,8 @@ def main():
         quiet(root)
     containers(root)
     launchservices(root)
+    staged_apps(root)
+    event_timing(root)
     usbnet(root)
     netcfg(root)
     sweetreboot(root)
