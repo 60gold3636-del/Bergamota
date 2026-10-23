@@ -50,6 +50,7 @@ static void *target(const char *name) {
 }
 #define CACHED(name) static void *t; if (!t) t = target(name)
 
+void mw_CompressedTexImage2D(void *r, U a, I b, U c, I d, I e, I f, I g, const void *p) { CACHED("glCompressedTexImage2D"); ((void (*)(U, I, U, I, I, I, I, const void *))t)(a, b, c, d, e, f, g, p); }
 void mw_TexImage2D(void *r, U a, I b, I c, I d, I e, I f, U g, U h, const void *p) { CACHED("glTexImage2D"); ((void (*)(U, I, I, I, I, I, U, U, const void *))t)(a, b, c, d, e, f, g, h, p); }
 void mw_TexSubImage2D(void *r, U a, I b, I c, I d, I e, I f, U g, U h, const void *p) { CACHED("glTexSubImage2D"); ((void (*)(U, I, I, I, I, I, U, U, const void *))t)(a, b, c, d, e, f, g, h, p); }
 void mw_CopyTexImage2D(void *r, U a, I b, U c, I d, I e, I f, I g, I h) { CACHED("glCopyTexImage2D"); ((void (*)(U, I, U, I, I, I, I, I))t)(a, b, c, d, e, f, g, h); }

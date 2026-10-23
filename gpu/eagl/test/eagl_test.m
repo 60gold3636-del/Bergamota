@@ -47,7 +47,7 @@ static void surf_pixel(IOSurfaceRef s, int x, int y, uint8_t out[4]) {   // BGRA
 }
 // The shim exports no table; resolve offsets the way QuartzCore does not: from the known stub offsets (22H352).
 static unsigned macro_find(const char *n) {
-    static const struct { const char *n; unsigned off; } t[] = { { "glClearColor", 0x68 }, { "glClear", 0x58 }, { "glTexImage2D", 0x970 } };
+    static const struct { const char *n; unsigned off; } t[] = { { "glClearColor", 0x68 }, { "glClear", 0x58 }, { "glTexImage2D", 0x970 }, { "glCompressedTexImage2D", 0xbe8 } };
     for (unsigned i = 0; i < sizeof t / sizeof *t; i++) if (!strcmp(t[i].n, n)) return t[i].off;
     return 0;
 }
@@ -220,6 +220,7 @@ static void test_attach_and_texture(void) {
         glFinish();
         uint8_t a3[4], b3[4]; surf_pixel(s2, 24, 2, a3); surf_pixel(s2, 24, 29, b3);
         CHECK(near(a3[0], 255) && near(a3[2], 0) && near(b3[2], 255) && near(b3[0], 0), "texture-target attach syncs to the surface, inverted:NO keeps the GL row order (bottom GL rows first) (top BGRA %d %d %d, bottom %d %d %d)", a3[0], a3[1], a3[2], b3[0], b3[1], b3[2]);
+        { printf("      surface rows (BGRA at x=24):"); for (int yy = 0; yy < 32; yy += 3) { uint8_t q[4]; surf_pixel(s2, 24, yy, q); printf(" r%d=%d,%d,%d", yy, q[0], q[1], q[2]); } printf("\n"); }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         CFRelease(s2);
     }
@@ -260,6 +261,15 @@ static void test_macro_context(void) {
     CHECK(px[1] == 255 && px[0] == 0, "glClearColor/glClear through macro slots (float args after rend) (RGBA %d %d %d %d)", px[0], px[1], px[2], px[3]);
     // 9-argument call (stack arguments): glTexImage2D through the wide wrapper
     void (*tex_image_2d)(void *, unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = SLOT(macro_find("glTexImage2D"));
+    // 8-argument call (the 8th, the data pointer, is on the stack): glCompressedTexImage2D with one ETC2 block through the macro context
+    {
+        void (*cti)(void *, unsigned, int, unsigned, int, int, int, int, const void *) = SLOT(macro_find("glCompressedTexImage2D"));
+        GLuint ct; glGenTextures(1, &ct); glBindTexture(GL_TEXTURE_2D, ct);
+        static const uint8_t blk[8] = { 0xff, 0x80, 0x40, 0, 0, 0, 0, 0 };
+        glGetError();
+        cti(m[0], GL_TEXTURE_2D, 0, 0x9274 /* COMPRESSED_RGB8_ETC2 */, 4, 4, 0, 8, blk);
+        CHECK(glGetError() == GL_NO_ERROR, "glCompressedTexImage2D (8 args) through the macro context");
+    }
     GLuint tex; glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
     uint32_t texel[4] = { 0xff0000ffu, 0xff0000ffu, 0xff0000ffu, 0xff0000ffu };   // RGBA bytes ff 00 00 ff = red
     tex_image_2d(m[0], GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texel);

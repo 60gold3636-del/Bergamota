@@ -64,7 +64,7 @@ def main():
     w('        "mov x0, x1\\n mov x1, x2\\n mov x2, x3\\n mov x3, x4\\n mov x4, x5\\n mov x5, x6\\n mov x6, x7\\n" \\')
     w('        GL_BR); }')
     w('')
-    wide = ['CopyTexImage2D', 'CopyTexSubImage2D', 'CompressedTexSubImage2D', 'TexImage2D', 'TexSubImage2D', 'TexImage3D',
+    wide = ['CompressedTexImage2D', 'CopyTexImage2D', 'CopyTexSubImage2D', 'CompressedTexSubImage2D', 'TexImage2D', 'TexSubImage2D', 'TexImage3D',
             'TexSubImage3D', 'CopyTexSubImage3D', 'CompressedTexImage3D', 'CompressedTexSubImage3D', 'BlitFramebuffer']
     def base(n):
         for suf in ('OES', 'EXT', 'APPLE', 'ANGLE', 'KHR', 'IMG'):

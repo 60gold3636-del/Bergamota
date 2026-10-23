@@ -220,8 +220,8 @@ static void maybe_dump(EAGLContext *c, int idx, BOOL isTex, uint32_t gw, uint32_
     Attach *a = &p->att[idx];
     if (idx == 0) frame++;
     int now = access("/private/var/tmp/bgl-dump-now", F_OK) == 0;
+    if (now && idx == 0) unlink("/private/var/tmp/bgl-dump-now");     // one-shot: a left-over trigger must not dump every frame (it did, after a reboot)
     if (!(frame == 1 || frame == 10 || frame == 60 || now)) return;
-    if (now && idx == p->natt - 1) unlink("/private/var/tmp/bgl-dump-now");
     mkdir("/private/var/tmp/bgl-dump", 0777);
     uint32_t w, h;
     uint8_t *buf = read_image(c, a->name, isTex, gw, gh, &w, &h);

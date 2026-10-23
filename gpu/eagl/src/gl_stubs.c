@@ -1071,8 +1071,6 @@ GL_MSTUB(glColorPointer, 54)
 GL_TSTUB(glColorPointer, 54)
 GL_MSTUB(glCompileShader, 55)
 GL_TSTUB(glCompileShader, 55)
-GL_MSTUB(glCompressedTexImage2D, 56)
-GL_TSTUB(glCompressedTexImage2D, 56)
 GL_MSTUB(glCopyBufferSubData, 60)
 GL_TSTUB(glCopyBufferSubData, 60)
 GL_MSTUB(glCopyTextureLevelsAPPLE, 64)
@@ -1853,6 +1851,7 @@ GL_MSTUB(glWaitSyncAPPLE, 455)
 GL_TSTUB(glWaitSyncAPPLE, 455)
 GL_MSTUB(glWeightPointerOES, 456)
 GL_TSTUB(glWeightPointerOES, 456)
+extern void mw_CompressedTexImage2D(void);
 extern void mw_CopyTexImage2D(void);
 extern void mw_CopyTexSubImage2D(void);
 extern void mw_CompressedTexSubImage2D(void);
@@ -1922,7 +1921,7 @@ void *const ms_thunks[GL_NFUNCS + 1] = {
     (void *)ms_glColorMask,
     (void *)ms_glColorPointer,
     (void *)ms_glCompileShader,
-    (void *)ms_glCompressedTexImage2D,
+    (void *)mw_CompressedTexImage2D,
     (void *)mw_CompressedTexImage3D,
     (void *)mw_CompressedTexSubImage2D,
     (void *)mw_CompressedTexSubImage3D,
@@ -2381,7 +2380,7 @@ void *const mt_thunks[GL_NFUNCS + 1] = {
     (void *)mt_glColorMask,
     (void *)mt_glColorPointer,
     (void *)mt_glCompileShader,
-    (void *)mt_glCompressedTexImage2D,
+    (void *)mw_CompressedTexImage2D,
     (void *)mw_CompressedTexImage3D,
     (void *)mw_CompressedTexSubImage2D,
     (void *)mw_CompressedTexSubImage3D,
