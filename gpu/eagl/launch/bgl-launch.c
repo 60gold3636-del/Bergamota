@@ -15,7 +15,7 @@
  * later boot; `bgl-launch --bgl-print-boot-uuid` prints it). The boot-arg wins when both are present.
  *
  * Checks before injecting: all payload files readable; crash-loop guard: state in /private/var/tmp/bgl-render.state
- * (boot time, last start, strikes): a start less than 60 s after the previous one in the same boot is a strike; at 3 strikes this
+ * (boot time, last start, strikes): a start less than 120 s after the previous one in the same boot is a strike; at 3 strikes this
  * boot runs plain. The state is per boot (the boot time is compared), so nothing carries over a reboot. The wrapper's stderr
  * (and with it backboardd's) goes to /private/var/tmp/bgl-backboardd.log (truncated above 1 MiB) while injecting.
  */
@@ -131,16 +131,20 @@ static int guard(void)
 		return 0;
 	f = fopen(STATE_PATH, "r");
 	if (f) {
-		if (fscanf(f, "%63s %ld %ld", u2, &l2, &s2) == 3 && !strcmp(u2, cur)) {
+		int n = fscanf(f, "%63s %ld %ld", u2, &l2, &s2);
+		if (n == 3 && !strcmp(u2, cur)) {
 			last = l2; strikes = s2;
-			if (now - last < 60)
+			if (now - last < 120)
 				strikes++;
 			else
 				strikes = 0;
+		} else if (n != 3) {
+			fclose(f);
+			return 0;                   /* a state file that exists but cannot be read back (filesystem errors seen on this root): do not inject */
 		}
 		fclose(f);
 	}
-	if (strikes >= 3)
+	if (strikes >= 2)                   /* the third start within two minutes of the previous one runs plain; this applies to boot-arg and marker alike */
 		return 0;
 	f = fopen(STATE_PATH, "w");
 	if (!f)
@@ -169,7 +173,8 @@ int main(int argc, char **argv)
 		args[0] = 0;
 	args[sizeof args - 1] = 0;
 
-	if ((has_arg(args, "bglrender", mode, sizeof mode) || marker_mode(mode, sizeof mode)) &&
+	{ char mm[16] = ""; int have_marker = marker_mode(mm, sizeof mm); if (!has_arg(args, "bglrender", mode, sizeof mode) && have_marker) snprintf(mode, sizeof mode, "%s", mm); }   /* boot-arg wins for the mode; the marker may still add debug/nohook */
+	if (mode[0] &&
 	    (!strcmp(mode, "1") || !strcmp(mode, "soft")) &&
 	    readable(LIBDIR, "OpenGLES.framework/OpenGLES") && readable(LIBDIR, "libOSMesa.8.dylib") &&
 	    readable(LIBDIR, "libdrm.2.dylib") && guard()) {

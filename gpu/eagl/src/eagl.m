@@ -24,6 +24,7 @@
 #import <mach-o/dyld.h>
 #import <pthread.h>
 #import <mach/mach.h>
+#import <mach/vm_map.h>
 #import <sys/stat.h>
 #import <unistd.h>
 #import <stdatomic.h>
@@ -43,6 +44,7 @@
 
 #define EAGL_DEBUG(...) do { if (g_debug) fprintf(stderr, "EAGL(shim): " __VA_ARGS__); } while (0)
 static int g_debug;
+static volatile int g_target_attach;      // set once attachImage:<target> was used: the render server's convention (see texImageIOSurface)
 
 #pragma GCC visibility push(default)
 // --- constants -------------------------------------------------------------------------------------------
@@ -140,11 +142,27 @@ static EAGLContext *cur_ctx(void) {
 }
 
 // Copy an RGBA w*h bottom-up GL readback into a BGRA IOSurface, top-down (or bottom-up when `keep` is set).
+// A display/swap-chain IOSurface can be mapped read-only in this process (a write then dies with SIGBUS / KERN_PROTECTION_FAILURE, seen in
+// backboardd): check the mapping before the CPU fallback writes into it.
+static BOOL mapping_writable(const void *p, size_t len) {
+    vm_address_t addr = (vm_address_t)p;
+    vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t obj;
+    if (vm_region_64(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) return NO;
+    return (vm_address_t)p >= addr && (vm_address_t)p + len <= addr + size && (info.protection & VM_PROT_WRITE);
+}
+
 static void rgba_to_surface(const uint8_t *src, uint32_t w, uint32_t h, IOSurfaceRef s, BOOL flip, BOOL opaque) {
     kern_return_t lk = IOSurfaceLock(s, 0, NULL);
     uint8_t *dst = lk == KERN_SUCCESS ? IOSurfaceGetBaseAddress(s) : NULL;
-    if (!dst) { if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL); return; }
     size_t bpr = IOSurfaceGetBytesPerRow(s);
+    if (!dst || !mapping_writable(dst, bpr * IOSurfaceGetHeight(s))) {
+        if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL);
+        EAGL_DEBUG("CPU sync skipped: surface %u is not mapped writable here\n", IOSurfaceGetID(s));
+        return;
+    }
     size_t sw = IOSurfaceGetWidth(s), sh = IOSurfaceGetHeight(s);
     uint32_t cw = w < sw ? w : (uint32_t)sw, ch = h < sh ? h : (uint32_t)sh;
     for (uint32_t y = 0; y < ch; y++) {
@@ -219,8 +237,8 @@ static void maybe_dump(EAGLContext *c, int idx, BOOL isTex, uint32_t gw, uint32_
     Attach *a = &p->att[idx];
     if (idx == 0) frame++;
     int now = access("/private/var/tmp/bgl-dump-now", F_OK) == 0;
+    if (now && idx == 0) unlink("/private/var/tmp/bgl-dump-now");     // one-shot: a left-over trigger must not dump every frame (it did, after a reboot)
     if (!(frame == 1 || frame == 10 || frame == 60 || now)) return;
-    if (now && idx == p->natt - 1) unlink("/private/var/tmp/bgl-dump-now");
     mkdir("/private/var/tmp/bgl-dump", 0777);
     uint32_t w, h;
     uint8_t *buf = read_image(c, a->name, isTex, gw, gh, &w, &h);
@@ -488,6 +506,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     struct _EAGLContextPrivate *p = _private;
     int kind = 0;
     GLuint name = (GLuint)image;
+    if (surface && (image == GL_TEXTURE_2D || image == GL_RENDERBUFFER || image == 0x84f5)) g_target_attach = 1;
     if (surface && (image == GL_TEXTURE_2D || image == GL_RENDERBUFFER || image == 0x84f5 /* TEXTURE_RECTANGLE */)) {
         GLint bound = 0;
         if (image == GL_RENDERBUFFER) { glGetIntegerv(GL_RENDERBUFFER_BINDING, &bound); kind = 2; }
@@ -571,7 +590,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
         return NO;
     }
     for (uint32_t y = 0; y < h; y++) {
-        const uint8_t *sp = src + (invert ? y : (h - 1 - y)) * bpr;
+        const uint8_t *sp = src + ((invert || g_target_attach) ? y : (h - 1 - y)) * bpr;   // render server (target-form attach): images keep their native top-down rows; CARenderer-style clients: flipped unless invert
         uint8_t *dp = tmp + (size_t)y * w * bpp;
         if (bgra8) for (uint32_t x = 0; x < w; x++) { uint32_t q = ((const uint32_t *)sp)[x]; ((uint32_t *)dp)[x] = (q & 0xff00ff00u) | ((q & 0xff) << 16) | ((q >> 16) & 0xff); }
         else memcpy(dp, sp, (size_t)w * bpp);
