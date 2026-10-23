@@ -3,6 +3,7 @@
 
   remotezip.py URL                      list members
   remotezip.py URL PATTERN OUTDIR       extract members whose name contains PATTERN
+  remotezip.py URL =NAME OUTDIR         extract the member named exactly NAME
 
 Members are streamed to disk in chunks (multi-GB DMGs never sit in RAM), a
 partial download resumes from where it stopped, and the zip CRC-32 is
@@ -110,6 +111,7 @@ if __name__ == '__main__':
         for e in entries:
             print(f'{e[3]:>12} {e[0]}')
     else:
+        pat = sys.argv[2]
         for e in entries:
-            if sys.argv[2] in e[0]:
+            if (e[0] == pat[1:]) if pat.startswith('=') else (pat in e[0]):
                 extract(url, e, sys.argv[3])

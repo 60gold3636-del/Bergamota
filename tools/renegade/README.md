@@ -63,7 +63,7 @@ Run as **root**: the image is mounted with a loop device and `mount(8)`, and apf
 
 ```sh
 # Debian / Ubuntu
-sudo apt install python3 hfsprogs util-linux zstd dropbear-bin       # dropbear-bin: host keys for the ssh step (optional)
+sudo apt install python3 curl hfsprogs util-linux zstd dropbear-bin  # dropbear-bin: host keys for the ssh step (optional)
 # ipsw (download + AEA decryption): the .deb or tarball of https://github.com/blacktop/ipsw/releases (linux_x86_64 / linux_arm64)
 # apfs-fuse is not packaged in Debian/Ubuntu: build it (https://github.com/sgan81/apfs-fuse, read its README for the packages)
 sudo apt install cmake g++ git libfuse3-dev libbz2-dev zlib1g-dev libattr1-dev fuse3
