@@ -634,7 +634,7 @@ def event_timing(root):
 #   posterboard  posterboard(): sweetfp.dylib linked into PosterBoard (NSURLFileProtectionKey on HFS+)
 #   bluetooth    bluetooth(): BT_HCI_TRANSPORT in bluetoothd's job, BlueTool stub, hcitest
 #   jb           jailbreak_userland() + firstboot(): Procursus rootless, Sileo, TrollStore (jailbreak.py)
-#   wallpaper    firstboot(): Gradient darkBlue.preset1 as lock poster + default (not tinted) icon style, once, as mobile
+#   wallpaper    firstboot(): the default lock poster (WALLPAPER_POSTER) + default (not tinted) icon style, once, as mobile
 #   bglrender    bglrender(): the Bergamota GL renderer payload (EAGL shim over Mesa freedreno/softpipe) in /usr/local/lib/bergamota-gl and
 #                backboardd's launchd job pointed at its launcher; INERT unless the kernel boot-args contain bglrender=1|soft
 #
@@ -645,6 +645,12 @@ def event_timing(root):
 # Every function is idempotent: `renegade update` runs them again on a finished image.
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
+# The default lock poster, provider:descriptor, read back from the phone's PosterBoard (sweetposterset --descriptors/--list, 2026-10-23):
+# the Collections provider (com.apple.WallpaperKit.CollectionsPoster) offers the descriptors 7365 (Stripe), 5010 (Bokeh, multicolored: also
+# PosterBoard's own hardwired default, `CollectionsPoster:5010`) and 400. The stock iOS 18 wallpaper is com.apple.MercuryPoster:fluidity.two,
+# which needs a Metal device the ES-only render path does not have (the extension crash-loops, black screen), so it is NOT the default here.
+# Collections poster 7565 (the iOS 17 wallpaper) is not a descriptor of the provider (create fails with -2218). Override: RENEGADE_WALLPAPER_POSTER=provider:descriptor
+WALLPAPER_POSTER = os.environ.get('RENEGADE_WALLPAPER_POSTER') or 'com.apple.WallpaperKit.CollectionsPoster:5010'
 FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender')
 SWEETNET_DIRS = [os.environ.get('RENEGADE_SWEETNET'),
                  os.path.join(REPO, 'research/sweetnet'),
@@ -801,7 +807,7 @@ FIRSTBOOT_SCRIPT = r'''#!/bin/sh
 #       /usr/local/bin/sweetuicache /Applications/NAME.app      (one call per app, as root, like the live fix)
 #     LaunchServices answers only once lsd is up, so the first app is retried (5 s apart, 10 min at most).
 #  2. the jailbreak post-install (/var/jb/usr/share/renegade-jb/postinstall.sh) if the root has one
-#  3. WALL: the default wallpaper (Gradient poster, no Metal) and icon style (default, not tinted), once, as mobile:
+#  3. WALL: the default wallpaper (a Core Animation poster, no Metal: WALLPAPER_POSTER) and icon style (default, not tinted), once, as mobile:
 #     /private/var/tmp/sweetrun.sh is written, `sweetopen com.sweet.run` starts SweetRun.app through FrontBoard (an app
 #     lives in the mobile user's launchd domain, where PosterBoard's XPC service is reachable) and the script runs
 #     sweetposterset (retried: -2203 while PosterBoard's store has no lock role yet, or the service is not up) and
@@ -869,12 +875,12 @@ ok=1
 while [ $n -lt 20 ]; do
 	n=$((n+1))
 	echo "sweetposterset try $n"
-	/usr/local/bin/sweetposterset com.apple.GradientPoster.GradientPosterExtension darkBlue.preset1 && { ok=0; break; }
+	/usr/local/bin/sweetposterset @WPROV@ @WDESC@ && { ok=0; break; }
 	sleep 10
 done
 echo "sweetposterset rc=$ok"
 # "already selected" counts as done (rc 0); drop duplicate Gradient configurations an older tool left behind
-[ $ok = 0 ] && /usr/local/bin/sweetposterset --cleanup com.apple.GradientPoster.GradientPosterExtension darkBlue.preset1
+[ $ok = 0 ] && /usr/local/bin/sweetposterset --cleanup @WPROV@ @WDESC@
 /usr/local/bin/sweeticonstyle default || ok=1
 echo $ok >/private/var/tmp/renegade-poster.rc
 EOS
@@ -963,7 +969,8 @@ def firstboot(root, appreg=True, jb=True, wallpaper=True):
             os.lchown(app, 0, 0)
             print('firstboot: sweetposterset, sweeticonstyle, sweetopen, /Applications/SweetRun.app installed')
     write_file(os.path.join(root, FIRSTBOOT_SH), FIRSTBOOT_SCRIPT.replace('@APPREG@', '1' if appreg else '0')
-               .replace('@WALL@', '1' if wallpaper else '0'), 0o755)
+               .replace('@WALL@', '1' if wallpaper else '0')
+               .replace('@WPROV@', WALLPAPER_POSTER.split(':', 1)[0]).replace('@WDESC@', WALLPAPER_POSTER.split(':', 1)[1]), 0o755)
     add_job(root, FIRSTBOOT_LABEL, {
         'Label': FIRSTBOOT_LABEL, 'ProgramArguments': ['/bin/sh', '/' + FIRSTBOOT_SH],
         'RunAtLoad': True, 'UserName': 'root', 'StandardErrorPath': '/dev/console',
