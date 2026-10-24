@@ -95,6 +95,17 @@ jobs:
       # mkroot-full.py looks for research/ssh-build/out (and the netcfg/sweetreboot fallbacks) in a sibling
       # checkout named ios-beryllium (the maintainer's layout); point that name at this checkout, else the ssh
       # tweak is skipped and the verify stage fails on /bin/sh (run 40070549009).
+      # root_tweaks18.ssh only installs dropbear + dash (/bin/sh) when it has a key to authorize: the image
+      # builder's ~/.ssh/id_ed25519.pub (run 40072171683: "ssh: skipped, no public key"). Ours is in SSH_PUBKEY.
+      - name: SSH public key to authorize
+        env:
+          SSH_PUBKEY: ${{ secrets.SSH_PUBKEY }}
+        run: |
+          test -n "$SSH_PUBKEY" || { echo "::error::SSH_PUBKEY secret missing"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PUBKEY" > ~/.ssh/id_ed25519.pub
+          cut -d' ' -f1,3 ~/.ssh/id_ed25519.pub
+
       - name: Sibling checkout name expected by mkroot-full.py
         run: |
           ln -sfn "$GITHUB_WORKSPACE" "$(dirname "$GITHUB_WORKSPACE")/ios-beryllium"
