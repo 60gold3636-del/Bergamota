@@ -347,3 +347,10 @@ Read back from the phone (fetch only): the selected lock configuration after the
 `python3 tools/renegade/hfsx.py research/ios18/ios18-root-full.simg dsc $SCRATCH/dsc` (4 GB, delete afterwards), a venv with `capstone`, then
 `DSC_DIR=$SCRATCH/dsc python3 research/metal-a630/tools/objc_classlist.py AGXMetalA12.bundle/AGXMetalA12 --methods` and
 `... tools/iokit_selectors.py IOGPU.framework/IOGPU`. Outputs are in `research/metal-a630/lists/`.
+
+### Mercury live probe, 2026-10-23 (kernel 473d1e1)
+
+- Program-scope constant tables (`constant [6 x <2 x float>] [...]` in postVertex's fixed quad) were placed in scratch and never initialised, so every vertex read zeros and nothing was drawn. The frontend now stores the initializer bytes into scratch at entry (`init_scratch_globals`). With it, Mercury's fluidity, pro24 and post pairs draw on the Adreno; fluidity::sdf still shows no coverage with the probe's synthetic uniforms (unexplained).
+- `filter::bicubic` samplers are now accepted and sampled as linear. This is an approximation (Apple's exact bicubic kernel is not attested); pro24 needs it to run at all.
+- SpringBoard crashes at 17:11-17:14 are BSSqlite (BaseBoardUI) with no poster or Mercury frames; no crash report exists for MercuryPosterExtension or PosterBoard.
+- The kernel's Sandbox policy (patch 0050) accepts every check, so Mercury can open SweetAdreno630.
