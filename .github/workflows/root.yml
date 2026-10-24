@@ -53,6 +53,9 @@ jobs:
           ipsw version || true
 
       - name: renegade fetch-tools (prebuilt on-device tools, berga-tools.zip)
+        env:
+          # berga_tools.py authenticates with it; anonymous API calls from shared runner IPs hit the rate limit
+          GITHUB_TOKEN: ${{ github.token }}
         run: tools/renegade/renegade fetch-tools && tools/renegade/renegade fetch-tools --status
 
       - name: SSH binaries (dropbear/dash/toybox; the SSH job is skipped without them)
