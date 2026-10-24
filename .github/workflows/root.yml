@@ -62,16 +62,27 @@ jobs:
         run: |
           brew install gnu-sed
           W=research/ssh-build
-          get() {  # name version url sha256
-            mkdir -p "$W/dl/$1" "$W/src/$1"
-            f="$W/dl/$1/$(basename "$3")"
-            curl -fsSL --retry 3 -o "$f" "$3"
-            echo "$4  $f" | shasum -a 256 -c -
-            tar -xf "$f" -C "$W/src/$1"
+          get() {  # name sha256 url [url...]: first URL that downloads AND matches the SHA-256 wins
+            n=$1; h=$2; shift 2
+            mkdir -p "$W/dl/$n" "$W/src/$n"
+            for u in "$@"; do
+              f="$W/dl/$n/$(basename "$u")"
+              if curl -fsSL --retry 2 --max-time 120 -o "$f" "$u" && echo "$h  $f" | shasum -a 256 -c -; then
+                tar -xf "$f" -C "$W/src/$n"; return 0
+              fi
+              echo "  $u: not usable"; rm -f "$f"
+            done
+            echo "::error::$n: no source matched $h"; return 1
           }
-          get dropbear 2026.94 https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2 e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81
-          get dash 0.5.13.5 https://gondor.apana.org.au/~herbert/dash/files/dash-0.5.13.5.tar.gz 40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d
-          get toybox 0.8.15 https://landley.net/toybox/downloads/toybox-0.8.15.tar.gz 44e2bab43dfe2c171743297631ce558c6d9ed38b87a66fd751cef617574b375e
+          get dropbear e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81 \
+            https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2
+          # upstream serves dash over plain HTTP only; Debian's orig tarball is the identical file (same SHA-256)
+          get dash 40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d \
+            https://deb.debian.org/debian/pool/main/d/dash/dash_0.5.13.5.orig.tar.gz \
+            http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.13.5.tar.gz
+          get toybox 44e2bab43dfe2c171743297631ce558c6d9ed38b87a66fd751cef617574b375e \
+            https://landley.net/toybox/downloads/toybox-0.8.15.tar.gz \
+            http://landley.net/toybox/downloads/toybox-0.8.15.tar.gz
           ls "$W"/src/*
 
       # /bin/sh in the root comes from here; the verify stage fails without it
