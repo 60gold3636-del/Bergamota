@@ -1266,6 +1266,14 @@ def sweetprefs_tool(root):
         return
     install_file(src, os.path.join(root, 'usr/local/bin/sweetprefs'))
     print('sweetprefs: /usr/local/bin/sweetprefs installed')
+    # remote testing over SSH (tools/sweetnet/sweetshot.m, sweettouch.c): screenshot of the scanned frame, synthetic touch/buttons
+    for n in ('sweetshot', 'sweettouch'):
+        t = find_sweetnet('ios18/' + n)
+        if t:
+            install_file(t, os.path.join(root, 'usr/local/bin', n))
+            print('%s: /usr/local/bin/%s installed' % (n, n))
+        else:
+            note_skip(n + ' tool', not_built())
 
 
 def base(root):

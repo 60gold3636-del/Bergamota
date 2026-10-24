@@ -297,7 +297,12 @@ def main():
             rt.posterboard(mnt)
         if feats['bglrender']:
             rt.bglrender(mnt)
-        rt.firstboot(mnt, appreg=feats['appreg'], jb=feats['jb'], wallpaper=feats['wallpaper'])
+        # Metal Mercury, as in a full build (root_tweaks18.auto): the dylibs and bgmtl.arm go in before the first-boot job
+        # picks the wallpaper, which follows the outcome. RENEGADE_NO_BGMTL=1 / RENEGADE_BGMTL=0 opts out.
+        metal = False
+        if os.environ.get('RENEGADE_NO_BGMTL') != '1' and os.environ.get('RENEGADE_BGMTL') != '0':
+            metal = rt.bgmtl(mnt)
+        rt.firstboot(mnt, appreg=feats['appreg'], jb=feats['jb'], wallpaper=feats['wallpaper'], metal=metal)
         if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':
             rt.cryptexd(mnt)
         jb_table = {}
