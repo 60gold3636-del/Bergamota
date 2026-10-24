@@ -92,6 +92,14 @@ jobs:
       - name: renegade fetch (iOS 18.7.8 iPhone11,8 root + cryptexes from Apple, decrypted)
         run: tools/renegade/renegade fetch && df -h /
 
+      # mkroot-full.py looks for research/ssh-build/out (and the netcfg/sweetreboot fallbacks) in a sibling
+      # checkout named ios-beryllium (the maintainer's layout); point that name at this checkout, else the ssh
+      # tweak is skipped and the verify stage fails on /bin/sh (run 40070549009).
+      - name: Sibling checkout name expected by mkroot-full.py
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE" "$(dirname "$GITHUB_WORKSPACE")/ios-beryllium"
+          ls -l "$(dirname "$GITHUB_WORKSPACE")/ios-beryllium/research/ssh-build/out"
+
       - name: renegade root
         # --no-bluetooth: the berga-tools BlueTool stub carries its own signing identifier, which the verify stage
         # reports as an identity change (run 40068553402); Bluetooth is not working on the Mi 8 yet anyway.
