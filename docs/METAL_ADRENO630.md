@@ -400,3 +400,20 @@ Principles: ES stays the default and the fallback; Metal needs three independent
 - **Dead-man**: stricter than Mercury's, because a backboardd crash loop blanks the whole UI: one unclean launch (state file `unclean>=1`) returns this and every later launch to ES and writes `bgmtl-bb.off`; the counter resets only after 30 s of presented frames. The in-process watchdog (1 Hz) trips on: GPU state lost or hangs>0 from the kernel; three failed command buffers; no completed present for 5 s while a drawable was requested; an unimplemented-selector log burst. A trip writes `bgmtl-bb.off` and `_exit(0)`s: launchd relaunches backboardd, which now comes up in ES mode.
 - **Recovery without the phone's shell**: the kill switch is a file, so a Renegade first-boot rule can remove the arm file after N boots without a clean marker (`bgmtl-bb.clean`), and `bgmtlbb=0` in the boot-args overrides every file.
 - **Rollout order**: (1) the CARenderer probe passes in a test process, (2) the tile fallback is in, (3) blend/ubershader gaps closed, (4) a supervised run with the user watching, SSH open and `bgmtl-bb.off` ready, (5) only then a Renegade option (default off) that writes the arm file.
+
+### Mercury flicker analysis, 2026-10-23 (Mac only; found by reading the present and pass code while the phone was on hold)
+
+Symptom: heavy flicker and a steady ~10 swaps/s while idle with Metal Mercury.
+
+Defects found in BGMTL's render pass handling (fixed in the tree, NOT installed on the phone):
+1. **One clear colour for every attachment.** The pass's clear was taken from attachment 0 only, passed to the first draw and applied by Gallium to all bound colour buffers. Mercury's fluidity pass writes colour(0) and colour(1): an attachment-0 clear destroyed a loaded attachment 1 (accumulated state) every frame, and a clear of attachment 1 never happened. Plausible cause of a picture that jumps between frames.
+2. **A pass that draws nothing never cleared.** The clear lived inside the first draw and `rwa_render_draw` refuses a draw of no vertices; a clear-only pass was lost and the drawable (one of three rotating IOSurfaces) kept the picture from three frames earlier, which then got presented: flicker at the frame rate.
+Fix: the pass's load actions are one piece of work of their own at the start of the pass (`BG_WORK_CLEAR` -> new `rwa_render_clear`), each attachment to its own colour, loaded ones untouched, depth/stencil likewise.
+
+Other candidates, ranked, not yet confirmed:
+- **Frame time**: `commit` is synchronous and the GPU sits at 257 MHz (level 1), so a heavy fluidity frame may take around 100 ms; the "10 swaps/s" could be the loop's real rate. Check with the new per-present log (below): commit ms per frame.
+- **Presenting after the fence is correct, but flush covers only draws** (compute and blit writes into a drawable were not flushed); now draws and clears.
+- **Drawable reuse while backboardd still samples it**: the ES compositor may copy a presented surface at its own time while the next frame of the same pool entry is being written. Not visible from this side; the log records the surface size and the commit gap.
+- A black frame between passes shows as `mean texel value 0.0` in the new log.
+
+Diagnostics added for the next supervised run: every present logs `present: N presents, D draws, C clears, up to A attachments, WxH, mean texel value V, commit X ms, at T s` to bgmtl.log (first 120, then every 30th, and every black one, tagged BLACK). Built into the inject dylib; not installed.
