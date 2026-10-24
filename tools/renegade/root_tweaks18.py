@@ -813,6 +813,15 @@ BGMTL_INJECT = BGMTL_LIB_DIR + '/bgmtl-inject.dylib'
 MERCURY_BIN = 'System/Library/ExtensionKit/Extensions/MercuryPosterExtension.appex/MercuryPosterExtension'
 
 
+def bgmtl_arm(root):
+    if os.environ.get('RENEGADE_BGMTL_ARM') == '1':          # the user's decision: arm it in the image, as the test phone is
+        arm = os.path.join(root, 'private/var/tmp/bgmtl.arm')
+        os.makedirs(os.path.dirname(arm), exist_ok=True)
+        with open(arm, 'w') as f:
+            f.write('armed by RENEGADE_BGMTL_ARM=1\n')
+        print('bgmtl: /private/var/tmp/bgmtl.arm written: Mercury renders through BGMTLDevice at boot (dead-man and kill switch bgmtl.off apply)')
+
+
 def bgmtl(root):
     import subprocess, tempfile
     sys.path.insert(0, HERE)
@@ -840,6 +849,7 @@ def bgmtl(root):
     print('bgmtl: dylibs installed in', BGMTL_LIB_DIR)
     if macho_has_dylib(binp, BGMTL_INJECT):
         print('bgmtl: MercuryPosterExtension already links', BGMTL_INJECT)
+        bgmtl_arm(root)
         return
     mode = os.stat(binp).st_mode & 0o7777
     tmpd = tempfile.mkdtemp(prefix='renegade-bgmtl-')
@@ -859,12 +869,7 @@ def bgmtl(root):
         shutil.rmtree(tmpd, ignore_errors=True)
     print('bgmtl: MercuryPosterExtension links %s (re-signed ad hoc as %s, %d entitlements kept); inert until /private/var/tmp/bgmtl.arm exists' % (
         BGMTL_INJECT, ident[0], len(ents or {})))
-    if os.environ.get('RENEGADE_BGMTL_ARM') == '1':          # the user's decision: arm it in the image, as the test phone is
-        arm = os.path.join(root, 'private/var/tmp/bgmtl.arm')
-        os.makedirs(os.path.dirname(arm), exist_ok=True)
-        with open(arm, 'w') as f:
-            f.write('armed by RENEGADE_BGMTL_ARM=1\n')
-        print('bgmtl: /private/var/tmp/bgmtl.arm written: Mercury renders through BGMTLDevice at boot (dead-man and kill switch bgmtl.off apply)')
+    bgmtl_arm(root)
 
 
 FIRSTBOOT_LABEL = 'org.bergamota.renegade-firstboot'
