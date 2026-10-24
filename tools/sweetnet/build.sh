@@ -68,6 +68,13 @@ if [ "${IOS18:-1}" = 1 ]; then
 	b18 sweetposterset sweetposterset.m posterset.entitlements
 	b18 sweeticonstyle sweeticonstyle.m iconstyle.entitlements -framework UIKit
 	b18 sweetopen sweetopen.m uicache.entitlements
+	# remote testing over SSH: screenshot of the panel (PNG) and synthetic touch/buttons
+	b18 sweetshot sweetshot.m touch.entitlements -framework CoreGraphics -framework ImageIO -framework IOSurface \
+		-framework QuartzCore
+	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall -framework CoreFoundation -framework IOKit \
+		"$here/sweettouch.c" -o "$out18/sweettouch"
+	codesign -s - -f --entitlements "$here/touch.entitlements" "$out18/sweettouch"
+	python3 -I "$pacstrip" --sign "$out18/sweettouch"
 	# SweetRun.app: runs /private/var/tmp/sweetrun.sh as mobile in the user's launchd domain (an app started by FrontBoard)
 	app=$out18/SweetRun.app
 	rm -rf "$app"; mkdir -p "$app"

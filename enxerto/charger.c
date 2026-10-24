@@ -164,13 +164,15 @@ static void sample(struct snap *s)
 }
 
 /*
- * Too hot / too cold / battery OV / safety timer: no raising, give back what we changed. The JEITA soft limits (warm, cool)
+ * Too hot / too cold / safety timer: no raising, give back what we changed. The JEITA soft limits (warm, cool)
  * are not a reason to hold: the charger's own JEITA compensation already lowers FCC/FV there (as Linux smb2 lets it), and
- * this phone's thermistor sits in the warm zone while charging, which kept every charge at 500 mA.
+ * this phone's thermistor sits in the warm zone while charging, which kept every charge at 500 mA. Battery OV (STATUS_2
+ * bit 5) is not one either: in the warm zone the compensated FV is below the battery, the charger flags OV and stops
+ * charging by itself, and holding the input at 500 mA only drained the battery under load (kernel 0225 likewise).
  */
 static int unsafe(const struct snap *s)
 {
-	return (s->st2 & 0x63u) != 0 || (s->st7 & 0x0cu) != 0;
+	return (s->st2 & 0x43u) != 0 || (s->st7 & 0x0cu) != 0;
 }
 
 /*
