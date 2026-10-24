@@ -354,3 +354,9 @@ Read back from the phone (fetch only): the selected lock configuration after the
 - `filter::bicubic` samplers are now accepted and sampled as linear. This is an approximation (Apple's exact bicubic kernel is not attested); pro24 needs it to run at all.
 - SpringBoard crashes at 17:11-17:14 are BSSqlite (BaseBoardUI) with no poster or Mercury frames; no crash report exists for MercuryPosterExtension or PosterBoard.
 - The kernel's Sandbox policy (patch 0050) accepts every check, so Mercury can open SweetAdreno630.
+
+### Mercury offline findings, 2026-10-23
+
+- fluidity::sdfFragmentShader writes `[[color(1)]]` (`air.render_target 1`), and fluidity::fragmentShader writes color(0) and color(1). The probe attached only color(0), which is why the sdf pass drew "nothing": it was not broken. The probe now attaches a second target (not yet re-run on the phone).
+- Loop pipelines: every loop exit in tori::{one..five}::torusFragment (12 each) and shippou::{one..four}::compute (17 each) compares a loop-carried counter against a value built from constants (tori: -0.5 stepping +0.2 until 0.5, about 6 iterations). A heuristic NIR scan found no non-constant bound. The counter increments were not scanned, so this is still a heuristic. softpipe cannot be the reference for them: the fragments need f16 (`f2f16`) and the vertex stages use scratch, which softpipe's nir_to_tgsi refuses.
+- Renegade `bgmtl()` was run against a fake root (os.chown stubbed, no sudo): the dylibs and the patched MercuryPosterExtension come out byte-identical to the files on the test phone, a second run is a no-op, and RENEGADE_BGMTL_ARM=1 writes bgmtl.arm.
