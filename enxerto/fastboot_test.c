@@ -153,6 +153,17 @@ static void p_reboot(void *ctx, int mode)
 	last_reboot_mode = mode;
 }
 
+static void p_charger(void *ctx, int raw, char *buf, unsigned n)
+{
+	const char *s = raw ? "st=02/00 apsd=04 je=1f aicl=1 w=3/0" : "applied CDP 1500/2000mA 4395mV FAST 37%";
+	unsigned i = 0;
+
+	(void)ctx;
+	for (; s[i] && i + 1 < n; i++)
+		buf[i] = s[i];
+	buf[i] = 0;
+}
+
 static const struct fb_transport transport = { .ctx = 0, .recv_cmd = t_recv_cmd, .send = t_send, .recv_data = t_recv_data, .send_data = t_send_data };
 static const struct fb_platform platform = {
 	.ctx = 0, .dl_buf = dlbuf, .dl_max = DLMAX, .idle = p_idle, .check_boot = p_check_boot, .boot = p_boot, .reboot = p_reboot,
@@ -1265,6 +1276,28 @@ int main(void)
 		saw_berg |= !strcmp(resp[i], "INFObergamota: 1");
 	}
 	CHECK(saw_prod && saw_max && saw_user && saw_berg);
+
+	/* getvar bergamota-charger / -raw: through the platform callback, "unavailable" without one */
+	reset_fake();
+	cmd("getvar:bergamota-charger"); cmd("getvar:bergamota-charger-raw");
+	fb = run_session(&r);
+	CHECK(resp_is(0, "OKAYunavailable") && resp_is(1, "OKAYunavailable"));
+	{
+		static struct fb_platform pc;
+		pc = platform;
+		pc.charger = p_charger;
+		cur_platform = &pc;
+		reset_fake();
+		cmd("getvar:bergamota-charger"); cmd("getvar:bergamota-charger-raw"); cmd("getvar:all");
+		fb = run_session(&r);
+		CHECK(resp_is(0, "OKAYapplied CDP 1500/2000mA 4395mV FAST 37%"));
+		CHECK(resp_is(1, "OKAYst=02/00 apsd=04 je=1f aicl=1 w=3/0"));
+		int saw = 0;
+		for (int i = 0; i < n_resp; i++)
+			saw |= !strncmp(resp[i], "INFObergamota-charger: applied CDP", 34);
+		CHECK(saw);
+		cur_platform = &platform;
+	}
 
 	/* download of 5000 bytes in 1000 byte bulk transfers, then boot a raw payload */
 	uint8_t *raw = make_sweet(5000);

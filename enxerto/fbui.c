@@ -23,6 +23,7 @@
 #define LOG_ROWS	15
 #define DIAG_Y		(FB_H - 136)
 #define HINT_Y		(FB_H - 76)
+#define CHG_Y		(DIAG_Y - 40)
 #define ENTRY_Y		(FB_H - 36)
 
 #define BAR_TRACK	0xff0f3d22U
@@ -30,7 +31,7 @@
 
 #define STR_MAX		96
 
-static char cur_text[STR_MAX], cur_detail[STR_MAX], cur_diag[3][STR_MAX];
+static char cur_text[STR_MAX], cur_detail[STR_MAX], cur_diag[3][STR_MAX], cur_chg[STR_MAX];
 static int cur_color_set;
 static uint32_t cur_fg;
 static int bar_px = -1;	/* -1: hidden */
@@ -100,7 +101,7 @@ void fbui_init(const char *entry)
 		centered(ENTRY_Y, 1, 0, MUTED, entry_txt);
 	}
 	cur_text[0] = cur_detail[0] = 0;
-	cur_diag[0][0] = cur_diag[1][0] = cur_diag[2][0] = 0;
+	cur_diag[0][0] = cur_diag[1][0] = cur_diag[2][0] = cur_chg[0] = 0;
 	cur_color_set = 0;
 	bar_px = -1;
 	con_set_scale(2);
@@ -127,6 +128,18 @@ void fbui_status(const char *text, const char *detail, int permille, uint32_t fg
 		copy(cur_detail, detail);
 	}
 	draw_bar(permille);
+}
+
+void fbui_charge(const char *s)
+{
+	if (!s)
+		s = "";
+	if (same(cur_chg, s))
+		return;
+	con_rect(0, CHG_Y, FB_W, 32, BG_BOOT);
+	if (*s)
+		centered(CHG_Y, 2, 0, MUTED, s);
+	copy(cur_chg, s);
 }
 
 void fbui_diag(const char *l0, const char *l1, const char *l2)

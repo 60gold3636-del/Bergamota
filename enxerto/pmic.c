@@ -21,7 +21,7 @@
 
 /* PMI8998 SMB2 charger / FG gen3 registers (SID 2) */
 #define CHGR_STATUS_1	0x1006	/* BATTERY_CHARGER_STATUS_1: [2:0] state */
-#define USBIN_APSD	0x1308	/* APSD_RESULT_STATUS: bit0 SDP, 1 CDP, 2 DCP, 3 OCP, 4 float, 5 HVDCP2, 6 HVDCP3 */
+#define USBIN_APSD	0x1308	/* APSD_RESULT_STATUS: bit0 SDP, 1 OCP, 2 CDP, 3 DCP, 4 float, 5 QC2, 6 QC3 (smb-reg.h; sweet_charger.c) */
 #define USBIN_RT	0x1310	/* USBIN INT_RT_STS: bit4 plug-in */
 #define FG_MSOC		0x4009	/* BATT_SOC monotonic SOC, 0..255 */
 #define FG_VOLT		0x41a0	/* BATT_INFO voltage, 16 bit */
@@ -111,7 +111,7 @@ static int read_allowed(unsigned sid, unsigned addr)
 	unsigned p = addr >> 8;
 
 	if (sid == SID_PMI8998)
-		return p == 0x10 || p == 0x13 || p == 0x40 || p == 0x41;
+		return p == 0x10 || p == 0x13 || p == 0x16 || p == 0x40 || p == 0x41;
 	if (sid == SID_PM8998)
 		return p == 0x08;
 	if (sid == SID_WLED)
@@ -228,8 +228,30 @@ int pmic_pon_reason(void)
 
 /* ---- WLED backlight (the one write path) ---- */
 
-static int write_allowed(unsigned addr, unsigned len)
+static int write_allowed(unsigned sid, unsigned addr, unsigned len)
 {
+	if (sid == SID_PMI8998) {
+		/*
+		 * SMB2 charger, single bytes: the seven registers xnu's sp_write_allowed lets sweetcharger=2
+		 * through (patches-11215/0200), nothing else (no HVDCP/QC, type-C, JEITA, termination, AICL).
+		 */
+		if (len != 1)
+			return 0;
+		switch (addr) {
+		case 0x1042:	/* CHARGING_ENABLE_CMD */
+		case 0x1061:	/* FAST_CHARGE_CURRENT_CFG */
+		case 0x1070:	/* FLOAT_VOLTAGE_CFG */
+		case 0x1340:	/* USBIN_CMD_IL (suspend) */
+		case 0x1365:	/* USBIN_LOAD_CFG */
+		case 0x1366:	/* USBIN_ICL_OPTIONS */
+		case 0x1370:	/* USBIN_CURRENT_LIMIT_CFG */
+			return 1;
+		default:
+			return 0;
+		}
+	}
+	if (sid != SID_WLED)
+		return 0;
 	switch (addr) {
 	case 0xd947:	/* sink SYNC */
 		return len == 1;
@@ -242,11 +264,11 @@ static int write_allowed(unsigned addr, unsigned len)
 }
 
 /* EXT_WRITEL of 1..2 bytes through the APID's write channel, only if EE 0 owns the APID. */
-static int spmi_write(unsigned addr, uint32_t data, unsigned len)
+static int spmi_write_sid(unsigned sid, unsigned addr, uint32_t data, unsigned len)
 {
-	if (!sp_ready || !write_allowed(addr, len))
+	if (!sp_ready || !write_allowed(sid, addr, len))
 		return -1;
-	uint16_t apid = find_apid((SID_WLED << 8) | (addr >> 8));
+	uint16_t apid = find_apid((sid << 8) | (addr >> 8));
 	if (apid == SP_NO_APID || sp_poisoned[apid] || (rd(SP_CFG + 0x700 + 4 * apid) & 7) != 0)
 		return -1;
 	uintptr_t ch = SP_CHNL + 0x10000UL * apid;
@@ -260,6 +282,26 @@ static int spmi_write(unsigned addr, uint32_t data, unsigned len)
 	}
 	sp_poisoned[apid] = 1;
 	return -1;
+}
+
+static int spmi_write(unsigned addr, uint32_t data, unsigned len)
+{
+	return spmi_write_sid(SID_WLED, addr, data, len);
+}
+
+int pmic_chg_read(unsigned addr, uint8_t *v)
+{
+	return spmi_read(SID_PMI8998, addr, v);
+}
+
+/* One whitelisted SMB2 register, written and read back; 0 only when the readback matches. */
+int pmic_chg_write(unsigned addr, uint8_t v)
+{
+	uint8_t got;
+
+	if (spmi_write_sid(SID_PMI8998, addr, v, 1))
+		return -1;
+	return !spmi_read(SID_PMI8998, addr, &got) && got == v ? 0 : -1;
 }
 
 int pmic_wled_get(uint16_t v[2])

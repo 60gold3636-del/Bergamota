@@ -19,6 +19,9 @@ NM=${CROSS}nm
 # -fno-tree-loop-distribute-patterns: no libc, so gcc must not turn loops into memcpy/memset calls (the link would fail).
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-tree-loop-distribute-patterns -Wall -Wextra"
 [ "${BOOTLOG:-0}" = 0 ] || CFLAGS="$CFLAGS -DBOOTUI_LOG=1"
+# CHARGER=0 compiles the early fast charging out (charger.c, README); default on. Runtime: boot.img cmdline
+# bergamota.charger=0 (off) / =keep (leave the programmed ICL/FCC in place at the kernel hand-off).
+[ "${CHARGER:-1}" != 0 ] || CFLAGS="$CFLAGS -DENXERTO_CHARGER=0"
 # BOOTPAUSE=<ms>: wait that long before jumping to xnu (debug photos of the log).
 [ -z "${BOOTPAUSE:-}" ] || CFLAGS="$CFLAGS -DBOOT_PAUSE_MS=${BOOTPAUSE}"
 case $BOARD in
@@ -36,7 +39,7 @@ case ${BERGAMOTA:-} in
 1) CMDLINE="$CMDLINE bergamota.fastboot=1" ;;
 0) CMDLINE="$CMDLINE bergamota.fastboot=0" ;;
 esac
-SRCS="start.S enxerto.c console.c bootui.c fbui.c mmu.c fdt.c loader.c ufs.c inflate.c usb_dwc3.c usb_power.c fastboot.c sparse.c storage.c blake2b.c bergamota.c pmic.c charge.c charge_mode.c"
+SRCS="start.S enxerto.c console.c bootui.c fbui.c mmu.c fdt.c loader.c ufs.c inflate.c usb_dwc3.c usb_power.c fastboot.c sparse.c storage.c blake2b.c bergamota.c pmic.c charge.c charge_mode.c charger.c"
 OBJS=""
 for f in $SRCS; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
@@ -96,5 +99,11 @@ if [ "$BOARD" = beryllium ]; then
 		--cmdline "console=null bergamota.fastboot=1" -o out/bergamota-fastboot.img
 	# same image under the name the Mac app looks for first (the flash-capable build)
 	cp out/bergamota-fastboot.img out/bergamota-fastboot-flash.img
+fi
+# IMGSUFFIX=-chg: also keep the images under suffixed names (never overwrites another build's files)
+if [ -n "${IMGSUFFIX:-}" ]; then
+	for f in enxerto-boot bergamota-fastboot bergamota-fastboot-flash charge-test; do
+		[ -f out/$f.img ] && cp out/$f.img out/$f$IMGSUFFIX.img
+	done
 fi
 ls -l out/Image out/enxerto-boot.img $([ -f out/bergamota-fastboot.img ] && echo out/bergamota-fastboot.img) $([ -f out/charge-test.img ] && echo out/charge-test.img)
