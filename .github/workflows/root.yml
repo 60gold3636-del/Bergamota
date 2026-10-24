@@ -58,15 +58,33 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: tools/renegade/renegade fetch-tools && tools/renegade/renegade fetch-tools --status
 
-      - name: SSH binaries (dropbear/dash/toybox; the SSH job is skipped without them)
-        continue-on-error: true
+      - name: SSH sources (docs/SSH_OVER_USB.md table, SHA-256 checked)
+        run: |
+          brew install gnu-sed
+          W=research/ssh-build
+          get() {  # name version url sha256
+            mkdir -p "$W/dl/$1" "$W/src/$1"
+            f="$W/dl/$1/$(basename "$3")"
+            curl -fsSL --retry 3 -o "$f" "$3"
+            echo "$4  $f" | shasum -a 256 -c -
+            tar -xf "$f" -C "$W/src/$1"
+          }
+          get dropbear 2026.94 https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2 e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81
+          get dash 0.5.13.5 https://gondor.apana.org.au/~herbert/dash/files/dash-0.5.13.5.tar.gz 40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d
+          get toybox 0.8.15 https://landley.net/toybox/downloads/toybox-0.8.15.tar.gz 44e2bab43dfe2c171743297631ce558c6d9ed38b87a66fd751cef617574b375e
+          ls "$W"/src/*
+
+      # /bin/sh in the root comes from here; the verify stage fails without it
+      - name: SSH binaries (dropbear/dash/toybox)
         run: tools/ssh/build.sh
 
       - name: renegade fetch (iOS 18.7.8 iPhone11,8 root + cryptexes from Apple, decrypted)
         run: tools/renegade/renegade fetch && df -h /
 
       - name: renegade root
-        run: tools/renegade/renegade root --delete-sources ${{ inputs.root_args }} && df -h /
+        # --no-bluetooth: the berga-tools BlueTool stub carries its own signing identifier, which the verify stage
+        # reports as an identity change (run 40068553402); Bluetooth is not working on the Mi 8 yet anyway.
+        run: tools/renegade/renegade root --delete-sources --no-bluetooth ${{ inputs.root_args }} && df -h /
 
       - name: Encrypt and split
         env:
