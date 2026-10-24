@@ -4,7 +4,9 @@
  *   CHGR  0x1006 STATUS_1 [2:0] state   0x1007 STATUS_2 hot/cold/soft/OV/safety bits   0x100d STATUS_7 ADC temp
  *         0x1042 CHARGING_ENABLE_CMD    0x1061 FAST_CHARGE_CURRENT_CFG (25 mA/LSB)
  *         0x1070 FLOAT_VOLTAGE_CFG (3487.5 mV + 7.5 mV/LSB)    0x1090 JEITA_EN_CFG (read only)
- *   USBIN 0x1307 APSD_STATUS [0] done   0x1308 APSD_RESULT [0] SDP [1] OCP [2] CDP [3] DCP [4] float [5] QC2 [6] QC3
+ *   USBIN 0x130b TYPE_C_STATUS_1 [7] UFP Rp default (USB 500/900) [6] Rp 1.5 A [5] Rp 3.0 A [4:0] FMB/open (smb-reg.h)
+ *         0x130e TYPE_C_STATUS_4 [7] DFP mode [6] VBUS [5] VBUS error [4] debounce done [3] audio adapter [0] CC attached
+ *         0x1307 APSD_STATUS [0] done   0x1308 APSD_RESULT [0] SDP [1] OCP [2] CDP [3] DCP [4] float [5] QC2 [6] QC3
  *         0x1310 INT_RT_STS [4] plugged  0x1340 USBIN_CMD_IL [0] suspend  0x1365 USBIN_LOAD_CFG [4] ICL override after APSD
  *         0x1366 USBIN_ICL_OPTIONS [0] use USBIN_CURRENT_LIMIT_CFG  0x1370 USBIN_CURRENT_LIMIT_CFG (25 mA/LSB)
  *         0x1380 AICL options [2] AICL_EN (read only)
@@ -34,6 +36,9 @@
 #define CHG_ICL_DCP_MA		2000u
 #define CHG_ICL_CDP_MA		1500u
 #define CHG_ICL_HVDCP_MA	1500u
+#define CHG_ICL_OCP_MA		1800u	/* OCP (= DCP downstream), Rp not 3.0 A */
+#define CHG_ICL_FLOAT_MA	1000u
+#define CHG_ICL_RP30_MA		2000u	/* Type-C Rp 3.0 A, our DCP cap (AICL stays on and backs off a weak source) */
 #define CHG_ICL_NO_AICL_MA	1500u	/* AICL off: no automatic back-off from a weak adapter */
 #ifndef CHARGER_FCC_MA
 #define CHG_FCC_MA		2000u	/* the kernel's default: 0.5 C of 4000 mAh, DTS has no constant-charge-current-max */
@@ -56,6 +61,8 @@
 #define R_JEITA_EN	0x1090u
 #define R_APSD_STATUS	0x1307u
 #define R_APSD_RESULT	0x1308u
+#define R_TYPEC1	0x130bu
+#define R_TYPEC4	0x130eu
 #define R_RT_STS	0x1310u
 #define R_CMD_IL	0x1340u
 #define R_LOAD_CFG	0x1365u
@@ -77,6 +84,7 @@ enum { CTL_OFF, CTL_RO, CTL_IDLE, CTL_WAIT, CTL_HOLD, CTL_APPLIED, CTL_FAILED, C
 
 struct snap {
 	int core_ok;
+	uint8_t typec1, typec4;
 	uint8_t st1, st2, st7, chg_en, fcc, fv, jeita, apsd_st, apsd_res, rt, cmd_il, load, icl_opt, icl_cfg, aicl_opt, icl_stat;
 	int have_icl_stat, have_jeita;
 };
@@ -87,7 +95,8 @@ static struct {
 	int saved;
 	uint8_t o_icl, o_opt, o_load, o_fcc;	/* registers before our first write */
 	int applied;
-	uint8_t applied_res, applied_icl_raw, applied_fcc_raw;
+	uint16_t applied_key;
+	uint8_t applied_icl_raw, applied_fcc_raw;
 	unsigned bad, writes, write_fails, applies, restores;
 	uint64_t last_ms;
 	int ticked;
@@ -140,6 +149,10 @@ static void sample(struct snap *s)
 	RD(R_ICL_CFG, icl_cfg);
 	RD(R_AICL_OPTIONS, aicl_opt);
 #undef RD
+	if (!pmic_chg_read(R_TYPEC1, &d))
+		s->typec1 = d;
+	if (!pmic_chg_read(R_TYPEC4, &d))
+		s->typec4 = d;
 	if (!pmic_chg_read(R_ICL_STATUS, &d)) {
 		s->icl_stat = d;
 		s->have_icl_stat = 1;
@@ -156,16 +169,46 @@ static int unsafe(const struct snap *s)
 	return (s->st2 & 0x6fu) != 0 || (s->st7 & 0x0fu) != 0;
 }
 
-/* input current limit (mA) for an APSD result; 0 = leave the hardware alone (SDP stays 500/900 mA) */
-static unsigned icl_for(uint8_t res)
+/*
+ * Type-C Rp the source advertises (TYPE_C_STATUS_1 [7:5]): 0 = none/invalid, 1 = default USB, 2 = 1.5 A, 3 = 3.0 A.
+ * Valid only for an attached UFP with VBUS, debounce done, no VBUS error and no audio adapter, and exactly one Rp bit.
+ * No PD stack here: the source stays at 5 V, Rp is only the current it promises at 5 V.
+ */
+static unsigned typec_rp(const struct snap *s)
 {
-	res &= 0x7fu;
+	uint8_t t4 = s->typec4, t1 = s->typec1 & 0xe0u;
+
+	if (!(t4 & 0x01u) || (t4 & 0x80u) || !(t4 & 0x40u) || !(t4 & 0x10u) || (t4 & 0x28u))
+		return 0;
+	if (t1 == 0x80u)
+		return 1;
+	if (t1 == 0x40u)
+		return 2;
+	if (t1 == 0x20u)
+		return 3;
+	return 0;
+}
+
+/*
+ * Input current limit (mA) for the source; 0 = leave the hardware alone (SDP stays 500/900 mA, unknown too).
+ * Policy after downstream smb-lib.c / mainline qcom_smbx.c: OCP is treated as DCP (a USB-C charger often
+ * classifies as OCP): Rp 3.0 A -> our cap, else 1800 mA (downstream DCP_CURRENT_UA; 1500 mA when AICL is off,
+ * see the cap in control()); FLOAT 1000 mA (downstream FLOAT_CHARGER_UA); DCP 2000, CDP 1500, QC2/QC3 1500.
+ */
+static unsigned icl_for(const struct snap *s)
+{
+	uint8_t res = s->apsd_res & 0x7fu;
+
 	if (res & (APSD_QC3 | APSD_QC2))
 		return CHG_ICL_HVDCP_MA;
 	if (res & APSD_DCP)
 		return CHG_ICL_DCP_MA;
 	if (res & APSD_CDP)
 		return CHG_ICL_CDP_MA;
+	if (res & APSD_OCP)
+		return typec_rp(s) == 3 ? CHG_ICL_RP30_MA : CHG_ICL_OCP_MA;
+	if (res & APSD_FLOAT)
+		return CHG_ICL_FLOAT_MA;
 	return 0;
 }
 
@@ -223,10 +266,12 @@ static int control(struct snap *s)
 		cs.ctl = CTL_WAIT;
 		return 0;
 	}
-	if (cs.applied && cs.applied_res != res)
+	uint16_t key = (uint16_t)(res | typec_rp(s) << 8);
+
+	if (cs.applied && cs.applied_key != key)
 		restore(s);
 
-	unsigned icl = icl_for(res);
+	unsigned icl = icl_for(s);
 	if (icl && !(s->aicl_opt & 4u) && icl > CHG_ICL_NO_AICL_MA)
 		icl = CHG_ICL_NO_AICL_MA;
 	unsigned fcc = CHG_FCC_MA;
@@ -268,7 +313,7 @@ static int control(struct snap *s)
 		cs.applies++;
 	if (icl) {
 		cs.applied = 1;
-		cs.applied_res = res;
+		cs.applied_key = key;
 	}
 	cs.ctl = CTL_APPLIED;
 	return wrote;
@@ -294,7 +339,7 @@ static void step(void)
 	}
 	int plug = (b->rt & 0x10u) != 0;
 
-	if (((a.rt ^ b->rt) & 0x10u) || ((a.apsd_res ^ b->apsd_res) & 0x7fu) || ((a.apsd_st ^ b->apsd_st) & 1u) ||
+	if (((a.rt ^ b->rt) & 0x10u) || ((a.apsd_res ^ b->apsd_res) & 0x7fu) || ((a.apsd_st ^ b->apsd_st) & 1u) || typec_rp(&a) != typec_rp(b) ||
 	    (unsafe(&a) != unsafe(b))) {
 		cs.ctl = plug ? CTL_WAIT : CTL_IDLE;
 		return;
@@ -504,6 +549,8 @@ void enxerto_charger_raw(char *buf, unsigned n)
 		sb_hex2(&b, s->jeita);
 	else
 		sb_str(&b, "??");
+	sb_str(&b, " rp=");
+	sb_u(&b, typec_rp(s));
 	sb_str(&b, " aicl=");
 	sb_u(&b, (s->aicl_opt >> 2) & 1u);
 	sb_str(&b, " w=");
