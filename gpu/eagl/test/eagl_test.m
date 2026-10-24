@@ -365,6 +365,24 @@ static void test_alpha_mask(void) {
         CHECK(ok && l[0] > 240 && r[0] < 10, "alpha mask %s reaches the shader as .a (left %d right %d)", variant == 0 ? "A008 surface" : variant == 1 ? "glTexImage2D ALPHA" : "LA08 surface", l[0], r[0]);
         free(pix);
     }
+    // live surface: a producer writes the IOSurface AFTER the upload (zeros first); binding the texture again must show the new pixels
+    {
+        const int W = 41, H = 41;
+        NSDictionary *d = @{ (id)kIOSurfaceWidth : @(W), (id)kIOSurfaceHeight : @(H), (id)kIOSurfaceBytesPerElement : @(1), (id)kIOSurfacePixelFormat : @(0x41303038u), (id)kIOSurfaceBytesPerRow : @(64) };
+        IOSurfaceRef sf = IOSurfaceCreate((CFDictionaryRef)d);
+        GLuint t; glGenTextures(1, &t); glBindTexture(GL_TEXTURE_2D, t);
+        BOOL ok = sf && [ctx texImageIOSurface:sf target:GL_TEXTURE_2D internalFormat:GL_ALPHA width:W height:H format:GL_ALPHA type:GL_UNSIGNED_BYTE plane:0 invert:YES];
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glClearColor(0, 0, 1, 1); glClear(GL_COLOR_BUFFER_BIT); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        uint8_t before[4]; glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, before);
+        if (sf) { IOSurfaceLock(sf, 0, NULL); memset(IOSurfaceGetBaseAddress(sf), 255, 64 * H); IOSurfaceUnlock(sf, 0, NULL); }
+        glBindTexture(GL_TEXTURE_2D, 0); glBindTexture(GL_TEXTURE_2D, t);       // CoreAnimation binds before it draws with a texture
+        glClear(GL_COLOR_BUFFER_BIT); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        uint8_t after[4]; glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, after);
+        printf("      live surface: before write alpha-as-red %d, after write + rebind %d (upload %d)\n", before[0], after[0], ok);
+        CHECK(ok && before[0] < 10 && after[0] > 240, "live IOSurface texture follows a write after the upload (%d -> %d)", before[0], after[0]);
+        if (sf) CFRelease(sf);
+    }
     // biplanar 4:2:0 (video-like snapshots): plane 0 = Y (R8), plane 1 = CbCr (RG8 at half size). A refused plane 1 left the chroma texture empty: solid green.
     {
         const int W = 64, H = 48;

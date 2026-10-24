@@ -44,6 +44,14 @@
 #endif
 
 #define EAGL_DEBUG(...) do { if (g_debug) fprintf(stderr, "EAGL(shim): " __VA_ARGS__); } while (0)
+// Live IOSurface textures: iOS binds an IOSurface as texture storage, so a producer that writes the surface after the bind (glyph renderers, snapshot
+// decoders, Control Center material) is seen at once. The shim copies at bind time; to keep the same behaviour every uploaded surface is remembered with its
+// IOSurface seed and the texture is re-uploaded when it is bound again (glBindTexture) after the seed changed.
+typedef struct { void *ctx; GLuint name; IOSurfaceRef surf; uint32_t seed, w, h, plane; GLenum ifmt, fmt, type; BOOL invert; } LiveSrc;
+#define MAX_LIVE 768
+static LiveSrc g_live[MAX_LIVE]; static int g_nlive; static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_reupload;                // inside a re-upload: use glTexSubImage2D, keep the client's sampler state, do not register again
+static unsigned g_live_reuploads;
 extern void gl_unimpl(void);
 static int g_direct = 1;            // display textures ARE the surface memory (default). BGL_NODIRECT=1 (boot-arg bgldirect=0, marker word "nodirect") falls back to texture + blit
 static int g_dirty_track = 1;       // copy display-size attachments only when drawn into (default; BGL_SYNC_ALL=1 copies every attachment at every flush). Copying both double-buffered display textures every flush overwrote the idle surface with stale pixels: flicker and a missing wallpaper
@@ -497,6 +505,25 @@ static void (*o_CopyTexSubImage2D)(GLenum, GLint, GLint, GLint, GLint, GLint, GL
 static void h_CopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h) { o_CopyTexSubImage2D(a, b, c, d, e, f, g, h); mark_bound_texture_dirty(); }
 static void (*o_TexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
 static void h_TexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const void *i) { o_TexSubImage2D(a, b, c, d, e, f, g, h, i); mark_bound_texture_dirty(); }
+static void (*o_BindTexture)(GLenum, GLuint);
+static void h_BindTexture(GLenum target, GLuint name) {
+    o_BindTexture(target, name);
+    if (target != GL_TEXTURE_2D || !name || !g_nlive) return;
+    EAGLContext *c = cur_ctx(); if (!c) return;
+    LiveSrc e; BOOL hit = NO;
+    pthread_mutex_lock(&g_live_lock);
+    for (int i = 0; i < g_nlive; i++) if (g_live[i].ctx == c && g_live[i].name == name) {
+        uint32_t now = IOSurfaceGetSeed(g_live[i].surf);
+        if (now != g_live[i].seed) { g_live[i].seed = now; e = g_live[i]; hit = YES; }
+        break;
+    }
+    pthread_mutex_unlock(&g_live_lock);
+    if (!hit) return;
+    g_reupload = 1;
+    [c texImageIOSurface:e.surf target:GL_TEXTURE_2D internalFormat:e.ifmt width:e.w height:e.h format:e.fmt type:e.type plane:e.plane invert:e.invert];
+    g_reupload = 0; g_live_reuploads++;
+    if (g_debug) { static int n; if (n++ < 100) fprintf(stderr, "EAGL(shim): live surface %u re-uploaded into texture %u (seed changed)\n", IOSurfaceGetID(e.surf), name); }
+}
 static void (*o_DeleteTextures)(GLsizei, const GLuint *);
 static void h_DeleteTextures(GLsizei n, const GLuint *t) {
     // A display texture that was drawn into but not yet copied (CoreAnimation recreates them) would lose its pixels: copy it out before it goes.
@@ -514,6 +541,11 @@ static void h_DeleteTextures(GLsizei n, const GLuint *t) {
         k--;
     }
     if (c) { c->_private->cur_att = -1; }
+    pthread_mutex_lock(&g_live_lock);
+    for (GLsizei i = 0; i < n; i++) for (int k = 0; k < g_nlive; k++) if (g_live[k].ctx == (void *)c && g_live[k].name == t[i]) {
+        CFRelease(g_live[k].surf); g_live[k] = g_live[--g_nlive]; k--;
+    }
+    pthread_mutex_unlock(&g_live_lock);
     o_DeleteTextures(n, t);
     if (c) update_cur_target(c);
 }
@@ -532,7 +564,7 @@ static const struct { const char *name; void **orig; void *hook; } g_dirty_hooks
     { "glClearBufferiv", (void **)&o_ClearBufferiv, h_ClearBufferiv }, { "glClearBufferuiv", (void **)&o_ClearBufferuiv, h_ClearBufferuiv }, { "glClearBufferfi", (void **)&o_ClearBufferfi, h_ClearBufferfi },
     { "glBlitFramebuffer", (void **)&o_BlitFramebuffer, h_BlitFramebuffer }, { "glCopyTexImage2D", (void **)&o_CopyTexImage2D, h_CopyTexImage2D },
     { "glCopyTexSubImage2D", (void **)&o_CopyTexSubImage2D, h_CopyTexSubImage2D }, { "glTexSubImage2D", (void **)&o_TexSubImage2D, h_TexSubImage2D },
-    { "glDeleteTextures", (void **)&o_DeleteTextures, h_DeleteTextures },
+    { "glDeleteTextures", (void **)&o_DeleteTextures, h_DeleteTextures }, { "glBindTexture", (void **)&o_BindTexture, h_BindTexture },
     { "glBindFramebuffer", (void **)&o_BindFramebuffer, h_BindFramebuffer }, { "glFramebufferTexture2D", (void **)&o_FramebufferTexture2D, h_FramebufferTexture2D },
     { "glFramebufferRenderbuffer", (void **)&o_FramebufferRenderbuffer, h_FramebufferRenderbuffer }, { "glDeleteFramebuffers", (void **)&o_DeleteFramebuffers, h_DeleteFramebuffers },
 };
@@ -629,6 +661,9 @@ static void eagl_install_hooks(void) {
 
 - (void)dealloc {
     struct _EAGLContextPrivate *p = _private;
+    pthread_mutex_lock(&g_live_lock);
+    for (int k = 0; k < g_nlive; k++) if (g_live[k].ctx == (void *)self) { CFRelease(g_live[k].surf); g_live[k] = g_live[--g_nlive]; k--; }
+    pthread_mutex_unlock(&g_live_lock);
     EAGL_DEBUG("context %p dealloc (%d attachments, osm %p)\n", self, p ? p->natt : -1, p ? p->osm : NULL);
     if (p) {
         if (cur_ctx() == self) [EAGLContext setCurrentContext:nil];
@@ -846,6 +881,7 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
         IOSurfaceUnlock(ioSurface, kIOSurfaceLockReadOnly, NULL);
     }
     EAGL_DEBUG("texImageIOSurface %p target 0x%lx ifmt 0x%lx %ux%u fmt 0x%lx type 0x%lx invert %d\n", ioSurface, (unsigned long)target, (unsigned long)internalFormat, width, height, (unsigned long)format, (unsigned long)type, invert);
+    const uint32_t seed_at_copy = ioSurface ? IOSurfaceGetSeed(ioSurface) : 0;     // taken before the copy: a write during it is picked up at the next bind
     if (cur_ctx() != self || !ioSurface || (plane != 0 && plane >= IOSurfaceGetPlaneCount(ioSurface))) do { EAGL_DEBUG("texImageIOSurface: refused (reason 1) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     OSType pf = IOSurfaceGetPixelFormat(ioSurface);
     // multi-plane surfaces (420 video-like snapshots: Y and CbCr planes uploaded as separate textures): geometry and memory of the requested plane
@@ -899,14 +935,29 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     GLenum ifmt = internalFormat == GL_BGRA_EXT ? GL_RGBA : (GLenum)internalFormat;
-    glTexImage2D((GLenum)target, 0, ifmt, w, h, 0, bgra8 ? GL_RGBA : (GLenum)format, (GLenum)type, tmp);
+    if (g_reupload) glTexSubImage2D((GLenum)target, 0, 0, 0, w, h, bgra8 ? GL_RGBA : (GLenum)format, (GLenum)type, tmp);
+    else glTexImage2D((GLenum)target, 0, ifmt, w, h, 0, bgra8 ? GL_RGBA : (GLenum)format, (GLenum)type, tmp);
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) EAGL_DEBUG("  glTexImage2D failed 0x%x (ifmt 0x%lx fmt 0x%lx type 0x%lx)\n", err, (unsigned long)internalFormat, (unsigned long)format, (unsigned long)type);
     // IOSurface textures have no mip chain: make the texture complete with sane defaults (the client overrides them if it cares).
-    glTexParameteri((GLenum)target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri((GLenum)target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!g_reupload) {
+        glTexParameteri((GLenum)target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri((GLenum)target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    if (!g_reupload && err == GL_NO_ERROR && (GLenum)target == GL_TEXTURE_2D) {      // remember it for seed checks
+        GLint bound = 0; glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+        pthread_mutex_lock(&g_live_lock);
+        int k = -1; for (int i = 0; i < g_nlive; i++) if (g_live[i].ctx == self && g_live[i].name == (GLuint)bound) { k = i; break; }
+        if (bound && k < 0 && g_nlive < MAX_LIVE) { k = g_nlive++; memset(&g_live[k], 0, sizeof g_live[k]); }
+        if (bound && k >= 0) {
+            if (g_live[k].surf && g_live[k].surf != ioSurface) CFRelease(g_live[k].surf);
+            if (g_live[k].surf != ioSurface) CFRetain(ioSurface);
+            g_live[k] = (LiveSrc){ self, (GLuint)bound, ioSurface, seed_at_copy, w, h, plane, (GLenum)internalFormat, (GLenum)format, (GLenum)type, invert };
+        }
+        pthread_mutex_unlock(&g_live_lock);
+    }
     glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, oldRow);
     free(tmp);
