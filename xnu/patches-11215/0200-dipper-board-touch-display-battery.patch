@@ -25,7 +25,7 @@ index 3d9c06a5b0d33107a60f46bc9a8089cee36d558b..0ffe9bce062bcf3fd2fb7da74544d679
 +
  #endif /* _SWEET_BOARD_H_ */
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
-index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39cd0ac49b 100644
+index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..1aa0044009062034f24c77895e12c53a7171bdda 100644
 --- a/bsd/dev/sweet_touch.c
 +++ b/bsd/dev/sweet_touch.c
 @@ -15,6 +15,14 @@
@@ -91,7 +91,7 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
  static int
  touch_goodix_ack(void)
  {
-@@ -981,6 +1016,139 @@ touch_beryllium_start(void)
+@@ -981,6 +1016,150 @@ touch_beryllium_start(void)
  	return true;
  }
  
@@ -188,6 +188,13 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
 +	return err ? err : ETIMEDOUT;
 +}
 +
++/*
++ * boot-arg sweettouchstep=<ms>: pause after each bring-up step so the live/persistent log gets the
++ * last line out before a step that resets the SoC (both lose the final second otherwise).
++ */
++static unsigned touch_step_ms;
++#define TOUCH_STEP() do { if (touch_step_ms) touch_wait(touch_step_ms); } while (0)
++
 +/* Mi 8: ST FTM5 at 0x49. Its reset pin is touch-only, so a pulse is safe. */
 +static bool
 +touch_dipper_start(void)
@@ -196,6 +203,7 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
 +	    tb->rst, touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->rst)), touch_rd(st.gpio, TOUCH_GPIO_IO(tb->rst)),
 +	    tb->irq, touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->irq)), touch_rd(st.gpio, TOUCH_GPIO_IO(tb->irq)),
 +	    touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->sda)), touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->scl)));
++	TOUCH_STEP();
 +	touch_gpio(tb->irq, 0, 3, 0, false, false);       /* input, pull-up (active-low level IRQ) */
 +	if (st.bitbang) {
 +		touch_gpio(tb->sda, 0, 0, 0, false, false);
@@ -210,8 +218,11 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
 +	touch_wait(10);
 +	touch_gpio(tb->rst, 0, 0, 0, true, true);
 +	touch_wait(20);
++	printf("SWEET TOUCH: ftm5 reset pulsed, polling for READY\n");
++	TOUCH_STEP();
 +	int err = touch_ftm5_wait(FTM5_EVT_READY, 1000);
 +	printf("SWEET TOUCH: ftm5 reset at %#x: err=%d\n", FTM5_ADDR, err);
++	TOUCH_STEP();
 +	if (!err) {
 +		/* setScanMode(SCAN_MODE_ACTIVE, 0x01): mutual sense on */
 +		const uint8_t sense_on[3] = {0xa0, 0x00, 0x01};
@@ -231,7 +242,39 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
  static bool
  touch_se_init(void)
  {
-@@ -1068,7 +1236,7 @@ touch_thread(void *arg, wait_result_t result)
+@@ -1050,7 +1229,8 @@ touch_thread(void *arg, wait_result_t result)
+ 	 * below hangs the SoC, the persistent log and the GUI got there first.
+ 	 */
+ 	(void)PE_parse_boot_argn("sweettouchdelay", &delay_s, sizeof(delay_s));
+-	printf("SWEET TOUCH: starting in %u s\n", delay_s);
++	(void)PE_parse_boot_argn("sweettouchstep", &touch_step_ms, sizeof(touch_step_ms));
++	printf("SWEET TOUCH: starting in %u s (step pause %u ms)\n", delay_s, touch_step_ms);
+ 	touch_wait(delay_s * 1000u);
+ 	printf("SWEET TOUCH: mapping GCC/TLMM/%s\n", tb->name);
+ 	st.gcc = ml_io_map(TOUCH_GCC_PA, 0x60000);
+@@ -1060,15 +1240,29 @@ touch_thread(void *arg, wait_result_t result)
+ 		printf("SWEET TOUCH: MMIO mapping failed\n");
+ 		goto out;
+ 	}
++	TOUCH_STEP();
+ 	if (!tb->rpmh_l11c) {
++		/*
++		 * Mi 8: ABL leaves the wrapper1/SE14 clocks gated (the Poco F1's ABL does not), and the first
++		 * SE read below without them resets the SoC. Vote them (GCC only) before touching the SE.
++		 */
++		if (tb == &touch_dipper) {
++			bool clk = touch_clocks();
++			printf("SWEET TOUCH: dipper clocks voted before SE access: %s\n", clk ? "ok" : "FAILED");
++			TOUCH_STEP();
++			if (!clk) {
++				goto out;
++			}
++		}
+ 		uint32_t ifdis = touch_rd(st.se, 0x64), fw = touch_rd(st.se, SE_FW);
+ 		st.bitbang = (ifdis & 1u) != 0;
+ 		printf("SWEET TOUCH: %s fw=%#x if-disable=%#x -> %s\n", tb->name, fw, ifdis,
+ 		    st.bitbang ? "GSI-only SE, bit-banged I2C on the GPIOs" : "FIFO I2C");
++		TOUCH_STEP();
  		if (!st.bitbang && (!touch_clocks() || !touch_se_init())) {
  			goto out;
  		}
@@ -240,7 +283,7 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
  			goto out;
  		}
  		goto selected;
-@@ -1118,7 +1286,7 @@ touch_thread(void *arg, wait_result_t result)
+@@ -1118,7 +1312,7 @@ touch_thread(void *arg, wait_result_t result)
  selected:
  	printf("SWEET TOUCH: selected %s, %ux%u, poll=%ums i2c-half=%uus irq-hint=%d\n",
  	    st.kind == TOUCH_NVT ? "NT36672A" : st.kind == TOUCH_FT8719 ? "Focaltech FT8719" :
@@ -249,7 +292,7 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
  	    tb->w, tb->h, touch_poll_ms, bb_half_us, st.irq_hint);
  	unsigned errors = 0, ticks = 0;
  	while (!st.dead) {
-@@ -1126,7 +1294,9 @@ selected:
+@@ -1126,7 +1320,9 @@ selected:
  		/* sweet's IRQ lines idle high (low = report pending); NT36672A pulses high. */
  		bool irq_level = touch_rd(st.gpio, TOUCH_GPIO_IO(tb->irq)) & 1u;
  		bool pending = st.kind == TOUCH_NVT ? irq_level : !irq_level;
@@ -260,7 +303,7 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
  			/* NT36672A pulses its IRQ: use the TLMM edge latch */
  			pending = touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->irq) + 0xcu) & 1u;
  			if (pending) {
-@@ -1141,7 +1311,7 @@ selected:
+@@ -1141,7 +1337,7 @@ selected:
  		bool periodic = st.kind == TOUCH_FT8719 ? (++ticks % 50u) == 0 :
  		    (st.kind != TOUCH_NVT && (++ticks % 10u) == 0);
  		/* slow bit-banged readers: IRQ edge or finger down only */
@@ -269,7 +312,7 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
  		/*
  		 * While a finger is down read on every IRQ edge (a new frame) and at
  		 * least every ~8 ms, so a missed edge cannot leave a stuck contact;
-@@ -1156,7 +1326,8 @@ selected:
+@@ -1156,7 +1352,8 @@ selected:
  			touch_trace_why = pending ? 'e' : 'a';
  			int err = st.kind == TOUCH_GOODIX ? touch_goodix() :
  			    st.kind == TOUCH_NVT ? touch_novatek() :
@@ -279,7 +322,7 @@ index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39
  			if (err) {
  				/* At most one line a minute: bad frames are frequent and harmless */
  				static uint64_t last_log;
-@@ -1197,7 +1368,7 @@ sweet_touch_init(void)
+@@ -1197,7 +1394,7 @@ sweet_touch_init(void)
  	}
  	st.started = true;
  	if (sweet_board_beryllium()) {
@@ -344,10 +387,10 @@ index e40174885569fd9a9ad3f7a75a7047eedbb1922e..55e32eef131fafccb9d8fe2c926c8901
  		    (charging ? kIOBatteryCharge : 0))};
  		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index fa501356b8ed0ffd24c660badf5d883f347c9876..dfde84409ee42700a1f1023e34eb99b0c3f49b44 100644
+index 5ebf6d7e67b2a4f8f7604f61d359fa541e7e53a2..6f229b92b05e1afdf518f7225b15767b45029448 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -684,6 +684,38 @@ static const struct {
+@@ -904,6 +904,38 @@ static const struct {
  #define SWEET_MDP_LM_BORDER0    0x08u   /* LM0 +0x08 / +0x10, flushed with CTL_FLUSH BIT(6) (LM_0) */
  #define SWEET_MDP_LM_BORDER1    0x10u
  #define SWEET_MDP_LM0_FLUSH     (1u << 6)
@@ -386,7 +429,7 @@ index fa501356b8ed0ffd24c660badf5d883f347c9876..dfde84409ee42700a1f1023e34eb99b0
  
  /*
   * panic: put back everything the page flipper / scaler changed, so ABL's
-@@ -718,6 +750,7 @@ sweet_fb_restore_boot_scanout(void)
+@@ -938,6 +970,7 @@ sweet_fb_restore_boot_scanout(void)
  	*(volatile uint32_t *)(sweet_mdp_restore.base + SWEET_MDP_CTL0 + SWEET_MDP_CTL_FLUSH) =
  	    sweet_mdp_restore.flush;
  	__asm__ volatile ("dsb sy" ::: "memory");
@@ -394,7 +437,7 @@ index fa501356b8ed0ffd24c660badf5d883f347c9876..dfde84409ee42700a1f1023e34eb99b0
  }
  
  static inline void
-@@ -734,6 +767,76 @@ mdp_rd(vm_offset_t base, uint32_t off)
+@@ -954,6 +987,76 @@ mdp_rd(vm_offset_t base, uint32_t off)
  	return v;
  }
  
@@ -471,7 +514,7 @@ index fa501356b8ed0ffd24c660badf5d883f347c9876..dfde84409ee42700a1f1023e34eb99b0
  /* Read-only: which pipe scans ABL's framebuffer, and the display path state. */
  void
  AppleCLCD::mdpProbe(void)
-@@ -782,6 +885,9 @@ AppleCLCD::mdpProbe(void)
+@@ -1002,6 +1105,9 @@ AppleCLCD::mdpProbe(void)
  	IOLog("SWEET MDP: INTF1 frame count %u -> %u in 100 ms (line count en 0x%x); pipe %s\n",
  	    f0, f1, mdp_rd(fMdp + SWEET_MDP_INTF1, 0xa8),
  	    fPipe >= 0 ? sweet_mdp_pipes[fPipe].name : "NOT FOUND");
@@ -481,7 +524,7 @@ index fa501356b8ed0ffd24c660badf5d883f347c9876..dfde84409ee42700a1f1023e34eb99b0
  }
  
  /*
-@@ -1079,6 +1185,7 @@ AppleCLCD::scanAddr(uint32_t pa, uint32_t stride, bool hwFrame)
+@@ -1311,6 +1417,7 @@ AppleCLCD::scanAddr(uint32_t pa, uint32_t stride, bool hwFrame)
  	fLmPending = false;
  	*(volatile uint32_t *)(fMdp + SWEET_MDP_CTL0 + SWEET_MDP_CTL_FLUSH) = fl;
  	__asm__ volatile ("dsb sy" ::: "memory");
@@ -489,7 +532,7 @@ index fa501356b8ed0ffd24c660badf5d883f347c9876..dfde84409ee42700a1f1023e34eb99b0
  	fLastFlush = fl;
  }
  
-@@ -1348,6 +1455,11 @@ AppleCLCD::blInit(void)
+@@ -1598,6 +1705,11 @@ AppleCLCD::blInit(void)
  	uint8_t mod = 0, sync = 0;
  	uint16_t raw[SWEET_WLED_STRINGS];
  
