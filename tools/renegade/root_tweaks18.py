@@ -641,6 +641,7 @@ def event_timing(root):
 # All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER, BGLRENDER) or the
 # --no-<feature> flags of `renegade root` and `renegade update`, which set the same variables.
 # Opt-in (off by default): RENEGADE_BGMTL=1 (bgmtl(): the Bergamota Metal device linked into MercuryPosterExtension only, inert until armed);
+# RENEGADE_BGMTL_ARM=1 additionally writes /private/var/tmp/bgmtl.arm (the user armed Mercury on the test phone); RENEGADE_BGMTL_DIR = the three signed-or-built dylibs.
 # RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd, cryptexd(): fallback that removes the
 # crash-looping cryptexd job.
 # Every function is idempotent: `renegade update` runs them again on a finished image.
@@ -827,7 +828,15 @@ def bgmtl(root):
         note_skip('bgmtl', 'bgmtl dylibs not found in ' + src + '; MercuryPosterExtension left alone')
         return
     for n in names:                                        # first: the binary must never name a missing dylib
-        install_file(os.path.join(src, n), os.path.join(root, BGMTL_LIB_DIR.lstrip('/'), n), 0o755)
+        # signed exactly as the ones on the test phone were (`pacstrip --sign`: PAC stripped, ad hoc), whatever state they were built in
+        sd = tempfile.mkdtemp(prefix='renegade-bgmtl-lib-')
+        try:
+            tmpl = os.path.join(sd, n)
+            shutil.copyfile(os.path.join(src, n), tmpl)
+            subprocess.run([sys.executable, '-I', os.path.join(HERE, 'pacstrip.py'), '--sign', tmpl], check=True, stdout=subprocess.DEVNULL)
+            install_file(tmpl, os.path.join(root, BGMTL_LIB_DIR.lstrip('/'), n), 0o755)
+        finally:
+            shutil.rmtree(sd, ignore_errors=True)
     print('bgmtl: dylibs installed in', BGMTL_LIB_DIR)
     if macho_has_dylib(binp, BGMTL_INJECT):
         print('bgmtl: MercuryPosterExtension already links', BGMTL_INJECT)
@@ -850,6 +859,12 @@ def bgmtl(root):
         shutil.rmtree(tmpd, ignore_errors=True)
     print('bgmtl: MercuryPosterExtension links %s (re-signed ad hoc as %s, %d entitlements kept); inert until /private/var/tmp/bgmtl.arm exists' % (
         BGMTL_INJECT, ident[0], len(ents or {})))
+    if os.environ.get('RENEGADE_BGMTL_ARM') == '1':          # the user's decision: arm it in the image, as the test phone is
+        arm = os.path.join(root, 'private/var/tmp/bgmtl.arm')
+        os.makedirs(os.path.dirname(arm), exist_ok=True)
+        with open(arm, 'w') as f:
+            f.write('armed by RENEGADE_BGMTL_ARM=1\n')
+        print('bgmtl: /private/var/tmp/bgmtl.arm written: Mercury renders through BGMTLDevice at boot (dead-man and kill switch bgmtl.off apply)')
 
 
 FIRSTBOOT_LABEL = 'org.bergamota.renegade-firstboot'
