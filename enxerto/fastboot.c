@@ -620,6 +620,9 @@ static void fb_oem(struct fb *fb, const char *a)
 		if (fb->p->gpt_info)
 			fb->p->gpt_info(fb->p->ctx, fb);
 		fb_resp(fb, "OKAY", "");
+	} else if (fb_eq(a, "mdp") || fb_eq(a, "dispcc") || fb_starts(a, "peek:") || fb_starts(a, "poke:")) {
+		const char *e = fb->p->display_diag ? fb->p->display_diag(fb->p->ctx, fb, a) : "no display diagnostics";
+		fb_resp(fb, e ? "FAIL" : "OKAY", e ? e : "");
 	} else {
 		fb_resp(fb, "FAIL", "unknown oem command");
 	}

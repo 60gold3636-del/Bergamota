@@ -5,10 +5,17 @@
 #           research/ios18/enxerto-boot-ios18full.img
 # Test it with `fastboot boot OUT.img` (the phone must hold the image from tools/renegade/mkroot-full.sh
 # flashed to userdata: docs/IOS18_PORT.md section 12). Nothing is flashed or booted here.
+# BOARD=dipper builds the Mi 8 image (default ADT enxerto/out/dipper-hi-3x.adt from
+# `tools/mkadt.py enxerto/out/dipper-hi-3x.adt --board dipper --highmem --display-scale 3`).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+BOARD=${BOARD:-beryllium}
 KERNEL=${1:-xnu/out-0139/kernel.development.sweet}
-ADT=${2:-../ios-beryllium/shim/out/beryllium-hi-3x.adt}
+if [ "$BOARD" = dipper ]; then
+	ADT=${2:-enxerto/out/dipper-hi-3x.adt}
+else
+	ADT=${2:-../ios-beryllium/shim/out/beryllium-hi-3x.adt}
+fi
 OUT=${3:-research/ios18/enxerto-boot-ios18full.img}
 # RAM-disk cmdline of docs/IOS18_PORT.md section 9 with rd=md0 -> rd=ufsroot0 ufsrw=1 rootrw=1.
 # ignition_level=1: dyld's libignition looks for the cache in /System/Library/Caches/com.apple.dyld only.
@@ -24,7 +31,7 @@ if [ "${APPLE_LOGO:-1}" != 0 ]; then
 	python3 tools/mkapplelogo.py "${LOGO_SRC[@]}" || echo "warning: no Apple logo (Bergamota screen stays)" >&2
 fi
 python3 tools/mkpayload.py "$KERNEL" "$ADT" enxerto/out/payload-ios18full.bin --cmdline "$CMDLINE"
-BOARD=beryllium enxerto/build.sh "$PWD/enxerto/out/payload-ios18full.bin"
+BOARD=$BOARD enxerto/build.sh "$PWD/enxerto/out/payload-ios18full.bin"
 cp enxerto/out/enxerto-boot.img "$OUT"
 python3 tools/unpack_bootv2.py "$OUT" enxerto/out/check-ios18full >/dev/null 2>&1 && cmp enxerto/out/check-ios18full/ramdisk enxerto/out/payload-ios18full.bin && echo "payload check: ramdisk == payload"
 ls -l "$OUT"

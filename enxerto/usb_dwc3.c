@@ -431,9 +431,22 @@ static void ud_stall(void)
 
 /* ---- descriptors: VID 0x18d1 PID 0x4ee0, fastboot interface ff/42/03, bulk 0x81/0x01 ---- */
 
+/*
+ * Mi 8 builds answer as 0x18d1:0xd00d, the ID of Xiaomi ABL's own fastboot: Windows then binds the
+ * WinUSB driver it already uses for the phone's fastboot (no 0x4ee0 entry in Xiaomi's/OEM
+ * android_winusb.inf; Windows showed Code 28 for the Bergamota device). Serial and strings stay.
+ */
+#if defined(BOARD_DIPPER)
+#define DEV_PID_LO	0x0d
+#define DEV_PID_HI	0xd0
+#else
+#define DEV_PID_LO	0xe0
+#define DEV_PID_HI	0x4e
+#endif
+
 static const uint8_t dev_desc[18] = {
 	18, 1, 0x00, 0x02, 0x00, 0x00, 0x00, 64,
-	0xd1, 0x18, 0xe0, 0x4e, 0x00, 0x01, 1, 2, 3, 1,
+	0xd1, 0x18, DEV_PID_LO, DEV_PID_HI, 0x00, 0x01, 1, 2, 3, 1,
 };
 static const uint8_t dev_qual[10] = { 10, 6, 0x00, 0x02, 0, 0, 0, 64, 1, 0 };
 static const uint8_t cfg_desc[32] = {

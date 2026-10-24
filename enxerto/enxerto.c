@@ -374,9 +374,51 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+#if defined(BOARD_DIPPER) && !defined(NO_CMD_REFRESH)
+/*
+ * Mi 8: the EA8074 AMOLED is a DSI command-mode panel. ABL sends its splash
+ * once and the panel keeps its own copy, so nothing drawn into the
+ * framebuffer would ever appear. Turn on autorefresh (a frame on every TE)
+ * on the pingpong ABL set up with tear check, as the kernel does
+ * (SweetFramebuffer.cpp sweet_mdp_cmd_setup; Linux dpu_hw_pingpong.c).
+ * DPU at 0xae00000 + the catalog offsets + 0x1000: CTL_0 0x2000, PINGPONG_n
+ * 0x71000 + 0x800 * n.
+ */
+#define MDP_BASE		0x0ae00000UL
+#define MDP_CTL0_START		(MDP_BASE + 0x2000 + 0x1c)
+#define MDP_PP(n)		(MDP_BASE + 0x71000 + 0x800 * (n))
+#define PP_TEAR_CHECK_EN	0x00
+#define PP_AUTOREFRESH_CONFIG	0x30
+
+static void display_cmd_refresh(void)
+{
+	for (unsigned n = 0; n < 4; n++) {
+		if (!(rd32(MDP_PP(n) + PP_TEAR_CHECK_EN) & 1))
+			continue;
+		/*
+		 * Mi 8 ABL (2026-10-24, oem mdp): PP0 autorefresh is already on (0x80000001) and the
+		 * screen follows the framebuffer. A CTL_START on top of a running autorefresh wedged the
+		 * DSI (STATUS 0x5 forever, HS FIFO underflow, white panel): leave it alone.
+		 */
+		if (rd32(MDP_PP(n) + PP_AUTOREFRESH_CONFIG) & (1U << 31))
+			return;
+		wr32(MDP_PP(n) + PP_AUTOREFRESH_CONFIG, (1U << 31) | 1);
+		__asm__ volatile("dsb sy" ::: "memory");
+		wr32(MDP_CTL0_START, 1);	/* first frame starts the loop */
+		__asm__ volatile("dsb sy" ::: "memory");
+		return;
+	}
+}
+#else
+static void display_cmd_refresh(void) {}
+#endif
+
 void enxerto_main(uint64_t dtb)
 {
 	struct mmu_info mi;
+
+	/* Mi 8 command-mode panel: keep the framebuffer on screen (no-op on other boards) */
+	display_cmd_refresh();
 
 	/*
 	 * Fast charging from the very first moment (charger.c): ABL leaves the PMI8998 on its slow defaults.

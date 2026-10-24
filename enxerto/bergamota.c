@@ -768,6 +768,150 @@ static const char *p_usb_speed(void *ctx)
 	return "unknown";
 }
 
+/*
+ * ---- display diagnostics (oem mdp / peek / poke) ----
+ * For the Mi 8's command-mode panel: what ABL left in the display path, and single register
+ * writes to try a refresh live. Every access is limited to the MDSS block (MDP, DSI0/1 and their
+ * PHYs). MMU is off here, so these are plain Device accesses. Offsets as SweetFramebuffer.cpp:
+ * Linux dpu_hw_catalog sdm845 + 0x1000 (the catalog counts from mdp_phys 0xae01000).
+ */
+#define MDSS_BASE	0x0ae00000UL
+#define MDSS_END	0x0aeb0000UL
+
+static uint32_t mdss_rd(uint64_t a)
+{
+	return *(volatile uint32_t *)a;
+}
+
+static int mdss_ok(uint64_t a)
+{
+	return a >= MDSS_BASE && a < MDSS_END && !(a & 3);
+}
+
+/* Display clock controller: readable (clock/GDSC state), never written from here. */
+#define DISPCC_BASE	0x0af00000UL
+#define DISPCC_END	0x0af10000UL
+
+static int peek_ok(uint64_t a)
+{
+	return mdss_ok(a) || (a >= DISPCC_BASE && a < DISPCC_END && !(a & 3));
+}
+
+/* "<name><n> v0 v1 v2 v3": four registers of one block instance */
+static void diag_block(struct fb *fb, const char *name, unsigned n, uint64_t base,
+		       uint32_t o0, uint32_t o1, uint32_t o2, uint32_t o3)
+{
+	static char line[64];
+	struct sb b = { line, 0, sizeof line };
+	line[0] = 0;
+	sb_str(&b, name); sb_u(&b, n);
+	sb_str(&b, " "); sb_hex(&b, mdss_rd(base + o0));
+	sb_str(&b, " "); sb_hex(&b, mdss_rd(base + o1));
+	sb_str(&b, " "); sb_hex(&b, mdss_rd(base + o2));
+	sb_str(&b, " "); sb_hex(&b, mdss_rd(base + o3));
+	fb_info(fb, line);
+}
+
+static int diag_hex(const char *s, uint64_t *v, const char **end)
+{
+	uint64_t x = 0;
+	int n = 0;
+	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+		s += 2;
+	for (; n < 16; n++, s++) {
+		unsigned d;
+		if (*s >= '0' && *s <= '9') d = *s - '0';
+		else if (*s >= 'a' && *s <= 'f') d = *s - 'a' + 10;
+		else if (*s >= 'A' && *s <= 'F') d = *s - 'A' + 10;
+		else break;
+		x = x << 4 | d;
+	}
+	*v = x;
+	*end = s;
+	return n > 0;
+}
+
+static const char *p_display_diag(void *ctx, struct fb *fb, const char *a)
+{
+	static char line[64];
+	uint64_t addr, val;
+	const char *e;
+
+	(void)ctx;
+	if (starts(a, "mdp")) {
+		fb_info(fb, "MDSS hw / CTLn: layer0 top flush start");
+		diag_block(fb, "MDSS", 0, MDSS_BASE, 0x0, 0x10, 0x14, 0x1000);
+		for (unsigned n = 0; n < 5; n++)
+			diag_block(fb, "CTL", n, MDSS_BASE + 0x2000 + 0x200 * n, 0x00, 0x14, 0x18, 0x1c);
+		fb_info(fb, "VIGn/DMAn: src0 size ystride format");
+		for (unsigned n = 0; n < 4; n++)
+			diag_block(fb, "VIG", n, MDSS_BASE + 0x5000 + 0x2000 * n, 0x14, 0x00, 0x24, 0x30);
+		for (unsigned n = 0; n < 4; n++)
+			diag_block(fb, "DMA", n, MDSS_BASE + 0x25000 + 0x2000 * n, 0x14, 0x00, 0x24, 0x30);
+		fb_info(fb, "LMn: op out border0 border1");
+		for (unsigned n = 0; n < 2; n++)
+			diag_block(fb, "LM", n, MDSS_BASE + 0x45000 + 0x1000 * n, 0x00, 0x04, 0x08, 0x10);
+		fb_info(fb, "PPn: tearcheck vsynccfg linecount autorefresh");
+		for (unsigned n = 0; n < 4; n++)
+			diag_block(fb, "PP", n, MDSS_BASE + 0x71000 + 0x800 * n, 0x00, 0x04, 0x2c, 0x30);
+		fb_info(fb, "INTFn: config tg_en framecount linecount");
+		for (unsigned n = 0; n < 4; n++)
+			diag_block(fb, "INTF", n, MDSS_BASE + 0x6b000 + 0x800 * n, 0x04, 0x6c, 0xac, 0xb0);
+		fb_info(fb, "DSIn: hwver ctrl status cmdcfg0");
+		for (unsigned n = 0; n < 2; n++)
+			diag_block(fb, "DSI", n, MDSS_BASE + 0x94000 + 0x2000 * n, 0x00, 0x04, 0x08, 0x40);
+		struct sb b = { line, 0, sizeof line };
+		line[0] = 0;
+		sb_str(&b, "FB "); sb_hex(&b, (uint32_t)FB_BASE);
+		sb_str(&b, " px0 "); sb_hex(&b, *(volatile uint32_t *)FB_BASE);
+		sb_str(&b, " "); sb_u(&b, FB_W); sb_str(&b, "x"); sb_u(&b, FB_H);
+		fb_info(fb, line);
+		return 0;
+	}
+	if (starts(a, "dispcc")) {
+		/* CBCR: bit 31 CLK_OFF, bit 0 CLK_ENABLE (Linux dispcc-sdm845.c halt_reg offsets); GDSCR bit 31 PWR_ON */
+		fb_info(fb, "dispcc: mdp pclk0 byte0 byte0_intf");
+		diag_block(fb, "CC", 0, DISPCC_BASE, 0x200c, 0x2004, 0x2028, 0x202c);
+		fb_info(fb, "dispcc: esc0 vsync ahb axi");
+		diag_block(fb, "CC", 1, DISPCC_BASE, 0x2038, 0x2024, 0x4004, 0x4008);
+		fb_info(fb, "dispcc: rot mdp_lut rscc_vsync gdscr");
+		diag_block(fb, "CC", 2, DISPCC_BASE, 0x2014, 0x201c, 0x5008, 0x3000);
+		return 0;
+	}
+	if (starts(a, "peek:")) {
+		uint64_t count = 1;
+		if (!diag_hex(a + 5, &addr, &e) || (*e == ':' && !diag_hex(e + 1, &count, &e)) || *e)
+			return "usage: oem peek:<hex addr>[:<hex count>]";
+		if (count < 1 || count > 16 || !peek_ok(addr) || !peek_ok(addr + 4 * (count - 1)))
+			return "peek: MDSS 0ae00000..0aeb0000 / DISPCC 0af00000..0af10000";
+		for (uint64_t i = 0; i < count; i += 4) {
+			struct sb b = { line, 0, sizeof line };
+			line[0] = 0;
+			sb_hex(&b, (uint32_t)(addr + 4 * i)); sb_str(&b, ":");
+			for (uint64_t j = i; j < count && j < i + 4; j++) {
+				sb_str(&b, " "); sb_hex(&b, mdss_rd(addr + 4 * j));
+			}
+			fb_info(fb, line);
+		}
+		return 0;
+	}
+	if (starts(a, "poke:")) {
+		if (!diag_hex(a + 5, &addr, &e) || *e != ':' || !diag_hex(e + 1, &val, &e) || *e || val > 0xffffffffULL)
+			return "usage: oem poke:<hex addr>:<hex value>";
+		if (!mdss_ok(addr))
+			return "poke: MDSS 0ae00000..0aeb0000, aligned";
+		*(volatile uint32_t *)addr = (uint32_t)val;
+		__asm__ volatile("dsb sy" ::: "memory");
+		struct sb b = { line, 0, sizeof line };
+		line[0] = 0;
+		sb_hex(&b, (uint32_t)addr); sb_str(&b, " <- "); sb_hex(&b, (uint32_t)val);
+		sb_str(&b, " reads "); sb_hex(&b, mdss_rd(addr));
+		fb_info(fb, line);
+		return 0;
+	}
+	return "unknown display command";
+}
+
 /* ---- download window ---- */
 
 static void carve(uint64_t *base, uint64_t *end, uint64_t lo, uint64_t hi)
@@ -848,6 +992,7 @@ const char *bergamota_fastboot(uintptr_t dtb)
 	pl.gpt_info = p_gpt_info;
 	pl.usb_speed = p_usb_speed;
 	pl.charger = p_charger;
+	pl.display_diag = p_display_diag;
 	fb_init(&fb, &tr, &pl);
 	g_fb = &fb;
 	ui_last_ms = ms_now();

@@ -68,6 +68,12 @@ struct fb_platform {
 	const char *(*usb_speed)(void *ctx);
 	/* getvar bergamota-charger (raw=0) / bergamota-charger-raw (raw=1): at most 47 characters into buf; may be NULL */
 	void (*charger)(void *ctx, int raw, char *buf, unsigned n);
+	/*
+	 * Display bring-up (Mi 8 command-mode panel): `oem mdp` dumps the display path, `oem peek:<a>[:<n>]`
+	 * reads, `oem poke:<a>:<v>` writes one register. arg is the text after "oem "; the platform limits
+	 * addresses to the display block. NULL = success. May be NULL (the commands then answer FAIL).
+	 */
+	const char *(*display_diag)(void *ctx, struct fb *fb, const char *arg);
 };
 
 /* what a long command is doing, for the screen */

@@ -2,7 +2,7 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium] [--display-scale 3|2] [--points WxH] [--lowpool BASE:SIZE]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium|dipper] [--display-scale 3|2] [--points WxH] [--lowpool BASE:SIZE]
 """
 import hashlib, os, struct, sys
 
@@ -71,6 +71,12 @@ BOARDS = {
         # Bluetooth driver: the node is beryllium only.
         bluetooth=True),
 }
+# Mi 8 (dipper): SDM845 with the Poco F1's reserved-memory layout (dipper-p0.dtsi
+# = beryllium-p0.dtsi) and the same WCN3990; Samsung EA8074 AMOLED 1080x2248.
+# 'xiaomi,beryllium' stays so every SDM845 driver path applies; 'xiaomi,dipper'
+# selects the FTM5 touch, the command-mode display refresh and no WLED.
+BOARDS['dipper'] = dict(BOARDS['beryllium'], fb_wh=(1080, 2248),
+                        compat=['xiaomi,dipper', 'xiaomi,beryllium', 'xiaomi,sweet', 'qcom,sdm845'])
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
@@ -153,8 +159,8 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
     fb_w, fb_h = b['fb_wh']
     if lowpool is not None:
         lp_base, lp_size = lowpool
-        if board != 'beryllium' or qemu:
-            raise SystemExit('--lowpool: Poco F1 only (--board beryllium, not --qemu)')
+        if board not in ('beryllium', 'dipper') or qemu:
+            raise SystemExit('--lowpool: SDM845 only (--board beryllium|dipper, not --qemu)')
         if lp_base < LOWPOOL_MIN or lp_base + lp_size > LOWPOOL_MAX or lp_base & 0x3fff or lp_size & 0x3fff:
             raise SystemExit(f'--lowpool {lp_base:#x}:{lp_size:#x}: must be 16K aligned inside {LOWPOOL_MIN:#x}..{LOWPOOL_MAX:#x}')
         if lp_base < phys_base + mem_size and phys_base < lp_base + lp_size:

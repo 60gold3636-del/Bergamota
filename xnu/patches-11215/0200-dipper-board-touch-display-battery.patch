@@ -1,0 +1,503 @@
+diff --git a/bsd/dev/sweet_board.h b/bsd/dev/sweet_board.h
+index 3d9c06a5b0d33107a60f46bc9a8089cee36d558b..0ffe9bce062bcf3fd2fb7da74544d6796e952773 100644
+--- a/bsd/dev/sweet_board.h
++++ b/bsd/dev/sweet_board.h
+@@ -76,4 +76,21 @@ sweet_board_beryllium(void)
+ 	return cached == 1;
+ }
+ 
++/*
++ * Xiaomi Mi 8 (dipper) is SDM845 like the Poco F1 and its ADT also lists
++ * "xiaomi,beryllium", so every beryllium path (PMIC, USB, UFS, battery,
++ * WCN3990, A630, cpufreq) applies unchanged. Only these differ:
++ * Samsung EA8074 AMOLED 1080x2248 in DSI command mode (no WLED), and an
++ * ST FTM5 touch controller at 0x49 on the same I2C14 bus and pins.
++ */
++static inline bool
++sweet_board_dipper(void)
++{
++	static int cached = -1;
++	if (cached < 0) {
++		cached = sweet_board_is("xiaomi,dipper") ? 1 : 0;
++	}
++	return cached == 1;
++}
++
+ #endif /* _SWEET_BOARD_H_ */
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 1ae50ee1b9723dbc4d13beb45637d0fc5817b0f2..26531a08c76c7d94850741550e2a9e39cd0ac49b 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -15,6 +15,14 @@
+  * edge, 1080x2246). Probed first, without a reset: the TDDI shares its reset
+  * pin with the display. Standard Focaltech frame: reg 0 mode, reg 2 point
+  * count, 6-byte records from reg 3.
++ *
++ * Mi 8 (dipper): ST FingerTip FTM5 at 0x49 on the same I2C14 bus, IRQ TLMM 31
++ * (level low while the event FIFO holds data), reset TLMM 32 (touch only;
++ * the panel reset is TLMM 6). AVDD is L28A (regulator-boot-on), VDD the
++ * panel's VDDIO: both on after ABL. Protocol as Xiaomi's fts_521 driver:
++ * reset pin pulse, wait for the CONTROLLER_READY event, sense on with
++ * A0 00 01, then read 8-byte events with command 0x86 (I2C, no dummy byte).
++ * The touch firmware lives in the IC's flash: nothing is uploaded.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -63,6 +71,18 @@ void sweet_touch_init(void);
+ #define NVT_RECORD       6u
+ #define NVT_EMPTY_RELEASE 3u  /* empty frames before an unannounced release */
+ #define NVT_BAD_RELEASE   20u /* torn frames in a row before a forced release */
++#define TOUCH_FTM5       5
++/* ST FTM5 (Xiaomi fts_521: ftsSoftware.h / ftsHardware.h, I2C build) */
++#define FTM5_ADDR        0x49u
++#define FTM5_READ_FIFO   0x86u  /* FIFO_CMD_READALL; DUMMY_FIFO is 0 on I2C */
++#define FTM5_EVT_SIZE    8u
++#define FTM5_EVT_BURST   10u    /* events per read (the FIFO holds 32) */
++#define FTM5_EVT_READY   0x03u  /* EVT_ID_CONTROLLER_READY */
++#define FTM5_EVT_ENTER   0x13u
++#define FTM5_EVT_MOTION  0x23u
++#define FTM5_EVT_LEAVE   0x33u
++#define FTM5_EVT_ERROR   0xf3u
++#define FTM5_TYPE_HOVER  0x05u
+ 
+ /* Per-board wiring of the touch bus; the GENI SE programming is common. */
+ struct touch_board {
+@@ -80,6 +100,11 @@ static const struct touch_board touch_beryllium = {
+ 	"SE14", 0x00a98000u, 0x18738u, (0x0fu << 18) | (1u << 28), 0x18734u,
+ 	33, 34, 2, 31, 32, 1080, 2246, false,
+ };
++/* Mi 8: same SE, clocks and pins as the Poco F1; EA8074 panel is 1080x2248 */
++static const struct touch_board touch_dipper = {
++	"SE14", 0x00a98000u, 0x18738u, (0x0fu << 18) | (1u << 28), 0x18734u,
++	33, 34, 2, 31, 32, 1080, 2248, false,
++};
+ static const struct touch_board *tb = &touch_sweet;
+ /* GT9896 is Yellowstone in Xiaomi sweet-r-oss, not the Berlin protocol. */
+ #define GOODIX_PID_REG   0x4022u
+@@ -511,6 +536,16 @@ touch_read(uint8_t addr, uint16_t reg, bool wide, uint8_t *buf, unsigned len)
+ 	return touch_msg(addr, NULL, 0, buf, len, false);
+ }
+ 
++/* Plain write of 1..3 command bytes (FTM5 commands). */
++static int
++touch_write(uint8_t addr, const uint8_t *buf, unsigned len)
++{
++	if (st.bitbang) {
++		return bb_xfer(addr, buf, len, NULL, 0);
++	}
++	return touch_msg(addr, buf, len, NULL, 0, false);
++}
++
+ static int
+ touch_goodix_ack(void)
+ {
+@@ -981,6 +1016,139 @@ touch_beryllium_start(void)
+ 	return true;
+ }
+ 
++/*
++ * FTM5 event FIFO: every read of 0x86 pops events; byte 7 of the first one
++ * counts the events still queued. Contacts persist across reads (the IC
++ * reports only changes), so start from the current state and apply them.
++ */
++static int
++touch_ftm5(void)
++{
++	uint8_t buf[FTM5_EVT_SIZE * FTM5_EVT_BURST];
++	int x[TOUCH_MAX], y[TOUCH_MAX];
++	uint32_t mask = st.active;
++	memcpy(x, st.x, sizeof(x));
++	memcpy(y, st.y, sizeof(y));
++	int err = touch_read(FTM5_ADDR, FTM5_READ_FIFO, false, buf, FTM5_EVT_SIZE);
++	if (err) {
++		return err;
++	}
++	unsigned n = 1u + (buf[7] & 0x1fu);
++	n = n > FTM5_EVT_BURST ? FTM5_EVT_BURST : n; /* the rest keeps the IRQ low */
++	if (n > 1) {
++		err = touch_read(FTM5_ADDR, FTM5_READ_FIFO, false, buf + FTM5_EVT_SIZE,
++		    FTM5_EVT_SIZE * (n - 1u));
++		if (err) {
++			n = 1;
++		}
++	}
++	bool changed = false;
++	for (unsigned i = 0; i < n; ++i) {
++		const uint8_t *e = buf + FTM5_EVT_SIZE * i;
++		unsigned id = e[1] >> 4;
++		if (e[0] == 0) {
++			break; /* EVT_ID_NOEVENT: FIFO empty */
++		}
++		if (touch_trace) {
++			printf("F5 %02x %02x %02x %02x %02x %02x %02x %02x\n",
++			    e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
++		}
++		if (e[0] == FTM5_EVT_ERROR) {
++			printf("SWEET TOUCH: ftm5 error event type=%#x %02x %02x\n", e[1], e[2], e[3]);
++			continue;
++		}
++		if (id >= TOUCH_MAX) {
++			continue;
++		}
++		if (e[0] == FTM5_EVT_LEAVE ||
++		    ((e[0] == FTM5_EVT_ENTER || e[0] == FTM5_EVT_MOTION) &&
++		    (e[1] & 15u) == FTM5_TYPE_HOVER)) {
++			mask &= ~(1u << id);
++			changed = true;
++			continue;
++		}
++		if (e[0] != FTM5_EVT_ENTER && e[0] != FTM5_EVT_MOTION) {
++			continue; /* status, user (keys/gestures) and debug events */
++		}
++		unsigned px = ((unsigned)(e[3] & 15u) << 8) | e[2];
++		unsigned py = ((unsigned)e[4] << 4) | (e[3] >> 4);
++		if (px >= tb->w || py >= tb->h) {
++			continue;
++		}
++		mask |= 1u << id;
++		x[id] = (int)px;
++		y[id] = (int)py;
++		changed = true;
++	}
++	if (changed) {
++		touch_report(mask, x, y);
++	}
++	return 0;
++}
++
++/* Wait up to ms for one event id in the FIFO, popping the others. */
++static int
++touch_ftm5_wait(uint8_t want, unsigned ms)
++{
++	uint8_t e[FTM5_EVT_SIZE];
++	int err = ETIMEDOUT;
++	for (unsigned t = 0; t < ms; t += 10) {
++		memset(e, 0, sizeof(e));
++		err = touch_read(FTM5_ADDR, FTM5_READ_FIFO, false, e, sizeof(e));
++		if (!err && e[0] == want) {
++			return 0;
++		}
++		if (!err && e[0] == FTM5_EVT_ERROR) {
++			printf("SWEET TOUCH: ftm5 error event during reset type=%#x\n", e[1]);
++		}
++		if (st.dead) {
++			return EIO;
++		}
++		touch_wait(10);
++	}
++	return err ? err : ETIMEDOUT;
++}
++
++/* Mi 8: ST FTM5 at 0x49. Its reset pin is touch-only, so a pulse is safe. */
++static bool
++touch_dipper_start(void)
++{
++	printf("SWEET TOUCH: TLMM rst%u=%#x/%#x irq%u=%#x/%#x sda=%#x scl=%#x\n",
++	    tb->rst, touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->rst)), touch_rd(st.gpio, TOUCH_GPIO_IO(tb->rst)),
++	    tb->irq, touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->irq)), touch_rd(st.gpio, TOUCH_GPIO_IO(tb->irq)),
++	    touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->sda)), touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->scl)));
++	touch_gpio(tb->irq, 0, 3, 0, false, false);       /* input, pull-up (active-low level IRQ) */
++	if (st.bitbang) {
++		touch_gpio(tb->sda, 0, 0, 0, false, false);
++		touch_gpio(tb->scl, 0, 0, 0, false, false);
++	} else {
++		touch_gpio(tb->sda, tb->mux, 0, 0, false, false);
++		touch_gpio(tb->scl, tb->mux, 0, 0, false, false);
++	}
++	st.probing = true;
++	/* fts_system_reset with a reset GPIO: low 10 ms, high, poll for READY */
++	touch_gpio(tb->rst, 0, 0, 0, true, false);
++	touch_wait(10);
++	touch_gpio(tb->rst, 0, 0, 0, true, true);
++	touch_wait(20);
++	int err = touch_ftm5_wait(FTM5_EVT_READY, 1000);
++	printf("SWEET TOUCH: ftm5 reset at %#x: err=%d\n", FTM5_ADDR, err);
++	if (!err) {
++		/* setScanMode(SCAN_MODE_ACTIVE, 0x01): mutual sense on */
++		const uint8_t sense_on[3] = {0xa0, 0x00, 0x01};
++		err = touch_write(FTM5_ADDR, sense_on, sizeof(sense_on));
++		printf("SWEET TOUCH: ftm5 sense on err=%d\n", err);
++	}
++	st.probing = false;
++	if (err || st.dead) {
++		printf("SWEET TOUCH: no FTM5 at %#x (err=%d dead=%d); stopping\n",
++		    FTM5_ADDR, err, st.dead);
++		return false;
++	}
++	st.kind = TOUCH_FTM5;
++	return true;
++}
++
+ static bool
+ touch_se_init(void)
+ {
+@@ -1068,7 +1236,7 @@ touch_thread(void *arg, wait_result_t result)
+ 		if (!st.bitbang && (!touch_clocks() || !touch_se_init())) {
+ 			goto out;
+ 		}
+-		if (!touch_beryllium_start()) {
++		if (!(tb == &touch_dipper ? touch_dipper_start() : touch_beryllium_start())) {
+ 			goto out;
+ 		}
+ 		goto selected;
+@@ -1118,7 +1286,7 @@ touch_thread(void *arg, wait_result_t result)
+ selected:
+ 	printf("SWEET TOUCH: selected %s, %ux%u, poll=%ums i2c-half=%uus irq-hint=%d\n",
+ 	    st.kind == TOUCH_NVT ? "NT36672A" : st.kind == TOUCH_FT8719 ? "Focaltech FT8719" :
+-	    st.kind == TOUCH_GOODIX ? "GT9896 Yellowstone" : "Focaltech 54:52",
++	    st.kind == TOUCH_FTM5 ? "ST FTM5" : st.kind == TOUCH_GOODIX ? "GT9896 Yellowstone" : "Focaltech 54:52",
+ 	    tb->w, tb->h, touch_poll_ms, bb_half_us, st.irq_hint);
+ 	unsigned errors = 0, ticks = 0;
+ 	while (!st.dead) {
+@@ -1126,7 +1294,9 @@ selected:
+ 		/* sweet's IRQ lines idle high (low = report pending); NT36672A pulses high. */
+ 		bool irq_level = touch_rd(st.gpio, TOUCH_GPIO_IO(tb->irq)) & 1u;
+ 		bool pending = st.kind == TOUCH_NVT ? irq_level : !irq_level;
+-		if (st.bitbang) {
++		if (st.kind == TOUCH_FTM5) {
++			/* level IRQ: low while the FIFO holds events, whatever the bus */
++		} else if (st.bitbang) {
+ 			/* NT36672A pulses its IRQ: use the TLMM edge latch */
+ 			pending = touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->irq) + 0xcu) & 1u;
+ 			if (pending) {
+@@ -1141,7 +1311,7 @@ selected:
+ 		bool periodic = st.kind == TOUCH_FT8719 ? (++ticks % 50u) == 0 :
+ 		    (st.kind != TOUCH_NVT && (++ticks % 10u) == 0);
+ 		/* slow bit-banged readers: IRQ edge or finger down only */
+-		bool paced = st.kind == TOUCH_NVT || st.kind == TOUCH_FT8719;
++		bool paced = st.kind == TOUCH_NVT || st.kind == TOUCH_FT8719 || st.kind == TOUCH_FTM5;
+ 		/*
+ 		 * While a finger is down read on every IRQ edge (a new frame) and at
+ 		 * least every ~8 ms, so a missed edge cannot leave a stuck contact;
+@@ -1156,7 +1326,8 @@ selected:
+ 			touch_trace_why = pending ? 'e' : 'a';
+ 			int err = st.kind == TOUCH_GOODIX ? touch_goodix() :
+ 			    st.kind == TOUCH_NVT ? touch_novatek() :
+-			    st.kind == TOUCH_FT8719 ? touch_ft8719() : touch_focaltech();
++			    st.kind == TOUCH_FT8719 ? touch_ft8719() :
++			    st.kind == TOUCH_FTM5 ? touch_ftm5() : touch_focaltech();
+ 			if (err) {
+ 				/* At most one line a minute: bad frames are frequent and harmless */
+ 				static uint64_t last_log;
+@@ -1197,7 +1368,7 @@ sweet_touch_init(void)
+ 	}
+ 	st.started = true;
+ 	if (sweet_board_beryllium()) {
+-		tb = &touch_beryllium;
++		tb = sweet_board_dipper() ? &touch_dipper : &touch_beryllium;
+ 		st.irq_hint = 1; /* bit-banged reads are slow: only on IRQ edges or while touched */
+ 	}
+ 	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index e40174885569fd9a9ad3f7a75a7047eedbb1922e..55e32eef131fafccb9d8fe2c926c890128f2177a 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -110,7 +110,9 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	 * CurrentCapacity as a percentage (BatteryCenter, SpringBoard's status bar
+ 	 * item, powerd's "Current Capacity") saw 5020 here. DT nominal = 5020 mAh.
+ 	 */
+-	const unsigned capacity = (5020u * percent + 50u) / 100u;
++	/* Mi 8 (dipper): 3400 mAh pack (dipper-p0.dtsi batterydata-e1-*-3400mAh) */
++	const UInt32 design = sweet_board_dipper() ? 3400u : 5020u;
++	const unsigned capacity = (design * percent + 50u) / 100u;
+ 	setBatteryInstalled(true);
+ 	setCurrentCapacity(percent);
+ 	setMaxCapacity(100);
+@@ -127,7 +129,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	putBool("FullyCharged", full);
+ 	putBool("built-in", true);
+ 	putBool("CapacityEstimated", !measured);
+-	putNumber("NominalChargeCapacity", 5020);
++	putNumber("NominalChargeCapacity", design);
+ 	putNumber("AppleRawBatteryVoltage", mv);
+ 	putNumber("DesignCycleCount9C", 500);
+ 	putNumber("PermanentFailureStatus", 0);
+@@ -142,8 +144,8 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 		OSDictionary *bd = OSDictionary::withCapacity(8);
+ 		if (bdKey && bd) {
+ 			struct { const char *k; UInt32 v; } items[] = {
+-				{"CycleCount", 0}, {"DesignCapacity", 5020}, {"StateOfCharge", percent},
+-				{"Voltage", mv}, {"MaxCapacity", 5020}, {"NominalChargeCapacity", 5020},
++				{"CycleCount", 0}, {"DesignCapacity", design}, {"StateOfCharge", percent},
++				{"Voltage", mv}, {"MaxCapacity", design}, {"NominalChargeCapacity", design},
+ 				{"Flags", 0}, {"ResScale", 1},
+ 			};
+ 			for (unsigned i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
+@@ -196,8 +198,8 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	}
+ 	putBool("AppleRawExternalConnected", external);
+ 	putNumber("AppleRawCurrentCapacity", capacity);
+-	putNumber("AppleRawMaxCapacity", 5020);
+-	putNumber("DesignCapacity", 5020);
++	putNumber("AppleRawMaxCapacity", design);
++	putNumber("DesignCapacity", design);
+ 	putNumber("InstantAmperage", (UInt32)ma);
+ 	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
+ 	putNumber("Temperature", 2500);
+@@ -214,7 +216,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 		const char *keys[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
+ 		    kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
+ 		    kIOBatteryFlagsKey};
+-		UInt32 values[] = {capacity, 5020, mv, (UInt32)ma, 0,
++		UInt32 values[] = {capacity, design, mv, (UInt32)ma, 0,
+ 		    (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
+ 		    (charging ? kIOBatteryCharge : 0))};
+ 		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index fa501356b8ed0ffd24c660badf5d883f347c9876..dfde84409ee42700a1f1023e34eb99b0c3f49b44 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -684,6 +684,38 @@ static const struct {
+ #define SWEET_MDP_LM_BORDER0    0x08u   /* LM0 +0x08 / +0x10, flushed with CTL_FLUSH BIT(6) (LM_0) */
+ #define SWEET_MDP_LM_BORDER1    0x10u
+ #define SWEET_MDP_LM0_FLUSH     (1u << 6)
++#define SWEET_MDP_CTL_STRIDE    0x200u  /* CTL_0..4 */
++#define SWEET_MDP_CTL_TOP       0x14u
++#define SWEET_MDP_CTL_START     0x1cu
++/* PINGPONG_0..3 (Linux dpu_hw_catalog sdm845 0x70000 + 0x800 * n, +0x1000 as above; dpu_hw_pingpong.c) */
++#define SWEET_MDP_PP0           0x71000u
++#define SWEET_MDP_PP_STRIDE     0x800u
++#define PP_TEAR_CHECK_EN        0x00u
++#define PP_SYNC_CONFIG_VSYNC    0x04u
++#define PP_LINE_COUNT           0x2cu
++#define PP_AUTOREFRESH_CONFIG   0x30u
++
++/*
++ * Mi 8 (dipper): the EA8074 AMOLED is a DSI command-mode panel. The MDP
++ * sends a frame only when started (CTL_START) and the panel keeps showing
++ * its own copy, so a flush alone never reaches the screen. boot-arg
++ * sweetfb_cmd: 1 (default) turns on the tear-checked pingpong's
++ * autorefresh, a frame on every TE, which makes the panel behave like the
++ * Poco F1's video-mode one for all the code below; 2 starts one frame after
++ * each flush instead (needs sweetfb_flip=1); 0 leaves ABL's setup alone.
++ */
++static uint32_t sweet_mdp_cmd;
++
++static void
++sweet_mdp_kick(vm_offset_t base)
++{
++	if (sweet_mdp_cmd != 2 || base == 0) {
++		return;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(base + SWEET_MDP_CTL0 + SWEET_MDP_CTL_START) = 1;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
+ 
+ /*
+  * panic: put back everything the page flipper / scaler changed, so ABL's
+@@ -718,6 +750,7 @@ sweet_fb_restore_boot_scanout(void)
+ 	*(volatile uint32_t *)(sweet_mdp_restore.base + SWEET_MDP_CTL0 + SWEET_MDP_CTL_FLUSH) =
+ 	    sweet_mdp_restore.flush;
+ 	__asm__ volatile ("dsb sy" ::: "memory");
++	sweet_mdp_kick(sweet_mdp_restore.base);
+ }
+ 
+ static inline void
+@@ -734,6 +767,76 @@ mdp_rd(vm_offset_t base, uint32_t off)
+ 	return v;
+ }
+ 
++/* Mi 8: see sweet_mdp_cmd. Only the pingpong ABL set up with tear check is touched. */
++static void
++sweet_mdp_cmd_setup(vm_offset_t mdp)
++{
++	uint32_t mode = 1;
++	int pp = -1;
++	PE_parse_boot_argn("sweetfb_cmd", &mode, sizeof(mode));
++	for (uint32_t i = 0; i < 5; i++) {
++		uint32_t top = mdp_rd(mdp + SWEET_MDP_CTL0 + SWEET_MDP_CTL_STRIDE * i, SWEET_MDP_CTL_TOP);
++		if (top != 0) {
++			IOLog("SWEET MDP: CTL%u top 0x%08x%s\n", i, top,
++			    i != 0 ? "  (flushes go to CTL0 only: not supported yet)" : "");
++		}
++	}
++	for (int i = 0; i < 4; i++) {
++		vm_offset_t b = mdp + SWEET_MDP_PP0 + SWEET_MDP_PP_STRIDE * (uint32_t)i;
++		uint32_t te = mdp_rd(b, PP_TEAR_CHECK_EN);
++		IOLog("SWEET MDP: PP%d tear-check 0x%x vsync-cfg 0x%08x autorefresh 0x%08x line %u\n",
++		    i, te, mdp_rd(b, PP_SYNC_CONFIG_VSYNC), mdp_rd(b, PP_AUTOREFRESH_CONFIG),
++		    mdp_rd(b, PP_LINE_COUNT));
++		if ((te & 1u) && pp < 0) {
++			pp = i;
++		}
++	}
++	if (mode == 0 || mode > 2) {
++		IOLog("SWEET MDP: command-mode refresh off (sweetfb_cmd=%u)\n", mode);
++		return;
++	}
++	if (pp < 0) {
++		IOLog("SWEET MDP: no tear-checked pingpong: not a command-mode path; refresh unchanged\n");
++		return;
++	}
++	if (mode == 1 && (mdp_rd(mdp + SWEET_MDP_PP0 + SWEET_MDP_PP_STRIDE * (uint32_t)pp,
++	    PP_AUTOREFRESH_CONFIG) & (1u << 31))) {
++		/*
++		 * Mi 8 ABL leaves autorefresh running (0x80000001). Starting a frame on top of it
++		 * wedged the DSI in Enxerto (STATUS 0x5, HS FIFO underflow, white panel): keep it.
++		 */
++		IOLog("SWEET MDP: PP%d autorefresh already on (ABL); left as is\n", pp);
++		sweet_mdp_cmd = 1;
++		return;
++	}
++	if (mode == 1) {
++		vm_offset_t b = mdp + SWEET_MDP_PP0 + SWEET_MDP_PP_STRIDE * (uint32_t)pp;
++		mdp_wr(b, PP_AUTOREFRESH_CONFIG, (1u << 31) | 1u);   /* enable, every TE */
++		__asm__ volatile ("dsb sy" ::: "memory");
++		mdp_wr(mdp + SWEET_MDP_CTL0, SWEET_MDP_CTL_START, 1); /* first frame starts the loop */
++		__asm__ volatile ("dsb sy" ::: "memory");
++		/* the read pointer moves while frames are sent; sample it over ~40 ms */
++		uint32_t first = mdp_rd(b, PP_LINE_COUNT), moved = 0;
++		for (uint32_t i = 0; i < 20; i++) {
++			IODelay(2000);
++			moved += mdp_rd(b, PP_LINE_COUNT) != first;
++		}
++		if (moved == 0) {
++			mdp_wr(b, PP_AUTOREFRESH_CONFIG, 0);
++			__asm__ volatile ("dsb sy" ::: "memory");
++			IOLog("SWEET MDP: PP%d autorefresh did not run (line count stuck at %u); one frame per flush instead\n",
++			    pp, first);
++			mode = 2;
++		} else {
++			IOLog("SWEET MDP: PP%d autorefresh on (line count moved %u/20)\n", pp, moved);
++		}
++	}
++	sweet_mdp_cmd = mode;
++	if (mode == 2) {
++		IOLog("SWEET MDP: command mode: CTL_START after every flush (needs sweetfb_flip=1)\n");
++	}
++}
++
+ /* Read-only: which pipe scans ABL's framebuffer, and the display path state. */
+ void
+ AppleCLCD::mdpProbe(void)
+@@ -782,6 +885,9 @@ AppleCLCD::mdpProbe(void)
+ 	IOLog("SWEET MDP: INTF1 frame count %u -> %u in 100 ms (line count en 0x%x); pipe %s\n",
+ 	    f0, f1, mdp_rd(fMdp + SWEET_MDP_INTF1, 0xa8),
+ 	    fPipe >= 0 ? sweet_mdp_pipes[fPipe].name : "NOT FOUND");
++	if (sweet_board_dipper()) {
++		sweet_mdp_cmd_setup(fMdp);
++	}
+ }
+ 
+ /*
+@@ -1079,6 +1185,7 @@ AppleCLCD::scanAddr(uint32_t pa, uint32_t stride, bool hwFrame)
+ 	fLmPending = false;
+ 	*(volatile uint32_t *)(fMdp + SWEET_MDP_CTL0 + SWEET_MDP_CTL_FLUSH) = fl;
+ 	__asm__ volatile ("dsb sy" ::: "memory");
++	sweet_mdp_kick(fMdp);
+ 	fLastFlush = fl;
+ }
+ 
+@@ -1348,6 +1455,11 @@ AppleCLCD::blInit(void)
+ 	uint8_t mod = 0, sync = 0;
+ 	uint16_t raw[SWEET_WLED_STRINGS];
+ 
++	if (sweet_board_dipper()) {
++		/* AMOLED: brightness is a DCS command to the panel; the PMI8998 WLED is unused */
++		IOLog("SWEET FB: backlight fade: Mi 8 AMOLED has no WLED; pixel fallback\n");
++		return;
++	}
+ 	if (sweet_spmi_init() != 0) {
+ 		IOLog("SWEET FB: backlight fade: SPMI not available; pixel fallback\n");
+ 		return;
