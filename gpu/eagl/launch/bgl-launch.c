@@ -210,7 +210,9 @@ int main(int argc, char **argv)
 			if (!g_marker_nohook && !(has_arg(args, "bglhook", hv, sizeof hv) && !strcmp(hv, "0")))
 				setenv("BGL_CA_HOOK", "1", 1);
 		}
+		int debug_on = 0;
 		if ((has_arg(args, "bgldebug", dbg, sizeof dbg) && !strcmp(dbg, "1")) || g_marker_debug) {
+			debug_on = 1;
 			setenv("EAGL_SHIM_DEBUG", g_marker_frames ? "2" : "1", 1);
 			setenv("SWEET_GPU_DEBUG", "1", 1);
 			setenv("MESA_DEBUG", "1", 1);   /* GL errors and shader compile/link failures on stderr */
@@ -220,7 +222,15 @@ int main(int argc, char **argv)
 		{ char dv[16] = ""; if (g_marker_nodirect || (has_arg(args, "bgldirect", dv, sizeof dv) && !strcmp(dv, "0"))) setenv("BGL_NODIRECT", "1", 1); }   /* direct (zero-copy display buffers) is the default */
 		if (stat(LOG_PATH, &st) == 0 && st.st_size > (1 << 20))
 			unlink(LOG_PATH);
-		int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+		int fd = -1;
+		if (debug_on) {   /* debug output goes to a second, mobile-writable file: the first one stopped growing mid-run on this root (filesystem damage) */
+			const char *dl = "/private/var/mobile/Library/Caches/bgl-debug.log";
+			if (stat(dl, &st) == 0 && st.st_size > (16 << 20))
+				unlink(dl);
+			fd = open(dl, O_WRONLY | O_CREAT | O_APPEND, 0644);
+		}
+		if (fd < 0)
+			fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
 		if (fd >= 0) {
 			dup2(fd, 2);
 			close(fd);
