@@ -192,7 +192,11 @@ static void rgba_to_surface(const uint8_t *src, uint32_t w, uint32_t h, IOSurfac
     if (!dst || !mapping_writable(dst, bpr * IOSurfaceGetHeight(s))) {
         // read-only client memory (Control Center platters, live icons): the kernel gives a writable CPU alias of it (abi_minor 2)
         void *ab = NULL; unsigned abpr = 0, aw = 0, ah = 0;
-        if (osm_sweet_surface_alias(IOSurfaceGetID(s), &ab, &abpr, &aw, &ah)) { dst = ab; bpr = abpr; via_alias = YES; }
+        // opt-in (BGL_ALIAS=1): read-only surfaces here are mostly the clients' own backing stores (text, labels);
+        // writing the render server's result into them doubled and smeared every label on the phone
+        static int alias_on = -1;
+        if (alias_on < 0) { const char *e = getenv("BGL_ALIAS"); alias_on = e && e[0] == '1'; }
+        if (alias_on && osm_sweet_surface_alias(IOSurfaceGetID(s), &ab, &abpr, &aw, &ah)) { dst = ab; bpr = abpr; via_alias = YES; }
         else {
             if (lk == KERN_SUCCESS) IOSurfaceUnlock(s, 0, NULL);
             EAGL_DEBUG("CPU sync skipped: surface %u is not mapped writable here (no kernel alias)\n", IOSurfaceGetID(s));
