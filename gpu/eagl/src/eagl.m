@@ -47,9 +47,11 @@
 // Live IOSurface textures: iOS binds an IOSurface as texture storage, so a producer that writes the surface after the bind (glyph renderers, snapshot
 // decoders, Control Center material) is seen at once. The shim copies at bind time; to keep the same behaviour every uploaded surface is remembered with its
 // IOSurface seed and the texture is re-uploaded when it is bound again (glBindTexture) after the seed changed.
-typedef struct { void *ctx; GLuint name; IOSurfaceRef surf; uint32_t seed, w, h, plane; GLenum ifmt, fmt, type; BOOL invert; } LiveSrc;
+typedef struct { void *ctx; GLuint name; IOSurfaceRef surf; uint32_t seed, w, h, plane; GLenum ifmt, fmt, type; BOOL invert; BOOL wrapped; } LiveSrc;
 #define MAX_LIVE 768
 static LiveSrc g_live[MAX_LIVE]; static int g_nlive; static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_wrapsample;              // BGL_WRAPSAMPLE=1 (marker word "wrapsample"): sample client-memory IOSurfaces with the GPU instead of copying them (experimental)
+static int g_nowrap;                  // set while a wrapped texture is being converted back to a private copy
 static int g_reupload;                // inside a re-upload: use glTexSubImage2D, keep the client's sampler state, do not register again
 static unsigned g_live_reuploads;
 extern void gl_unimpl(void);
@@ -504,7 +506,18 @@ static void h_CopyTexImage2D(GLenum a, GLint b, GLenum c, GLint d, GLint e, GLsi
 static void (*o_CopyTexSubImage2D)(GLenum, GLint, GLint, GLint, GLint, GLint, GLsizei, GLsizei);
 static void h_CopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h) { o_CopyTexSubImage2D(a, b, c, d, e, f, g, h); mark_bound_texture_dirty(); }
 static void (*o_TexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
-static void h_TexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const void *i) { o_TexSubImage2D(a, b, c, d, e, f, g, h, i); mark_bound_texture_dirty(); }
+static void unwrap_bound_texture(void) {      // a write into a texture that samples client memory in place must not reach that (read-only) memory: give it private storage first
+    EAGLContext *c = cur_ctx(); if (!c || !g_nlive) return;
+    GLint t = 0; glGetIntegerv(GL_TEXTURE_BINDING_2D, &t);
+    LiveSrc e; BOOL hit = NO;
+    pthread_mutex_lock(&g_live_lock);
+    for (int i = 0; i < g_nlive; i++) if (g_live[i].ctx == (void *)c && g_live[i].name == (GLuint)t && g_live[i].wrapped) { e = g_live[i]; CFRetain(e.surf); CFRelease(g_live[i].surf); g_live[i] = g_live[--g_nlive]; hit = YES; break; }
+    pthread_mutex_unlock(&g_live_lock);
+    if (!hit) return;
+    g_nowrap = 1; [c texImageIOSurface:e.surf target:GL_TEXTURE_2D internalFormat:e.ifmt width:e.w height:e.h format:e.fmt type:e.type plane:e.plane invert:e.invert]; g_nowrap = 0;
+    CFRelease(e.surf);
+}
+static void h_TexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const void *i) { if (a == GL_TEXTURE_2D) unwrap_bound_texture(); o_TexSubImage2D(a, b, c, d, e, f, g, h, i); mark_bound_texture_dirty(); }
 static void (*o_BindTexture)(GLenum, GLuint);
 static void h_BindTexture(GLenum target, GLuint name) {
     o_BindTexture(target, name);
@@ -519,6 +532,7 @@ static void h_BindTexture(GLenum target, GLuint name) {
     }
     pthread_mutex_unlock(&g_live_lock);
     if (!hit) return;
+    if (e.wrapped) { osm_sweet_wrap_sync(IOSurfaceGetID(e.surf)); return; }     // GPU samples the memory itself: only clean the producer's cache lines
     g_reupload = 1;
     [c texImageIOSurface:e.surf target:GL_TEXTURE_2D internalFormat:e.ifmt width:e.w height:e.h format:e.fmt type:e.type plane:e.plane invert:e.invert];
     g_reupload = 0; g_live_reuploads++;
@@ -579,7 +593,7 @@ static void eagl_install_hooks(void) {
         }
         g_debug = getenv("EAGL_SHIM_DEBUG") != NULL; g_debug_frames = g_debug && !strcmp(getenv("EAGL_SHIM_DEBUG"), "2");
         g_dirty_track = !getenv("BGL_SYNC_ALL");
-        g_direct = !getenv("BGL_NODIRECT");
+        g_direct = !getenv("BGL_NODIRECT"); g_wrapsample = getenv("BGL_WRAPSAMPLE") != NULL;
         if (g_dirty_track) {
             // every alias of an entry point is hooked (glBindFramebuffer / glBindFramebufferOES / ...: the render server's slots may use either spelling)
             static const char *const sfx[] = { "", "OES", "EXT", "ARB", "APPLE", "ANGLE" };
@@ -910,6 +924,28 @@ static DrawBind *find_bind(struct _EAGLContextPrivate *p, GLuint rb) {
     size_t bpp = comps * csz, bpr = planar ? IOSurfaceGetBytesPerRowOfPlane(ioSurface, plane) : IOSurfaceGetBytesPerRow(ioSurface);
     if (w * bpp > bpr) do { EAGL_DEBUG("texImageIOSurface: refused (reason 5) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     BOOL bgra8 = (format == GL_BGRA_EXT && type == 0x1401);                  // swizzled to RGBA below (portable across ES implementations)
+    // Zero-copy sampling (opt-in): kind of the GL upload that the GPU can sample straight from the surface memory (A8, L8, LA8, RGBA8, BGRA8, RGBA16F)
+    if (g_wrapsample && !g_nowrap && !g_reupload && (GLenum)target == GL_TEXTURE_2D && !planar && osm_sweet_active()) {
+        int kind = 0;
+        if (type == 0x1401) kind = format == 0x1906 ? 1 : format == 0x1909 ? 2 : format == 0x190a ? 3 : format == 0x1908 ? 4 : format == GL_BGRA_EXT ? 5 : 0;
+        else if ((type == 0x140b || type == 0x8d61) && format == 0x1908) kind = 6;
+        GLint wb = 0; glGetIntegerv(GL_TEXTURE_BINDING_2D, &wb);
+        if (kind && wb && osm_sweet_wrap_texture((unsigned)wb, IOSurfaceGetID(ioSurface), kind, w, h)) {
+            pthread_mutex_lock(&g_live_lock);
+            int k = -1; for (int i = 0; i < g_nlive; i++) if (g_live[i].ctx == self && g_live[i].name == (GLuint)wb) { k = i; break; }
+            if (k < 0 && g_nlive < MAX_LIVE) { k = g_nlive++; memset(&g_live[k], 0, sizeof g_live[k]); }
+            if (k >= 0) {
+                if (g_live[k].surf && g_live[k].surf != ioSurface) CFRelease(g_live[k].surf);
+                if (g_live[k].surf != ioSurface) CFRetain(ioSurface);
+                g_live[k] = (LiveSrc){ self, (GLuint)wb, ioSurface, seed_at_copy, w, h, plane, (GLenum)internalFormat, (GLenum)format, (GLenum)type, invert, YES };
+            }
+            pthread_mutex_unlock(&g_live_lock);
+            glTexParameteri((GLenum)target, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri((GLenum)target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri((GLenum)target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            EAGL_DEBUG("texImageIOSurface: surface %u sampled by the GPU in place (kind %d)\n", IOSurfaceGetID(ioSurface), kind);
+            return k >= 0;
+        }
+    }
     uint8_t *tmp = malloc((size_t)w * h * bpp);
     if (!tmp) do { EAGL_DEBUG("texImageIOSurface: refused (reason 6) surface %u fourcc %08x planes %zu\n", ioSurface ? IOSurfaceGetID(ioSurface) : 0, ioSurface ? (unsigned)IOSurfaceGetPixelFormat(ioSurface) : 0, ioSurface ? IOSurfaceGetPlaneCount(ioSurface) : (size_t)0); return NO; } while (0);
     kern_return_t lk = IOSurfaceLock(ioSurface, kIOSurfaceLockReadOnly, NULL);

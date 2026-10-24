@@ -155,7 +155,7 @@ index e41699a..bc326aa 100644
     DBG("Pipe Info:");
     DBG(" GPU-id:          %s", fd_dev_name(screen->dev_id));
 diff --git a/src/gallium/frontends/osmesa/osmesa.c b/src/gallium/frontends/osmesa/osmesa.c
-index 6d61677..8693891 100644
+index 6d61677..dd676b3 100644
 --- a/src/gallium/frontends/osmesa/osmesa.c
 +++ b/src/gallium/frontends/osmesa/osmesa.c
 @@ -59,11 +59,19 @@
@@ -197,7 +197,7 @@ index 6d61677..8693891 100644
     attribs.major = version_major;
     attribs.minor = version_minor;
     attribs.flags = 0;  /* ST_CONTEXT_FLAG_x */
-@@ -1027,3 +1038,232 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
+@@ -1027,3 +1038,277 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
        debug_warning("Calling OSMesaPostprocess() after OSMesaMakeCurrent()\n");
     }
  }
@@ -207,6 +207,8 @@ index 6d61677..8693891 100644
 +extern struct pipe_resource *sweet_hw_surface_resource(uint32_t surface_id, int opaque, unsigned *w, unsigned *h);
 +extern void sweet_hw_surface_sync(uint32_t surface_id);
 +extern int sweet_hw_active(void);
++extern struct pipe_resource *sweet_hw_wrapped_resource(uint32_t surface_id, enum pipe_format fmt, unsigned w, unsigned h);
++extern void sweet_hw_wrapped_sync(uint32_t surface_id);
 +extern void sweet_hw_surface_forget(uint32_t surface_id);
 +int sweet_hw_surface_alias(uint32_t surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h);
 +void sweet_hw_surface_alias_sync(uint32_t surface_id);
@@ -218,6 +220,8 @@ index 6d61677..8693891 100644
 +GLAPI int GLAPIENTRY OSMesaSweetAttachDirect(GLuint name, uint32_t surface_id);
 +GLAPI void GLAPIENTRY OSMesaSweetDirectSync(uint32_t surface_id);
 +GLAPI void GLAPIENTRY OSMesaSweetZeroTexture(void);
++GLAPI int GLAPIENTRY OSMesaSweetWrapTexture(GLuint name, uint32_t surface_id, int kind, unsigned w, unsigned h);
++GLAPI void GLAPIENTRY OSMesaSweetWrapSync(uint32_t surface_id);
 +GLAPI int GLAPIENTRY OSMesaSweetSurfaceAlias(uint32_t surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h);
 +GLAPI void GLAPIENTRY OSMesaSweetAliasSync(uint32_t surface_id);
 +
@@ -430,6 +434,47 @@ index 6d61677..8693891 100644
 +   if (st->pipe->clear_texture)
 +      st->pipe->clear_texture(st->pipe, t->pt, 0, &box, NULL);
 +}
++
++/**
++ * Make level 0 of texture `name` of the current context sample the memory of IOSurface `surface_id` directly (read-only GPU import, no copy). `kind`:
++ * 1 A8, 2 L8, 3 L8A8, 4 R8G8B8A8, 5 B8G8R8A8, 6 R16G16B16A16F. Returns 1 when the texture now IS the surface, 0 (nothing changed) when the caller must copy.
++ * The texture must never become a render target or the target of glTexSubImage2D (the shim detaches it on such calls).
++ */
++GLAPI int GLAPIENTRY
++OSMesaSweetWrapTexture(GLuint name, uint32_t surface_id, int kind, unsigned w, unsigned h)
++{
++   static const enum pipe_format map[] = { PIPE_FORMAT_NONE, PIPE_FORMAT_A8_UNORM, PIPE_FORMAT_L8_UNORM, PIPE_FORMAT_L8A8_UNORM,
++                                           PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_FORMAT_B8G8R8A8_UNORM, PIPE_FORMAT_R16G16B16A16_FLOAT };
++   OSMesaContext osmesa = OSMesaGetCurrentContext();
++
++   if (!osmesa || !sweet_hw_active() || kind < 1 || kind > 6)
++      return 0;
++   struct st_context *st = osmesa->st;
++   struct gl_context *ctx = st->ctx;
++   struct gl_texture_object *t = _mesa_lookup_texture(ctx, name);
++   if (!t || t->Target != GL_TEXTURE_2D)
++      return 0;
++   struct pipe_resource *res = sweet_hw_wrapped_resource(surface_id, map[kind], w, h);
++   if (!res)
++      return 0;
++   struct gl_texture_image *img = _mesa_get_tex_image(ctx, t, GL_TEXTURE_2D, 0);
++   if (!img)
++      return 0;
++   struct st_egl_image stimg;
++   memset(&stimg, 0, sizeof(stimg));
++   stimg.texture = res;
++   stimg.format = res->format;
++   stimg.internalformat = kind == 1 ? GL_ALPHA : kind == 2 ? GL_LUMINANCE : kind == 3 ? GL_LUMINANCE_ALPHA : GL_RGBA;
++   st_bind_egl_image(ctx, t, img, &stimg, false, true);
++   return t->surface_based && t->pt == res;
++}
++
++/** The producer changed a wrapped surface: make its CPU writes visible to the GPU. */
++GLAPI void GLAPIENTRY
++OSMesaSweetWrapSync(uint32_t surface_id)
++{
++   sweet_hw_wrapped_sync(surface_id);
++}
 diff --git a/src/gallium/targets/osmesa/meson.build b/src/gallium/targets/osmesa/meson.build
 index 3c37161..1fce590 100644
 --- a/src/gallium/targets/osmesa/meson.build
@@ -489,10 +534,10 @@ index 25985dd..f7d01b1 100644
      */
 diff --git a/src/gallium/targets/osmesa/sweet_hw.c b/src/gallium/targets/osmesa/sweet_hw.c
 new file mode 100644
-index 0000000..3e7326f
+index 0000000..276b496
 --- /dev/null
 +++ b/src/gallium/targets/osmesa/sweet_hw.c
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,440 @@
 +/*
 + * SPDX-License-Identifier: MIT
 + * Bergamota: hardware (freedreno / Adreno 630) pipe_screen for the OSMesa target, over the libdrm stand-in
@@ -547,6 +592,8 @@ index 0000000..3e7326f
 +struct pipe_resource *sweet_hw_surface_resource(uint32_t surface_id, int opaque, unsigned *w, unsigned *h);
 +void sweet_hw_surface_sync(uint32_t surface_id);
 +void sweet_hw_surface_forget(uint32_t surface_id);
++struct pipe_resource *sweet_hw_wrapped_resource(uint32_t surface_id, enum pipe_format fmt, unsigned w, unsigned h);
++void sweet_hw_wrapped_sync(uint32_t surface_id);
 +int sweet_hw_surface_alias(uint32_t surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h);
 +void sweet_hw_surface_alias_sync(uint32_t surface_id);
 +
@@ -815,15 +862,109 @@ index 0000000..3e7326f
 +   pthread_mutex_unlock(&g_surf_lock);
 +}
 +
++/* ---- GPU SAMPLING of client-memory surfaces (read-only import, never a render target) ---- */
++#define MAX_WRAP 192
++static struct { uint32_t id, handle; enum pipe_format fmt; unsigned w, h; struct pipe_resource *res; } g_wrap[MAX_WRAP];
++
++/* Texture-only resource of the memory of IOSurface `surface_id` in format `fmt` (w x h pixels from pixel (0,0), the surface's own row pitch), or NULL
++ * (kernel refused, format or pitch not supported by the GPU: the caller copies instead). The GPU only READS it: the kernel maps client memory read-only. */
++struct pipe_resource *
++sweet_hw_wrapped_resource(uint32_t surface_id, enum pipe_format fmt, unsigned w, unsigned h)
++{
++   struct pipe_resource *res = NULL;
++   int free_slot = -1;
++
++   if (!g_hw_screen || !g_zc_wrapped)
++      return NULL;
++   pthread_mutex_lock(&g_surf_lock);
++   for (int i = 0; i < MAX_WRAP; i++) {
++      if (g_wrap[i].res && g_wrap[i].id == surface_id && g_wrap[i].fmt == fmt && g_wrap[i].w == w && g_wrap[i].h == h) {
++         res = g_wrap[i].res;
++         goto out;
++      }
++      if (!g_wrap[i].res && free_slot < 0)
++         free_slot = i;
++   }
++   if (free_slot < 0 || refused_has(surface_id | 0x40000000u))
++      goto out;
++   if (!g_hw_screen->is_format_supported(g_hw_screen, fmt, PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW)) {
++      refused_add(surface_id | 0x40000000u);
++      goto out;
++   }
++   {
++      struct sweet_gpu_surface_bo sb;
++      memset(&sb, 0, sizeof(sb));
++      sb.surface_id = surface_id;
++      sb.flags = SWEET_SBO_IN_SYNC;   /* clean the producer's CPU writes before the GPU reads */
++      int r = sweet_drm_surface_bo(g_fd, &sb);
++      unsigned bpp = util_format_get_blocksize(fmt);
++      if (r != 0 || sb.planes > 1 || sb.bytes_per_row < w * bpp || (sb.bytes_per_row & 63) || !(w && h)) {
++         if (getenv("SWEET_GPU_DEBUG"))
++            fprintf(stderr, "OSMesa/sweet: no GPU sampling of surface %u (r %d planes %u bpr %u need %u, 64-byte pitch)\n", surface_id, r, sb.planes, sb.bytes_per_row, w * bpp);
++         if (r == 0 && sb.handle)
++            sweet_drm_gem_close(g_fd, sb.handle);
++         refused_add(surface_id | 0x40000000u);
++         goto out;
++      }
++      struct pipe_resource templ;
++      memset(&templ, 0, sizeof(templ));
++      templ.target = PIPE_TEXTURE_2D;
++      templ.format = fmt;
++      templ.width0 = w;
++      templ.height0 = h;
++      templ.depth0 = 1;
++      templ.array_size = 1;
++      templ.usage = PIPE_USAGE_DEFAULT;
++      templ.bind = PIPE_BIND_SAMPLER_VIEW;   /* never a render target: wrapped memory is read-only for the GPU */
++      struct winsys_handle wh;
++      memset(&wh, 0, sizeof(wh));
++      wh.type = WINSYS_HANDLE_TYPE_KMS;
++      wh.handle = sb.handle;
++      wh.stride = sb.bytes_per_row;
++      wh.offset = sb.offset;
++      wh.size = sb.size;
++      wh.modifier = 0;
++      res = g_hw_screen->resource_from_handle(g_hw_screen, &templ, &wh, 0);   /* no write usage: sampling only */
++      if (!res) {
++         if (getenv("SWEET_GPU_DEBUG"))
++            fprintf(stderr, "OSMesa/sweet: resource_from_handle failed for sampling surface %u (%ux%u fmt %d bpr %u)\n", surface_id, w, h, (int)fmt, sb.bytes_per_row);
++         sweet_drm_gem_close(g_fd, sb.handle);
++         refused_add(surface_id | 0x40000000u);
++         goto out;
++      }
++      g_wrap[free_slot].id = surface_id; g_wrap[free_slot].handle = sb.handle; g_wrap[free_slot].fmt = fmt;
++      g_wrap[free_slot].w = w; g_wrap[free_slot].h = h; g_wrap[free_slot].res = res;
++   }
++out:
++   pthread_mutex_unlock(&g_surf_lock);
++   return res;
++}
++
++/* The producer changed the surface (seed): clean its CPU writes so the GPU samples them. */
++void
++sweet_hw_wrapped_sync(uint32_t surface_id)
++{
++   pthread_mutex_lock(&g_surf_lock);
++   for (int i = 0; i < MAX_WRAP; i++)
++      if (g_wrap[i].res && g_wrap[i].id == surface_id)
++         sweet_drm_bo_sync(g_fd, g_wrap[i].handle, 0, 0);
++   pthread_mutex_unlock(&g_surf_lock);
++}
++
 +/* Forget a surface (the client released it). */
 +void
 +sweet_hw_surface_forget(uint32_t surface_id)
 +{
 +   pthread_mutex_lock(&g_surf_lock);
 +   for (int i = 0; i < g_nrefused; i++)
-+      if (g_refused[i] == surface_id || g_refused[i] == (surface_id | 0x80000000u)) {
++      if (g_refused[i] == surface_id || g_refused[i] == (surface_id | 0x80000000u) || g_refused[i] == (surface_id | 0x40000000u)) {
 +         g_refused[i] = g_refused[--g_nrefused];
 +         i--;
++      }
++   for (int i = 0; i < MAX_WRAP; i++)
++      if (g_wrap[i].res && g_wrap[i].id == surface_id) {
++         pipe_resource_reference(&g_wrap[i].res, NULL);   /* textures still bound to it keep their own reference */
++         memset(&g_wrap[i], 0, sizeof(g_wrap[i]));
 +      }
 +   for (int i = 0; i < MAX_ALIAS; i++)
 +      if (g_alias[i].base && g_alias[i].id == surface_id) {

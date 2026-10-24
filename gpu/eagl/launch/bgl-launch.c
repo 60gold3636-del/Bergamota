@@ -78,7 +78,7 @@ static int boot_uuid(char *out, size_t n)
 /* The volatile marker holds "MODE UUID [debug]" (MODE soft|1) and is honoured only when UUID is the boot session UUID of THIS boot
  * (kern.bootsessionuuid): a marker left over from an earlier boot can never act, whatever the clock says (the first live test showed that
  * kern.boottime and file times are unreliable early in boot: the RTC is set only later). Returns 1 and the mode in val. */
-static int g_marker_debug, g_marker_nohook, g_marker_frames, g_marker_dirty, g_marker_syncall, g_marker_direct, g_marker_nodirect, g_marker_nozero, g_marker_zero;
+static int g_marker_debug, g_marker_nohook, g_marker_frames, g_marker_dirty, g_marker_syncall, g_marker_direct, g_marker_nodirect, g_marker_nozero, g_marker_zero, g_marker_wrapsample;
 static int marker_mode(char *val, size_t vlen)
 {
 	char line[256], uuid[64] = "", cur[64] = "";
@@ -112,13 +112,14 @@ static int marker_mode(char *val, size_t vlen)
 			else if (!strcmp(w, "nodirect")) g_marker_nodirect = 1;
 			else if (!strcmp(w, "nozero")) g_marker_nozero = 1;
 			else if (!strcmp(w, "zero")) g_marker_zero = 1;
+			else if (!strcmp(w, "wrapsample")) g_marker_wrapsample = 1;
 			w = strtok_r(NULL, " \r\n", &save);
 		}
 		dbg = debug ? "debug" : NULL;
 	}
 	snprintf(uuid, sizeof uuid, "%s", u);
 	if (strcmp(uuid, cur) != 0) {   /* a marker of another boot grants nothing */
-		g_marker_nohook = g_marker_frames = g_marker_dirty = g_marker_syncall = g_marker_direct = g_marker_nodirect = g_marker_nozero = g_marker_zero = 0;
+		g_marker_nohook = g_marker_frames = g_marker_dirty = g_marker_syncall = g_marker_direct = g_marker_nodirect = g_marker_nozero = g_marker_zero = g_marker_wrapsample = 0;
 		return 0;
 	}
 	g_marker_debug = dbg && !strcmp(dbg, "debug");
@@ -218,6 +219,7 @@ int main(int argc, char **argv)
 			setenv("MESA_DEBUG", "1", 1);   /* GL errors and shader compile/link failures on stderr */
 		}
 		if (g_marker_syncall) setenv("BGL_SYNC_ALL", "1", 1);
+		if (g_marker_wrapsample) setenv("BGL_WRAPSAMPLE", "1", 1);   /* experimental: GPU samples client-memory IOSurfaces in place (needs SURFACE_BO of wrapped surfaces) */
 		if (g_marker_zero) setenv("BGL_ZERO", "1", 1);   /* experimental: zero textures allocated with glTexImage2D(NULL) (hung the renderer so far) */
 		{ char dv[16] = ""; if (g_marker_nodirect || (has_arg(args, "bgldirect", dv, sizeof dv) && !strcmp(dv, "0"))) setenv("BGL_NODIRECT", "1", 1); }   /* direct (zero-copy display buffers) is the default */
 		if (stat(LOG_PATH, &st) == 0 && st.st_size > (1 << 20))

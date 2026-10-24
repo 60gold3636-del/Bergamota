@@ -20,5 +20,8 @@ int osm_sweet_surface_alias(unsigned surface_id, void **base, unsigned *bpr, uns
 void osm_sweet_alias_sync(unsigned surface_id);
 // Zero the texture bound to GL_TEXTURE_2D (storage allocated with glTexImage2D(NULL) is undefined; recycled GPU memory shows old pixels).
 void osm_sweet_zero_texture(void);
+// GPU sampling of client-memory IOSurfaces without a copy (read-only import). kind: 1 A8, 2 L8, 3 L8A8, 4 RGBA8, 5 BGRA8, 6 RGBA16F. 0 = copy instead.
+int osm_sweet_wrap_texture(unsigned name, unsigned surface_id, int kind, unsigned w, unsigned h);
+void osm_sweet_wrap_sync(unsigned surface_id);
 void osm_sweet_stats(double *out, int n);   // cumulative ms per phase of the blit (debug), see OSMesaSweetStats in the Mesa patch
 #endif

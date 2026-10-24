@@ -64,3 +64,7 @@ int osm_sweet_surface_alias(unsigned surface_id, void **base, unsigned *bpr, uns
 void osm_sweet_alias_sync(unsigned surface_id) { OSMesaSweetAliasSync(surface_id); }
 extern void OSMesaSweetZeroTexture(void);
 void osm_sweet_zero_texture(void) { OSMesaSweetZeroTexture(); }
+extern int OSMesaSweetWrapTexture(unsigned name, unsigned surface_id, int kind, unsigned w, unsigned h);
+extern void OSMesaSweetWrapSync(unsigned surface_id);
+int osm_sweet_wrap_texture(unsigned name, unsigned surface_id, int kind, unsigned w, unsigned h) { return OSMesaSweetWrapTexture(name, surface_id, kind, w, h); }
+void osm_sweet_wrap_sync(unsigned surface_id) { OSMesaSweetWrapSync(surface_id); }
