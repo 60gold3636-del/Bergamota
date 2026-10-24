@@ -571,6 +571,57 @@ static void fb_oem_hash(struct fb *fb, const char *a)
 	}
 }
 
+/*
+ * oem read:<partition>:<offset>:<length>   (hex, 4 KiB aligned)
+ * Stages the raw bytes at the start of the download buffer (the downloaded image is lost); `upload`
+ * (fastboot get_staged FILE) returns them. Read-only; used to pull the kernel's console log ring.
+ */
+static void fb_oem_read(struct fb *fb, const char *a)
+{
+	const struct fb_platform *p = fb->p;
+	char name[16];
+	uint64_t off, len, psize = 0;
+	const char *e, *end;
+	unsigned n = 0;
+
+	while (a[n] && a[n] != ':' && n < sizeof name - 1) {
+		name[n] = a[n];
+		n++;
+	}
+	name[n] = 0;
+	if (a[n] != ':' || !fb_part_allowed(name)) {
+		fb_resp(fb, "FAIL", a[n] == ':' ? FB_NOT_ALLOWED : "usage: oem read:<part>:<off>:<len> (hex)");
+		return;
+	}
+	a += n + 1;
+	if (!fb_parse_hex64(a, &off, &end) || *end != ':' || !fb_parse_hex64(end + 1, &len, &end) || *end) {
+		fb_resp(fb, "FAIL", "usage: oem read:<part>:<off>:<len> (hex)");
+		return;
+	}
+	if (!p->part_info || !p->part_read) {
+		fb_resp(fb, "FAIL", "no storage");
+		return;
+	}
+	if ((e = p->part_info(p->ctx, name, &psize))) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	if (((off | len) & 4095) || !len || off > psize || len > psize - off || len > p->dl_max) {
+		fb_resp(fb, "FAIL", "bad range");
+		return;
+	}
+	fb->dl_len = fb->staged_len = 0;	/* the data overwrites the download buffer */
+	fb_op_begin(fb, FB_OP_HASH, name, len);
+	e = p->part_read(p->ctx, name, off, len, p->dl_buf);
+	fb_op_end(fb);
+	if (e) {
+		fb_resp(fb, "FAIL", e);
+		return;
+	}
+	fb->staged_len = len;
+	fb_resp(fb, "OKAY", "");
+}
+
 /* upload: DATA<len>, the staged bytes, OKAY. Returns 0 or FB_LINK_LOST / FB_EOF. */
 static int fb_upload(struct fb *fb)
 {
@@ -595,6 +646,8 @@ static void fb_oem(struct fb *fb, const char *a)
 {
 	if (fb_starts(a, "hash:")) {
 		fb_oem_hash(fb, a + 5);
+	} else if (fb_starts(a, "read:")) {
+		fb_oem_read(fb, a + 5);
 	} else if (fb_starts(a, "verify:")) {
 		int on = a[7] == '1' || fb_eq(a + 7, "on");
 		fb->verify = on;

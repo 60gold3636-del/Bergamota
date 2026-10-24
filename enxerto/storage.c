@@ -328,6 +328,27 @@ const char *stor_hash(struct stor *s, const struct stor_part *p, uint64_t off, u
 	return e;
 }
 
+const char *stor_read(struct stor *s, const struct stor_part *p, uint64_t off, uint64_t len, uint8_t *out)
+{
+	const char *e = check_range(s, p, off, len);
+	uint64_t done = 0;
+
+	if (e)
+		return e;
+	s->fill_len = 0;		/* the bounce is about to be overwritten */
+	while (done < len) {
+		uint64_t n = len - done > STOR_HALF ? STOR_HALF : len - done;
+		e = s->bd.read(s->bd.ctx, p->lun, p->first + (off + done) / STOR_BLK, n / STOR_BLK, s->scratch);
+		if (e)
+			return e;
+		for (uint64_t i = 0; i < n; i++)
+			out[done + i] = s->scratch[i];
+		done += n;
+		note_progress(s, n);
+	}
+	return 0;
+}
+
 const char *stor_selftest(struct stor *s, const struct stor_part *p)
 {
 	const char *e = check_range(s, p, 0, 0);

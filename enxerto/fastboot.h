@@ -57,6 +57,8 @@ struct fb_platform {
 	const char *(*part_erase)(void *ctx, const char *name);
 	/* 16 bytes (BLAKE2b-128) per block of bs bytes into out; bs is a power of two, 4 KiB..2 MiB */
 	const char *(*part_hash)(void *ctx, const char *name, uint64_t off, uint64_t len, uint32_t bs, uint8_t *out);
+	/* oem read:<p>:<off>:<len>: raw bytes into out (staged for upload) */
+	const char *(*part_read)(void *ctx, const char *name, uint64_t off, uint64_t len, uint8_t *out);
 	void (*set_verify)(void *ctx, int on);
 	/* oem selftest:<p>: read-only UFS read-path test with dirty caches (NULL = pass) */
 	const char *(*part_selftest)(void *ctx, const char *name);

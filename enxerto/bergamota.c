@@ -697,6 +697,21 @@ static const char *p_part_hash(void *ctx, const char *name, uint64_t off, uint64
 	return e;
 }
 
+static const char *p_part_read(void *ctx, const char *name, uint64_t off, uint64_t len, uint8_t *out)
+{
+	const char *why;
+	const struct stor_part *p = st_part(name, &why);
+
+	(void)ctx;
+	if (!p)
+		return why;
+	/* written with CPU stores into memory USB will DMA from, as in p_part_hash */
+	dc_flush(out, len);
+	const char *e = stor_read(&g_stor, p, off, len, out);
+	dc_flush(out, len);
+	return e;
+}
+
 static const char *p_part_selftest(void *ctx, const char *name)
 {
 	const char *why;
@@ -986,6 +1001,7 @@ const char *bergamota_fastboot(uintptr_t dtb)
 	pl.flash_end = p_flash_end;
 	pl.part_erase = p_part_erase;
 	pl.part_hash = p_part_hash;
+	pl.part_read = p_part_read;
 	pl.set_verify = p_set_verify;
 	pl.part_selftest = p_part_selftest;
 	pl.set_ufs_depth = p_set_ufs_depth;

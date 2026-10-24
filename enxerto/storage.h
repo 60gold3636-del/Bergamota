@@ -81,6 +81,8 @@ const char *stor_erase(struct stor *s, const struct stor_part *p);
  * last block may be shorter) into out (16 bytes per block).
  */
 const char *stor_hash(struct stor *s, const struct stor_part *p, uint64_t off, uint64_t len, uint32_t bs, uint8_t *out);
+/* Copy [off, off+len) of the partition into out (through the scratch bounce). Read-only. */
+const char *stor_read(struct stor *s, const struct stor_part *p, uint64_t off, uint64_t len, uint8_t *out);
 /*
  * Read-only self test of the read path with DIRTY CPU caches (the failure mode of a driver without DMA
  * cache maintenance): inside a cached window both scratch halves are filled with patterns (dirty lines),
