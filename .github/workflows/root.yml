@@ -46,7 +46,10 @@ jobs:
 
       - name: Tools (README "Getting started")
         run: |
-          brew install blacktop/tap/ipsw
+          # Homebrew refuses formulae from third-party taps until the tap is trusted (ipsw pulls ipsw-frida)
+          brew tap blacktop/tap
+          brew trust blacktop/tap
+          brew install --formula blacktop/tap/ipsw
           ipsw version || true
 
       - name: renegade fetch-tools (prebuilt on-device tools, berga-tools.zip)
