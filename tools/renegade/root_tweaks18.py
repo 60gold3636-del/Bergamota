@@ -640,8 +640,10 @@ def event_timing(root):
 #
 # All ON by default. Opt out with RENEGADE_NO_<FEATURE>=1 (FEATURE = APPREG, POSTERBOARD, BLUETOOTH, JB, WALLPAPER, BGLRENDER) or the
 # --no-<feature> flags of `renegade root` and `renegade update`, which set the same variables.
-# Opt-in (off by default): RENEGADE_BGMTL=1 (bgmtl(): the Bergamota Metal device linked into MercuryPosterExtension only, inert until armed);
-# RENEGADE_BGMTL_ARM=1 additionally writes /private/var/tmp/bgmtl.arm (the user armed Mercury on the test phone); RENEGADE_BGMTL_DIR = the three signed-or-built dylibs.
+# ON by default for this build: bgmtl() (the Bergamota Metal device linked into MercuryPosterExtension only) and its arming file, and with them the
+# Mercury wallpaper; opt out with RENEGADE_NO_BGMTL=1 (or RENEGADE_BGMTL=0), ship it inert with RENEGADE_BGMTL_ARM=0. RENEGADE_BGMTL_DIR = the three
+# dylibs (default research/bgmtl); without them the feature is skipped with a note and the wallpaper stays Collections 5010.
+# Kill switch on the device: /private/var/tmp/bgmtl.off; the in-process dead-man writes it after two unclean launches.
 # RENEGADE_DISABLE_CRYPTEXD=1 / --disable-cryptexd, cryptexd(): fallback that removes the
 # crash-looping cryptexd job.
 # Every function is idempotent: `renegade update` runs them again on a finished image.
@@ -652,7 +654,14 @@ REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 # PosterBoard's own hardwired default, `CollectionsPoster:5010`) and 400. The stock iOS 18 wallpaper is com.apple.MercuryPoster:fluidity.two,
 # which needs a Metal device the ES-only render path does not have (the extension crash-loops, black screen), so it is NOT the default here.
 # Collections poster 7565 (the iOS 17 wallpaper) is not a descriptor of the provider (create fails with -2218). Override: RENEGADE_WALLPAPER_POSTER=provider:descriptor
-WALLPAPER_POSTER = os.environ.get('RENEGADE_WALLPAPER_POSTER') or 'com.apple.WallpaperKit.CollectionsPoster:5010'
+WALLPAPER_COLLECTIONS = 'com.apple.WallpaperKit.CollectionsPoster:5010'
+# The stock iOS 18 wallpaper is Mercury's "fluidity" poster (Metal): provider com.apple.MercuryPoster, descriptor fluidity.two as read back from
+# PosterBoard after the user picked "iOS 18" in Settings (other descriptors of the provider: fluidity.one, fluidity.dynamic). Without a Metal
+# device it is black, so it is only selected when the bgmtl feature installed the Metal device; otherwise WALLPAPER_COLLECTIONS.
+WALLPAPER_MERCURY = 'com.apple.MercuryPoster:fluidity.two'
+def wallpaper_poster(metal):
+    return os.environ.get('RENEGADE_WALLPAPER_POSTER') or (WALLPAPER_MERCURY if metal else WALLPAPER_COLLECTIONS)
+WALLPAPER_POSTER = WALLPAPER_COLLECTIONS   # kept for readers of the old name: the poster used when there is no Metal device
 FEATURES = ('appreg', 'posterboard', 'bluetooth', 'jb', 'wallpaper', 'bglrender')
 SWEETNET_DIRS = [os.environ.get('RENEGADE_SWEETNET'),
                  os.path.join(REPO, 'research/sweetnet'),
@@ -801,7 +810,7 @@ def posterboard(root):
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# bgmtl (OPT-IN, off by default: RENEGADE_BGMTL=1): the Bergamota Metal device for the stock iOS 18 wallpaper poster ONLY.
+# bgmtl (ON by default for this build, see the feature list above): the Bergamota Metal device for the stock iOS 18 wallpaper poster ONLY.
 # gpu/metal/inject (branch metal): bgmtl-inject.dylib + libbgair.dylib + libdrm.2.dylib (arm64e, pacstrip --sign) go to /usr/local/lib/bgmtl and
 # the dylib is linked into MercuryPosterExtension.appex's executable as an extra LC_LOAD_DYLIB (like sweetfp.dylib into PosterBoard), the binary
 # re-signed ad hoc keeping identifier and entitlements. The dylib is INERT until /private/var/tmp/bgmtl.arm exists, honours the kill switch
@@ -814,11 +823,11 @@ MERCURY_BIN = 'System/Library/ExtensionKit/Extensions/MercuryPosterExtension.app
 
 
 def bgmtl_arm(root):
-    if os.environ.get('RENEGADE_BGMTL_ARM') == '1':          # the user's decision: arm it in the image, as the test phone is
+    if os.environ.get('RENEGADE_BGMTL_ARM') != '0':          # ON by default (the user's decision: the image ships Metal Mercury); RENEGADE_BGMTL_ARM=0 leaves it inert
         arm = os.path.join(root, 'private/var/tmp/bgmtl.arm')
         os.makedirs(os.path.dirname(arm), exist_ok=True)
         with open(arm, 'w') as f:
-            f.write('armed by RENEGADE_BGMTL_ARM=1\n')
+            f.write('armed by renegade bgmtl (RENEGADE_BGMTL_ARM=0 to ship it inert)\n')
         print('bgmtl: /private/var/tmp/bgmtl.arm written: Mercury renders through BGMTLDevice at boot (dead-man and kill switch bgmtl.off apply)')
 
 
@@ -829,13 +838,13 @@ def bgmtl(root):
     binp = os.path.join(root, MERCURY_BIN)
     if not os.path.exists(binp):
         print('bgmtl: no', MERCURY_BIN, 'in the image: skipped')
-        return
+        return False
     src = os.environ.get('RENEGADE_BGMTL_DIR') or BGMTL_DIR_DEFAULT
     names = ('bgmtl-inject.dylib', 'libbgair.dylib', 'libdrm.2.dylib')
     if not all(os.path.exists(os.path.join(src, n)) for n in names):
         print('bgmtl: %s not built (gpu/metal/build-probe.sh; copy the three dylibs there): skipped, Mercury left alone' % src)
         note_skip('bgmtl', 'bgmtl dylibs not found in ' + src + '; MercuryPosterExtension left alone')
-        return
+        return False
     for n in names:                                        # first: the binary must never name a missing dylib
         # signed exactly as the ones on the test phone were (`pacstrip --sign`: PAC stripped, ad hoc), whatever state they were built in
         sd = tempfile.mkdtemp(prefix='renegade-bgmtl-lib-')
@@ -850,7 +859,7 @@ def bgmtl(root):
     if macho_has_dylib(binp, BGMTL_INJECT):
         print('bgmtl: MercuryPosterExtension already links', BGMTL_INJECT)
         bgmtl_arm(root)
-        return
+        return True
     mode = os.stat(binp).st_mode & 0o7777
     tmpd = tempfile.mkdtemp(prefix='renegade-bgmtl-')
     try:
@@ -870,6 +879,7 @@ def bgmtl(root):
     print('bgmtl: MercuryPosterExtension links %s (re-signed ad hoc as %s, %d entitlements kept); inert until /private/var/tmp/bgmtl.arm exists' % (
         BGMTL_INJECT, ident[0], len(ents or {})))
     bgmtl_arm(root)
+    return True
 
 
 FIRSTBOOT_LABEL = 'org.bergamota.renegade-firstboot'
@@ -953,8 +963,20 @@ while [ $n -lt 20 ]; do
 	sleep 10
 done
 echo "sweetposterset rc=$ok"
+# the Metal poster could not be selected (Mercury is black without the Metal device): fall back to the Collections poster, which ES renders
+if [ $ok != 0 ] && [ "@WPROV@:@WDESC@" != "@WPROV2@:@WDESC2@" ]; then
+	n=0
+	while [ $n -lt 10 ]; do
+		n=$((n+1))
+		echo "fallback sweetposterset try $n"
+		/usr/local/bin/sweetposterset @WPROV2@ @WDESC2@ && { ok=0; break; }
+		sleep 10
+	done
+	[ $ok = 0 ] && { /usr/local/bin/sweetposterset --cleanup @WPROV2@ @WDESC2@; ok=0; }
+else
 # "already selected" counts as done (rc 0); drop duplicate Gradient configurations an older tool left behind
 [ $ok = 0 ] && /usr/local/bin/sweetposterset --cleanup @WPROV@ @WDESC@
+fi
 /usr/local/bin/sweeticonstyle default || ok=1
 echo $ok >/private/var/tmp/renegade-poster.rc
 EOS
@@ -993,7 +1015,7 @@ exit 0
 '''
 
 
-def firstboot(root, appreg=True, jb=True, wallpaper=True):
+def firstboot(root, appreg=True, jb=True, wallpaper=True, metal=False):
     """First-boot job: app registration with sweetuicache and, when the root has /var/jb, the jailbreak post-install
     (Sileo and TrollStore registration). Runs from the launchd.plist cache, needs /bin/sh (dash, ssh tweak). Disables
     itself with /private/var/db/.renegade-firstboot-done. Also installs /usr/local/bin/sweetuicache (arm64e,
@@ -1044,7 +1066,9 @@ def firstboot(root, appreg=True, jb=True, wallpaper=True):
             print('firstboot: sweetposterset, sweeticonstyle, sweetopen, /Applications/SweetRun.app installed')
     write_file(os.path.join(root, FIRSTBOOT_SH), FIRSTBOOT_SCRIPT.replace('@APPREG@', '1' if appreg else '0')
                .replace('@WALL@', '1' if wallpaper else '0')
-               .replace('@WPROV@', WALLPAPER_POSTER.split(':', 1)[0]).replace('@WDESC@', WALLPAPER_POSTER.split(':', 1)[1]), 0o755)
+               .replace('@WPROV@', wallpaper_poster(metal).split(':', 1)[0]).replace('@WDESC@', wallpaper_poster(metal).split(':', 1)[1])
+               .replace('@WPROV2@', WALLPAPER_COLLECTIONS.split(':', 1)[0]).replace('@WDESC2@', WALLPAPER_COLLECTIONS.split(':', 1)[1]), 0o755)
+    print('firstboot: wallpaper poster', wallpaper_poster(metal), '(Metal device installed)' if metal else '(no Metal device)')
     add_job(root, FIRSTBOOT_LABEL, {
         'Label': FIRSTBOOT_LABEL, 'ProgramArguments': ['/bin/sh', '/' + FIRSTBOOT_SH],
         'RunAtLoad': True, 'UserName': 'root', 'StandardErrorPath': '/dev/console',
@@ -1275,13 +1299,16 @@ def auto(root):
         bluetooth(root)
     if enabled('posterboard'):
         posterboard(root)
-    firstboot(root, appreg=enabled('appreg'), jb=enabled('jb'), wallpaper=enabled('wallpaper'))
+    # Metal Mercury ships by default (RENEGADE_NO_BGMTL=1 / RENEGADE_BGMTL=0 opts out). It goes in FIRST: the dylibs and bgmtl.arm are in the image
+    # before the first-boot job can select the Mercury wallpaper, and so before PosterBoard ever launches Mercury. The wallpaper follows the outcome.
+    metal = False
+    if os.environ.get('RENEGADE_NO_BGMTL') != '1' and os.environ.get('RENEGADE_BGMTL') != '0':
+        metal = bgmtl(root)
+    firstboot(root, appreg=enabled('appreg'), jb=enabled('jb'), wallpaper=enabled('wallpaper'), metal=metal)
     if enabled('bglrender'):
         bglrender(root)
     if os.environ.get('RENEGADE_DISABLE_CRYPTEXD') == '1':      # opt-in, off by default
         cryptexd(root)
-    if os.environ.get('RENEGADE_BGMTL') == '1':                 # opt-in, off by default: the Metal device for the Mercury poster only
-        bgmtl(root)
 
 
 def main():
