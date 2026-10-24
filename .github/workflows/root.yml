@@ -1,0 +1,84 @@
+name: ios-root
+
+# Build the iOS 18.7.8 root image (research/ios18/ios18-root-full.simg) on a macOS runner, exactly as the README's
+# Mac steps do it ("3. Renegade"): renegade fetch-tools, renegade fetch, renegade root. The image holds Apple's
+# software and this repository is public, so it is uploaded only encrypted (AES-256, key in the ROOT_KEY secret),
+# split into parts, and kept for 3 days.
+
+on:
+  workflow_dispatch:
+    inputs:
+      root_args:
+        description: extra mkroot-full.py options (e.g. --no-jb)
+        required: false
+        default: ""
+  push:
+    branches: [mi8-dipper]
+    paths: [".github/workflows/root.yml"]
+
+concurrency:
+  group: ios-root-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  root:
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Key present
+        env:
+          ROOT_KEY: ${{ secrets.ROOT_KEY }}
+        run: test -n "$ROOT_KEY" || { echo "::error::ROOT_KEY secret missing"; exit 1; }
+
+      - name: Disk before
+        run: df -h / "$GITHUB_WORKSPACE"; sw_vers; xcodebuild -version | head -1
+
+      - name: Free disk (other Xcodes, simulators, Android SDK)
+        run: |
+          keep=$(xcode-select -p | sed 's#/Contents/Developer##')
+          for x in /Applications/Xcode*.app; do [ "$x" = "$keep" ] || sudo rm -rf "$x"; done
+          xcrun simctl delete all 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator /Library/Developer/CoreSimulator/Profiles/Runtimes \
+            ~/Library/Android /usr/local/share/dotnet /usr/local/lib/node_modules ~/.dotnet ~/.rustup 2>/dev/null || true
+          df -h /
+
+      - name: Tools (README "Getting started")
+        run: |
+          brew install blacktop/tap/ipsw
+          ipsw version || true
+
+      - name: renegade fetch-tools (prebuilt on-device tools, berga-tools.zip)
+        run: tools/renegade/renegade fetch-tools && tools/renegade/renegade fetch-tools --status
+
+      - name: SSH binaries (dropbear/dash/toybox; the SSH job is skipped without them)
+        continue-on-error: true
+        run: tools/ssh/build.sh
+
+      - name: renegade fetch (iOS 18.7.8 iPhone11,8 root + cryptexes from Apple, decrypted)
+        run: tools/renegade/renegade fetch && df -h /
+
+      - name: renegade root
+        run: tools/renegade/renegade root --delete-sources ${{ inputs.root_args }} && df -h /
+
+      - name: Encrypt and split
+        env:
+          ROOT_KEY: ${{ secrets.ROOT_KEY }}
+        run: |
+          S=research/ios18/ios18-root-full.simg
+          ls -l "$S"
+          mkdir -p out
+          shasum -a 256 "$S" | sed 's#research/ios18/##' > out/ios18-root-full.simg.sha256
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ROOT_KEY -in "$S" \
+            | split -b 1900m - out/ios18-root-full.simg.enc.part-
+          rm -f "$S"
+          shasum -a 256 out/ios18-root-full.simg.enc.part-* > out/parts.sha256
+          ls -l out; df -h /
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios18-root-encrypted
+          path: out/
+          compression-level: 0
+          retention-days: 3
