@@ -19,6 +19,7 @@
  * boot runs plain. The state is per boot (the boot time is compared), so nothing carries over a reboot. The wrapper's stderr
  * (and with it backboardd's) goes to /private/var/tmp/bgl-backboardd.log (truncated above 1 MiB) while injecting.
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -176,6 +177,36 @@ static int guard(void)
 	return 1;
 }
 
+/*
+ * SpringBoard's text legibility pools (LegibilityMemoryPool-SIZE.XXXXXX, 12-17 MB each, several per launch) are temporary files
+ * in mobile's tmp that nothing removes on this root (iOS clears it at boot; we do not): every reboot and every SpringBoard
+ * restart leaked another ~100-200 MB until the root was full for mobile, and then every write by a mobile process (cfprefsd's
+ * user preferences, the Setup flag, the wallpaper extension) left a 0-byte file. backboardd starts before SpringBoard, and
+ * SpringBoard does not outlive it, so no live process uses the pools here: remove them.
+ */
+static void clean_legibility_pools(void)
+{
+	const char *dir = "/private/var/mobile/tmp";
+	const char *pre = "LegibilityMemoryPool-";
+	DIR *d = opendir(dir);
+	struct dirent *e;
+	char path[1024];
+	unsigned n = 0;
+
+	if (!d)
+		return;
+	while ((e = readdir(d)) != NULL) {
+		if (strncmp(e->d_name, pre, strlen(pre)) != 0)
+			continue;
+		snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+		if (unlink(path) == 0)
+			n++;
+	}
+	closedir(d);
+	if (n)
+		fprintf(stderr, "bgl-launch: removed %u stale legibility pool file%s\n", n, n == 1 ? "" : "s");
+}
+
 int main(int argc, char **argv)
 {
 	char args[1024] = "", mode[16] = "", dbg[16] = "";
@@ -194,6 +225,7 @@ int main(int argc, char **argv)
 	if (sysctlbyname("kern.bootargs", args, &n, NULL, 0) != 0)
 		args[0] = 0;
 	args[sizeof args - 1] = 0;
+	clean_legibility_pools();
 
 	{ char mm[16] = ""; int have_marker = marker_mode(mm, sizeof mm); if (!has_arg(args, "bglrender", mode, sizeof mode) && have_marker) snprintf(mode, sizeof mode, "%s", mm); }   /* boot-arg wins for the mode; the marker may still add debug/nohook */
 	if (mode[0] &&
