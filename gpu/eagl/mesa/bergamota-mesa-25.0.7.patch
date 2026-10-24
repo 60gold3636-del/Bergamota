@@ -155,10 +155,10 @@ index e41699a..bc326aa 100644
     DBG("Pipe Info:");
     DBG(" GPU-id:          %s", fd_dev_name(screen->dev_id));
 diff --git a/src/gallium/frontends/osmesa/osmesa.c b/src/gallium/frontends/osmesa/osmesa.c
-index 6d61677..d655d90 100644
+index 6d61677..8693891 100644
 --- a/src/gallium/frontends/osmesa/osmesa.c
 +++ b/src/gallium/frontends/osmesa/osmesa.c
-@@ -59,11 +59,18 @@
+@@ -59,11 +59,19 @@
  #include "GL/osmesa.h"
  
  #include <stdio.h>
@@ -173,11 +173,12 @@ index 6d61677..d655d90 100644
 +#include "main/texobj.h"
 +#include "state_tracker/st_cb_flush.h"
 +#include "state_tracker/st_cb_eglimage.h"
++#include "state_tracker/st_cb_texture.h"
 +#include "main/teximage.h"
  
  #include "pipe/p_context.h"
  #include "pipe/p_screen.h"
-@@ -615,7 +622,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
+@@ -615,7 +623,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
        case OSMESA_PROFILE:
           profile = attribList[i+1];
           if (profile != OSMESA_CORE_PROFILE &&
@@ -187,7 +188,7 @@ index 6d61677..d655d90 100644
              return NULL;
           break;
        case OSMESA_CONTEXT_MAJOR_VERSION:
-@@ -664,6 +672,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
+@@ -664,6 +673,8 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
     memset(&attribs, 0, sizeof(attribs));
     attribs.profile = (profile == OSMESA_CORE_PROFILE)
        ? API_OPENGL_CORE : API_OPENGL_COMPAT;
@@ -196,7 +197,7 @@ index 6d61677..d655d90 100644
     attribs.major = version_major;
     attribs.minor = version_minor;
     attribs.flags = 0;  /* ST_CONTEXT_FLAG_x */
-@@ -1027,3 +1037,207 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
+@@ -1027,3 +1038,232 @@ OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
        debug_warning("Calling OSMesaPostprocess() after OSMesaMakeCurrent()\n");
     }
  }
@@ -216,6 +217,7 @@ index 6d61677..d655d90 100644
 +GLAPI void GLAPIENTRY OSMesaSweetStats(double *out, int n);
 +GLAPI int GLAPIENTRY OSMesaSweetAttachDirect(GLuint name, uint32_t surface_id);
 +GLAPI void GLAPIENTRY OSMesaSweetDirectSync(uint32_t surface_id);
++GLAPI void GLAPIENTRY OSMesaSweetZeroTexture(void);
 +GLAPI int GLAPIENTRY OSMesaSweetSurfaceAlias(uint32_t surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h);
 +GLAPI void GLAPIENTRY OSMesaSweetAliasSync(uint32_t surface_id);
 +
@@ -403,6 +405,30 @@ index 6d61677..d655d90 100644
 +OSMesaSweetAliasSync(uint32_t surface_id)
 +{
 +   sweet_hw_surface_alias_sync(surface_id);
++}
++
++/**
++ * glTexImage2D(NULL) leaves the texture undefined; on iOS the GPU memory behind such a texture is cleared, here the recycled memory still holds
++ * pixels of earlier textures (noisy blocks in Control Center). Zero level 0 of the texture bound to the current unit's GL_TEXTURE_2D.
++ */
++GLAPI void GLAPIENTRY
++OSMesaSweetZeroTexture(void)
++{
++   OSMesaContext osmesa = OSMesaGetCurrentContext();
++
++   if (!osmesa || !sweet_hw_active())
++      return;
++   struct st_context *st = osmesa->st;
++   struct gl_context *ctx = st->ctx;
++   struct gl_texture_object *t = ctx->Texture.Unit[ctx->Texture.CurrentUnit].CurrentTex[TEXTURE_2D_INDEX];
++   if (!t || t->Target != GL_TEXTURE_2D || t->surface_based)
++      return;
++   if (!st_finalize_texture(ctx, st->pipe, t, 0) || !t->pt)
++      return;
++   struct pipe_box box;
++   u_box_2d(0, 0, t->pt->width0, t->pt->height0, &box);
++   if (st->pipe->clear_texture)
++      st->pipe->clear_texture(st->pipe, t->pt, 0, &box, NULL);
 +}
 diff --git a/src/gallium/targets/osmesa/meson.build b/src/gallium/targets/osmesa/meson.build
 index 3c37161..1fce590 100644

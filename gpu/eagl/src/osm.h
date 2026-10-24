@@ -18,5 +18,7 @@ void osm_sweet_direct_sync(unsigned surface_id);
 // Writable CPU alias of a client-memory (GPU read-only) IOSurface from the kernel (abi_minor 2); 0 when not available. alias_sync after the CPU writes.
 int osm_sweet_surface_alias(unsigned surface_id, void **base, unsigned *bpr, unsigned *w, unsigned *h);
 void osm_sweet_alias_sync(unsigned surface_id);
+// Zero the texture bound to GL_TEXTURE_2D (storage allocated with glTexImage2D(NULL) is undefined; recycled GPU memory shows old pixels).
+void osm_sweet_zero_texture(void);
 void osm_sweet_stats(double *out, int n);   // cumulative ms per phase of the blit (debug), see OSMesaSweetStats in the Mesa patch
 #endif
