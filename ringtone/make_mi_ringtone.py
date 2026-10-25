@@ -154,7 +154,25 @@ LEAD = [
 ]
 
 
-def main(out_wav):
+def add_zurna(m, notes):
+    """Lead on the zurna, one octave down, with grace notes and end trills; rhythm unchanged."""
+    from make_zurna_ringtone import zurna_line, upper_of, down
+    ev = []
+    for beat, beats, note in notes:
+        z = down(note); up = upper_of(z)
+        g = 0.12 if beats >= 0.75 else 0
+        trill = 0.5 if beats >= 1.5 else 0
+        if g:
+            ev.append((beat*B, g*B, hz(up), 1))
+        ev.append(((beat+g)*B, (beats-g-trill)*B, hz(z), 0 if g else 1))
+        for i in range(6 if trill else 0):
+            ev.append(((beat+beats-0.5+i/12)*B, B/12, hz(up if i % 2 == 0 else z), 0))
+    m.add(zurna_line(ev, len(m.L) / SR), 0, gain=0.55)
+
+
+def main(out_wav, zurna=False):
+    """zurna=True: same arrangement, but the lead melody is played on the zurna."""
+    zev = []
     INTRO, BARS = 2, 8
     total_beats = (INTRO + BARS + 2) * 4
     m = Mix(total_beats * B + 2.5)
@@ -200,7 +218,9 @@ def main(out_wav):
         # lead
         pos = b0
         for n, l in LEAD[bar]:
-            if n:
+            if n and zurna:
+                zev.append((pos, l, n))
+            elif n:
                 m.add(epiano(hz(n), l * B), pos, pan=0.0)
                 if full and l >= 1:
                     m.add(bell(hz(n) * 2, 1.2), pos, pan=-0.25, gain=0.7)
@@ -211,9 +231,13 @@ def main(out_wav):
     m.add(kick(), b0)
     for n, p in (('D4', -0.4), ('A4', 0.4), ('E5', -0.2), ('F#5', 0.2), ('A5', 0)):
         m.add(pluck(hz(n), 2.5, 0.9), b0, pan=p, gain=0.8)
-    m.add(epiano(hz('D6'), 3 * B), b0)
-    m.add(bell(hz('A6'), 2.5), b0 + 0.5, pan=0.3)
-    m.add(bell(hz('D7'), 2.5), b0 + 1.0, pan=-0.3, gain=0.7)
+    if zurna:
+        zev.append((b0, 3, 'D6'))
+        add_zurna(m, zev)
+    else:
+        m.add(epiano(hz('D6'), 3 * B), b0)
+        m.add(bell(hz('A6'), 2.5), b0 + 0.5, pan=0.3)
+        m.add(bell(hz('D7'), 2.5), b0 + 1.0, pan=-0.3, gain=0.7)
     m.add(supersaw([hz(n) for n in ('D3', 'A3', 'E4', 'F#4')], 4 * B + 1), b0, gain=0.8)
     m.add(bass(hz('D2'), 3 * B), b0)
 
@@ -237,4 +261,4 @@ def main(out_wav):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else 'mi.wav')
+    main(sys.argv[1] if len(sys.argv) > 1 else 'mi.wav', zurna='--zurna' in sys.argv)

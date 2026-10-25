@@ -44,3 +44,9 @@ plays the fall, and after a hiccup it wakes up and finishes at 140 BPM.
 
 - `BayginZurna-Magisk-v1.0.zip` – Magisk module (own id)
 - `BayginZurna.ogg` – plain audio file
+
+# Bergamota Mi (zurna lead)
+
+`python3 make_mi_ringtone.py out.wav --zurna`: the exact Bergamota Mi arrangement and rhythm
+(110 BPM, same drums, bass, plucks and pad) with the lead melody on the zurna instead of the
+e-piano. OGG only: `BergamotaMiZurnaRitim.ogg`.
