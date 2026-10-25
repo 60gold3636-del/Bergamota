@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Erhan\'ın Asistanı</string>
+    <string name="settings_summary">İnternetsiz sesli asistan: \"asistan\" deyin, komutu söyleyin</string>
+    <string name="listen_label">Asistan dinle</string>
+</resources>

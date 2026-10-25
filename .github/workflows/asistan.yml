@@ -55,16 +55,27 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk Asistan.apk
           ls -la Asistan.apk
 
+      - name: Magisk module (priv-app + Settings entry + start at boot)
+        run: |
+          rm -rf build/magisk && mkdir -p build && cp -r magisk build/magisk
+          mkdir -p build/magisk/system/priv-app/ErhanAsistan
+          cp Asistan.apk build/magisk/system/priv-app/ErhanAsistan/ErhanAsistan.apk
+          sed -i "s/^version=.*/version=v0.1.${GITHUB_RUN_NUMBER}/; s/^versionCode=.*/versionCode=${GITHUB_RUN_NUMBER}/" build/magisk/module.prop
+          (cd build/magisk && zip -qr9 ../../ErhanAsistan-magisk.zip .)
+          unzip -l ErhanAsistan-magisk.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: Asistan-apk
-          path: apps/Asistan/Asistan.apk
+          path: |
+            apps/Asistan/Asistan.apk
+            apps/Asistan/ErhanAsistan-magisk.zip
 
       - name: Publish as prerelease "asistan-latest" (download link for the phone)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete asistan-latest --yes --cleanup-tag || true
-          gh release create asistan-latest Asistan.apk --prerelease --target "$GITHUB_SHA" \
+          gh release create asistan-latest Asistan.apk ErhanAsistan-magisk.zip --prerelease --target "$GITHUB_SHA" \
             --title "Asistan (son derleme)" \
             --notes "Branch ${GITHUB_REF_NAME}, commit ${GITHUB_SHA}, run ${GITHUB_RUN_ID}"

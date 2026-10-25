@@ -12,6 +12,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("wake", "asistan")!!.ifBlank { "asistan" }
         set(v) = sp.edit().putString("wake", v.trim()).apply()
 
+    /** Switched on by the user: the service runs all the time and comes back after a reboot. */
+    var enabled: Boolean
+        get() = sp.getBoolean("enabled", false)
+        set(v) = sp.edit().putBoolean("enabled", v).apply()
+
     /** Treat every sentence as a command (no wake word). */
     var noWakeWord: Boolean
         get() = sp.getBoolean("noWake", false)

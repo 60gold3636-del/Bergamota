@@ -63,6 +63,7 @@ class MainActivity : Activity(), Bus.Listener {
             } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(runtimePerms, REQ_PERMS)
             } else {
+                prefs.enabled = true
                 AssistantService.start(this)
             }
             toggle.postDelayed({ refresh() }, 300)
@@ -122,6 +123,10 @@ class MainActivity : Activity(), Bus.Listener {
     override fun onResume() {
         super.onResume()
         Bus.listener = this
+        // Opened from Settings while enabled but not running (e.g. killed): bring it back.
+        if (prefs.enabled && !AssistantService.running &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) AssistantService.start(this)
         refresh()
         onLog(Bus.logText())
     }
@@ -145,7 +150,7 @@ class MainActivity : Activity(), Bus.Listener {
 
     private fun refresh() {
         status.text = if (AssistantService.running) Bus.status else "Kapalı"
-        toggle.text = if (AssistantService.running) "Asistanı kapat" else "Asistanı başlat"
+        toggle.text = if (AssistantService.running) "Asistanı kapat" else "Asistanı etkinleştir (sürekli çalışır)"
 
         fun mark(p: String) = if (checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED) "✓" else "✗"
         val pm = getSystemService(PowerManager::class.java)

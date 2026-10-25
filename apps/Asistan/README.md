@@ -1,10 +1,21 @@
-# Asistan — internetsiz Türkçe sesli asistan (Android)
+# Erhan'ın Asistanı — internetsiz Türkçe sesli asistan (Android)
 
 Siri / "OK Google" yerine: konuşma tanıma **telefonun içinde** (Vosk, Türkçe model) yapılır,
 bu yüzden arama, alarm, zamanlayıcı, fener, uygulama açma gibi komutlar internet olmadan çalışır.
 Hava durumu ve yol tarifi için internet gerekir (Open-Meteo, anahtar gerektirmez).
 
-## Kurulum
+## Kurulum A: Magisk modülü (önerilen, root gerekir)
+1. **Releases → asistan-latest → ErhanAsistan-magisk.zip** dosyasını indirin.
+2. Magisk (veya KernelSU/APatch) → Modüller → Depolamadan yükle → zip'i seçin → yeniden başlatın.
+3. **Ayarlar** ana sayfasında **"Erhan'ın Asistanı"** girişi çıkar. Açın, **Asistanı etkinleştir**'e basın.
+4. Etkinken her açılışta kendiliğinden başlar (modülün `service.sh`'ı izinleri verir, pil kısıtlamasını kaldırır
+   ve servisi root olarak başlatır). Bildirimdeki **Kapat** ya da sayfadaki düğme devre dışı bırakır.
+
+Modül uygulamayı `/system/priv-app/ErhanAsistan` olarak sistemsiz kurar; modülü kaldırınca her şey eski haline döner.
+Bazı üretici Ayarlar uygulamaları (ör. MIUI/HyperOS) dışarıdan gelen ana sayfa girişlerini göstermez;
+o zaman uygulama simgesinden açın, her şey aynı çalışır.
+
+## Kurulum B: düz APK
 1. APK: GitHub'da **Releases → asistan-latest → Asistan.apk** (her derlemede güncellenir) ya da
    Actions → "Asistan APK" çalıştırmasının `Asistan-apk` dosyası.
 2. Telefonda "bilinmeyen kaynaklardan yükleme"ye izin verip kurun.

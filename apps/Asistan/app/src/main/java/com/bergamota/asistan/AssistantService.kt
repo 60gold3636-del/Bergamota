@@ -36,6 +36,8 @@ class AssistantService : Service(), RecognitionListener {
         const val ACTION_STOP = "com.bergamota.asistan.STOP"
         const val ACTION_LISTEN = "com.bergamota.asistan.LISTEN"
         const val ACTION_TEXT = "com.bergamota.asistan.TEXT"
+        /** Boot / module start: only keeps running if the user enabled the assistant. */
+        const val ACTION_BOOT = "com.bergamota.asistan.BOOT"
         const val EXTRA_TEXT = "text"
         private const val CHANNEL = "asistan"
         private const val NOTIFICATION_ID = 1
@@ -79,7 +81,8 @@ class AssistantService : Service(), RecognitionListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
+            ACTION_STOP -> { prefs.enabled = false; stopSelf(); return START_NOT_STICKY }
+            ACTION_BOOT -> if (!prefs.enabled) { stopSelf(); return START_NOT_STICKY }
             ACTION_LISTEN -> if (speech == null) listenWhenReady = true else armCommand()
             ACTION_TEXT -> intent.getStringExtra(EXTRA_TEXT)?.let { assistant.handle(it) }
         }
@@ -219,7 +222,7 @@ class AssistantService : Service(), RecognitionListener {
 
     private fun goForeground(text: String) {
         val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Asistan", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.app_name), NotificationManager.IMPORTANCE_LOW))
         val n = notification(text)
         if (Build.VERSION.SDK_INT >= 30) {
             var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
@@ -247,7 +250,7 @@ class AssistantService : Service(), RecognitionListener {
         val icon = Icon.createWithResource(this, R.drawable.ic_mic)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_mic)
-            .setContentTitle("Asistan")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(open)

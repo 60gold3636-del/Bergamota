@@ -1,0 +1,6 @@
+id=erhan_asistan
+name=Erhan'ın Asistanı
+version=v0.1
+versionCode=1
+author=Bergamota
+description=İnternetsiz Türkçe sesli asistan. Ayarlar'da "Erhan'ın Asistanı" girişi; etkinleştirince sürekli dinler, "asistan" deyince komutu yapar.
