@@ -44,6 +44,8 @@ class AssistantService : Service(), RecognitionListener {
         private const val CHANNEL = "asistan"
         private const val NOTIFICATION_ID = 1
         private const val COMMAND_WINDOW_MS = 8000L
+        /** A complete command that stays unchanged this long in the partial result runs without waiting for the end of the sentence. */
+        private const val EARLY_MS = 400L
 
         @Volatile
         var running = false
@@ -68,6 +70,9 @@ class AssistantService : Service(), RecognitionListener {
     private var beepedThisUtterance = false
     private var listenWhenReady = false
     private lateinit var commandRec: CommandRecognizer
+    private var lastPartial = ""
+    private var earlyHandled = false
+    private val earlyCheck = Runnable { tryEarly() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -154,8 +159,13 @@ class AssistantService : Service(), RecognitionListener {
     // --- Vosk callbacks (main thread) ---
 
     override fun onPartialResult(hypothesis: String) {
-        if (beepedThisUtterance || prefs.noWakeWord || SystemClock.elapsedRealtime() < commandUntil) return
         val partial = JSONObject(hypothesis).optString("partial")
+        if (partial != lastPartial) {
+            lastPartial = partial
+            main.removeCallbacks(earlyCheck)
+            if (partial.isNotBlank() && !earlyHandled) main.postDelayed(earlyCheck, EARLY_MS)
+        }
+        if (beepedThisUtterance || prefs.noWakeWord || SystemClock.elapsedRealtime() < commandUntil) return
         if (partial.isNotBlank() && afterWakeWord(partial) != null) {
             beepedThisUtterance = true
             beep()
@@ -183,7 +193,31 @@ class AssistantService : Service(), RecognitionListener {
         if (running) startListening()
     }
 
+    /** The speaker paused after a complete command: act now instead of waiting for Vosk's end of sentence. */
+    private fun tryEarly() {
+        val p = lastPartial
+        if (p.isBlank() || earlyHandled) return
+        val inWindow = SystemClock.elapsedRealtime() < commandUntil
+        val text = if (inWindow || prefs.noWakeWord) p else afterWakeWord(p)?.takeIf { it.isNotBlank() } ?: return
+        val cmd = CommandParser.parse(text) ?: return
+        val complete = when (cmd) {
+            is Command.Unknown -> false
+            is Command.Alarm -> cmd.time != null
+            is Command.Timer -> cmd.seconds != null
+            is Command.Call -> assistant.knowsContact(cmd.who)
+            else -> true
+        }
+        if (!complete) return
+        earlyHandled = true
+        if (inWindow) { commandUntil = 0; restoreStatus() }
+        Bus.log("Duyulan: $p")
+        assistant.handle(listOf(text))
+    }
+
     private fun onUtterance(alts: List<String>) {
+        main.removeCallbacks(earlyCheck)
+        lastPartial = ""
+        if (earlyHandled) { earlyHandled = false; beepedThisUtterance = false; return }
         val wasBeeped = beepedThisUtterance
         beepedThisUtterance = false
         if (alts.isEmpty()) return

@@ -50,6 +50,7 @@ jobs:
             grep -q rule2.min-trailing "$conf" || printf -- '--endpoint.rule2.min-trailing-silence=0.3\n--endpoint.rule3.min-trailing-silence=0.6\n--endpoint.rule4.min-trailing-silence=1.0\n' >> "$conf"
             cat "$conf"
           fi
+          find app/src/main/assets/model-tr -maxdepth 2 | sort
           echo "$MODEL-fast1" > app/src/main/assets/model-tr/uuid
           du -sh app/src/main/assets/model-tr
 

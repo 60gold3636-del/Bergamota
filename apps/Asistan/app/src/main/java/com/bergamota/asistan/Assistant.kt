@@ -74,6 +74,8 @@ class Assistant(private val ctx: Context, private val speaker: Speaker) {
 
     fun contactCount() = contacts.count()
 
+    fun knowsContact(who: String) = contacts.find(who) != null
+
     fun contactNames() = contacts.names()
 
     private fun run(cmd: Command) {
