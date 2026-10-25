@@ -1,0 +1,7 @@
+.gradle/
+build/
+local.properties
+*.apk
+model-cache/
+# Downloaded at build time (see .github/workflows/asistan.yml)
+app/src/main/assets/model-tr/

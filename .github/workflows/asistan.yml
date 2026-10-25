@@ -1,0 +1,70 @@
+name: Asistan APK (offline Turkish voice assistant)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "apps/Asistan/**"
+      - ".github/workflows/asistan.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: asistan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MODEL: vosk-model-small-tr-0.3
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/Asistan
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/cache@v4
+        with:
+          path: apps/Asistan/model-cache
+          key: ${{ env.MODEL }}
+
+      - name: Turkish speech model (Vosk, bundled into the APK)
+        run: |
+          mkdir -p model-cache app/src/main/assets
+          [ -s model-cache/$MODEL.zip ] || curl -fL --retry 4 -o model-cache/$MODEL.zip https://alphacephei.com/vosk/models/$MODEL.zip
+          rm -rf model-cache/x app/src/main/assets/model-tr
+          unzip -q model-cache/$MODEL.zip -d model-cache/x
+          mv model-cache/x/$MODEL app/src/main/assets/model-tr
+          echo "$MODEL" > app/src/main/assets/model-tr/uuid
+          du -sh app/src/main/assets/model-tr
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk Asistan.apk
+          ls -la Asistan.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Asistan-apk
+          path: apps/Asistan/Asistan.apk
+
+      - name: Publish as prerelease "asistan-latest" (download link for the phone)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete asistan-latest --yes --cleanup-tag || true
+          gh release create asistan-latest Asistan.apk --prerelease --target "$GITHUB_SHA" \
+            --title "Asistan (son derleme)" \
+            --notes "Branch ${GITHUB_REF_NAME}, commit ${GITHUB_SHA}, run ${GITHUB_RUN_ID}"

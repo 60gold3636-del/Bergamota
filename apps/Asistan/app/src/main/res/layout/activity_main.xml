@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/toggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+
+        <Button
+            android:id="@+id/listen"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Şimdi dinle (uyandırma kelimesi olmadan)" />
+
+        <TextView
+            style="@style/Section"
+            android:text="İzinler" />
+
+        <TextView
+            android:id="@+id/perms"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/grant"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="İzinleri ver" />
+
+        <Button
+            android:id="@+id/overlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Arka planda alarm/uygulama açabilmek için: Üstte göster izni" />
+
+        <Button
+            android:id="@+id/battery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Pil optimizasyonundan çıkar (kapanmasın)" />
+
+        <TextView
+            style="@style/Section"
+            android:text="Ayarlar" />
+
+        <EditText
+            android:id="@+id/wake"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Uyandırma kelimesi (varsayılan: asistan)"
+            android:inputType="text" />
+
+        <CheckBox
+            android:id="@+id/noWake"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Uyandırma kelimesi olmadan her cümleyi komut say" />
+
+        <EditText
+            android:id="@+id/city"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Şehir (konum yoksa hava durumu için)"
+            android:inputType="textCapWords" />
+
+        <Button
+            android:id="@+id/save"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Kaydet" />
+
+        <TextView
+            style="@style/Section"
+            android:text="Kişi takma adları (eşim, annem, babam…)" />
+
+        <TextView
+            android:id="@+id/aliases"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <EditText
+            android:id="@+id/aliasName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Takma ad, örn. eşim"
+            android:inputType="text" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/aliasPick"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Rehberden kişi seç" />
+
+            <Button
+                android:id="@+id/aliasDelete"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Sil" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Section"
+            android:text="Yazarak dene" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/testText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="3"
+                android:hint="örn. yarın sabah sekize alarm kur"
+                android:imeOptions="actionGo"
+                android:inputType="text" />
+
+            <Button
+                android:id="@+id/testRun"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Çalıştır" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Section"
+            android:text="Örnek komutlar" />
+
+        <TextView
+            android:id="@+id/help"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            style="@style/Section"
+            android:text="Kayıt" />
+
+        <TextView
+            android:id="@+id/log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>
