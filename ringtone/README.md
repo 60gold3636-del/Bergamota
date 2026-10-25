@@ -14,3 +14,13 @@ Files:
 - `BergamotaBlend.ogg` – plain audio file (works without root too).
 
 Rebuild: `python3 make_ringtone.py out.wav && ffmpeg -i out.wav -c:a libvorbis -q:a 6 BergamotaBlend.ogg`
+
+# Bergamota Mi ringtone
+
+Original ~25 s Xiaomi/Redmi-style ringtone (`make_mi_ringtone.py`, stereo). The melody and
+chords (Dadd9 – A/C# – Bm7 – Gmaj7 – Em7 – Cadd9 – A7sus4 – A7) are written from scratch.
+Instruments: FM electric piano lead, FM glass bells, nylon pluck arpeggios, supersaw pad,
+sub bass with extra harmonics for phone speakers, kick/clap/hat/shaker, convolution reverb.
+
+- `BergamotaMi-Magisk-v1.0.zip` – Magisk module (separate id, can be installed next to Blend)
+- `BergamotaMi.ogg` – plain audio file
