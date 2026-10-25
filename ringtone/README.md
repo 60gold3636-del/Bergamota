@@ -24,3 +24,13 @@ sub bass with extra harmonics for phone speakers, kick/clap/hat/shaker, convolut
 
 - `BergamotaMi-Magisk-v1.0.zip` – Magisk module (separate id, can be installed next to Blend)
 - `BergamotaMi.ogg` – plain audio file
+
+# Bergamota Mi Zurna ringtone
+
+The Bergamota Mi melody (one octave down) on a synthesised zurna, with a second zurna holding
+the dem (D drone) and a davul (tokmak + çubuk) playing a düm-tek groove with rolls, ~24 s.
+Zurna ornaments: grace notes from the upper neighbour, trills on long notes, glides, vibrato.
+Built by `make_zurna_ringtone.py` (imports helpers and the melody from `make_mi_ringtone.py`).
+
+- `BergamotaMiZurna-Magisk-v1.0.zip` – Magisk module (own id, installs next to the others)
+- `BergamotaMiZurna.ogg` – plain audio file
