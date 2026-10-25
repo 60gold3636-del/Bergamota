@@ -34,3 +34,13 @@ Built by `make_zurna_ringtone.py` (imports helpers and the melody from `make_mi_
 
 - `BergamotaMiZurna-Magisk-v1.0.zip` – Magisk module (own id, installs next to the others)
 - `BergamotaMiZurna.ogg` – plain audio file
+
+# Baygın Zurna ringtone
+
+Funny ~34 s zurna story (`make_baygin_zurna_ringtone.py`): wedding start with the Bergamota Mi
+melody, then the zurna gets dizzy (wobble, flat sagging notes, tempo dragging 118 -> 66 BPM,
+hiccups, davul missing beats), faints with a two-octave slide while the dem deflates, the davul
+plays the fall, and after a hiccup it wakes up and finishes at 140 BPM.
+
+- `BayginZurna-Magisk-v1.0.zip` – Magisk module (own id)
+- `BayginZurna.ogg` – plain audio file

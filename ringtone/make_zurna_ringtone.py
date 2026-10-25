@@ -26,8 +26,9 @@ def formant_gain(f):
     return g * (f < 15000)
 
 
-def zurna_line(events, total, glide=0.022, vib_rate=5.8):
-    """events: list of (start_s, dur_s, freq_hz, accent). Monophonic legato line."""
+def zurna_line(events, total, glide=0.022, vib_rate=5.8, bend=None, gain=None):
+    """events: list of (start_s, dur_s, freq_hz, accent). Monophonic legato line.
+    bend: optional per-sample pitch offset in octaves; gain: optional per-sample gain."""
     n = int(total * SR)
     logf = np.full(n, np.nan); amp = np.zeros(n); vibw = np.zeros(n)
     for start, dur, f, acc in events:
@@ -46,7 +47,7 @@ def zurna_line(events, total, glide=0.022, vib_rate=5.8):
     logf = np.convolve(np.pad(logf, (k, k), 'edge'), win, 'same')[k:-k]
     t = np.arange(n)/SR
     vib = 0.018*vibw*np.sin(2*np.pi*vib_rate*t + 0.3*np.sin(2*np.pi*0.7*t))
-    f = 2 ** (logf + vib/1.0 * 0.5)
+    f = 2 ** (logf + vib/1.0 * 0.5 + (0 if bend is None else bend[:n]))
     ph = 2*np.pi*np.cumsum(f)/SR
     s = np.zeros(n)
     for h in range(1, 26):
@@ -54,6 +55,8 @@ def zurna_line(events, total, glide=0.022, vib_rate=5.8):
     breath = np.diff(rng.standard_normal(n), prepend=0)
     breath = np.convolve(breath, np.ones(3)/3, 'same')
     sm = np.convolve(amp, np.ones(64)/64, 'same')
+    if gain is not None:
+        sm = sm * gain[:n]
     out = np.tanh(0.6 * s * sm) + 0.05*breath*sm
     return out * 0.5
 
