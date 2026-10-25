@@ -38,6 +38,8 @@ class AssistantService : Service(), RecognitionListener {
         const val ACTION_TEXT = "com.bergamota.asistan.TEXT"
         /** Boot / module start: only keeps running if the user enabled the assistant. */
         const val ACTION_BOOT = "com.bergamota.asistan.BOOT"
+        /** Voice settings changed in the app. */
+        const val ACTION_RELOAD_VOICE = "com.bergamota.asistan.RELOAD_VOICE"
         const val EXTRA_TEXT = "text"
         private const val CHANNEL = "asistan"
         private const val NOTIFICATION_ID = 1
@@ -65,14 +67,20 @@ class AssistantService : Service(), RecognitionListener {
     private var commandUntil = 0L
     private var beepedThisUtterance = false
     private var listenWhenReady = false
+    private lateinit var commandRec: CommandRecognizer
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
-        speaker = Speaker(this) { busy -> speech?.setPause(busy) }
+        speaker = Speaker(this, onBusy = { busy -> speech?.setPause(busy) })
         assistant = Assistant(this, speaker)
+        assistant.preloadContacts()
+        commandRec = CommandRecognizer(this, { alts ->
+            Bus.log("Duyulan (telefon tanıyıcısı): ${alts.first()}")
+            assistant.handle(alts)
+        }, { resumeVosk() })
         tone = try { ToneGenerator(AudioManager.STREAM_MUSIC, 70) } catch (e: Exception) { null }
         goForeground("Model yükleniyor…")
         running = true
@@ -85,6 +93,7 @@ class AssistantService : Service(), RecognitionListener {
             ACTION_BOOT -> if (!prefs.enabled) { stopSelf(); return START_NOT_STICKY }
             ACTION_LISTEN -> if (speech == null) listenWhenReady = true else armCommand()
             ACTION_TEXT -> intent.getStringExtra(EXTRA_TEXT)?.let { assistant.handle(it) }
+            ACTION_RELOAD_VOICE -> speaker.reload()
         }
         return START_STICKY
     }
@@ -92,6 +101,7 @@ class AssistantService : Service(), RecognitionListener {
     override fun onDestroy() {
         running = false
         main.removeCallbacksAndMessages(null)
+        commandRec.cancel()
         speech?.stop()
         speech?.shutdown()
         recognizer?.close()
@@ -126,6 +136,8 @@ class AssistantService : Service(), RecognitionListener {
             speech?.shutdown()
             recognizer?.close()
             val rec = Recognizer(m, 16000f)
+            // Several guesses per sentence: the assistant picks the one that is a command / a known contact.
+            rec.setMaxAlternatives(3)
             recognizer = rec
             speech = SpeechService(rec, 16000f).also { it.startListening(this) }
             val s = if (prefs.noWakeWord) "Dinliyor (her cümle komut)" else "Dinliyor: \"${prefs.wakeWord} …\""
@@ -150,9 +162,17 @@ class AssistantService : Service(), RecognitionListener {
         }
     }
 
-    override fun onResult(hypothesis: String) = onUtterance(JSONObject(hypothesis).optString("text"))
+    override fun onResult(hypothesis: String) = onUtterance(texts(hypothesis))
 
-    override fun onFinalResult(hypothesis: String) = onUtterance(JSONObject(hypothesis).optString("text"))
+    override fun onFinalResult(hypothesis: String) = onUtterance(texts(hypothesis))
+
+    private fun texts(hypothesis: String): List<String> {
+        val j = JSONObject(hypothesis)
+        val alts = j.optJSONArray("alternatives")
+            ?: return listOf(j.optString("text")).filter { it.isNotBlank() }
+        return (0 until alts.length()).map { alts.getJSONObject(it).optString("text") }
+            .filter { it.isNotBlank() }.distinct()
+    }
 
     override fun onError(exception: Exception) {
         Bus.log("Tanıma hatası: ${exception.message}")
@@ -163,24 +183,26 @@ class AssistantService : Service(), RecognitionListener {
         if (running) startListening()
     }
 
-    private fun onUtterance(text: String) {
+    private fun onUtterance(alts: List<String>) {
         val wasBeeped = beepedThisUtterance
         beepedThisUtterance = false
-        if (text.isBlank()) return
-        Bus.log("Duyulan: $text")
+        if (alts.isEmpty()) return
+        Bus.log("Duyulan: ${alts.first()}")
         val now = SystemClock.elapsedRealtime()
         if (now < commandUntil) {
             commandUntil = 0
             restoreStatus()
-            assistant.handle(text)
+            assistant.handle(alts)
             return
         }
         if (prefs.noWakeWord) {
-            assistant.handle(text, quietIfUnknown = true)
+            assistant.handle(alts, quietIfUnknown = true)
             return
         }
-        val rest = afterWakeWord(text) ?: return
-        if (rest.isBlank()) armCommand(beep = !wasBeeped) else assistant.handle(rest)
+        val rests = alts.mapNotNull { afterWakeWord(it) }
+        if (rests.isEmpty()) return
+        val commands = rests.filter { it.isNotBlank() }
+        if (commands.isEmpty()) armCommand(beep = !wasBeeped) else assistant.handle(commands)
     }
 
     /** Text after the wake word, or null if the wake word was not said. Tolerates small mishearings. */
@@ -199,6 +221,21 @@ class AssistantService : Service(), RecognitionListener {
     }
 
     private fun armCommand(beep: Boolean = true) {
+        if (prefs.systemRecognizer && commandRec.available()) {
+            // Hand the microphone to the phone's recognizer for this one command.
+            speech?.stop()
+            if (beep) beep()
+            Bus.status("Komutu söyleyin…")
+            main.postDelayed({
+                try {
+                    commandRec.start(assistant.contactNames())
+                } catch (e: Exception) {
+                    Bus.log("Tanıyıcı açılamadı: $e")
+                    resumeVosk()
+                }
+            }, if (beep) 180L else 0L)
+            return
+        }
         commandUntil = SystemClock.elapsedRealtime() + COMMAND_WINDOW_MS
         if (beep) beep()
         Bus.status("Komutu söyleyin…")
@@ -208,6 +245,13 @@ class AssistantService : Service(), RecognitionListener {
                 restoreStatus()
             }
         }, COMMAND_WINDOW_MS + 100)
+    }
+
+    private fun resumeVosk() {
+        restoreStatus()
+        if (!running) return
+        val s = speech
+        if (s == null || !s.startListening(this)) startListening()
     }
 
     private fun restoreStatus() {

@@ -40,7 +40,15 @@ o zaman uygulama simgesinden açın, her şey aynı çalışır.
 | Yol tarifi | Kadıköy'e yol tarifi |
 | Durdur | sus, iptal |
 
-"Eşim", "annem" gibi takma adlar: uygulamada takma adı yazıp **Rehberden kişi seç**.
+**Rehber:** rehberdeki herkes kendiliğinden tanınır ("asistan Ahmet Yılmaz'ı ara"); "Eşim", "Aşkım", "Karım",
+"Annem", "Babam" gibi kayıtlar eş anlamlılarıyla da bulunur. Takma ad yalnızca kişi bambaşka bir adla kayıtlıysa gerekir.
+
+**Daha iyi tanıma:** "asistan" dedikten sonra komutu telefonun kendi (Google) cihaz içi tanıyıcısı dinler ve
+rehberdeki tüm isimler ona önceden verilir. Uygulamadaki **Türkçe çevrimdışı konuşma paketini indir** ile paketi
+kurun (internetsiz çalışması için). İstenmezse "Komut tanıma" kutusundan kapatılabilir; o zaman her şeyi Vosk dinler.
+
+**Ses:** "Asistanın sesi" bölümünden ses motoru (Google, Samsung, …), Türkçe ses, konuşma hızı ve ton seçilir.
+Daha fazla ses için **Yeni ses indir** (ses motorunun kendi ses paketleri; ayrıca kütüphane gerekmez).
 Ana ekran tuşuna uzun basma / kulaklık tuşu: Ayarlar → Varsayılan uygulamalar → Dijital asistan
 uygulaması bölümünde Asistan seçilebiliyorsa, tek komut için dinlemeye başlar.
 

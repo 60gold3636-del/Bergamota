@@ -29,15 +29,40 @@ class Assistant(private val ctx: Context, private val speaker: Speaker) {
     private val io = Executors.newSingleThreadExecutor()
 
     /** Returns false when the sentence was not understood. */
-    fun handle(text: String, quietIfUnknown: Boolean = false): Boolean {
-        val cmd = CommandParser.parse(text) ?: return false
-        Bus.log("Komut: $cmd")
-        if (cmd is Command.Unknown) {
-            if (!quietIfUnknown) speaker.say("Anlamadım.")
+    fun handle(text: String, quietIfUnknown: Boolean = false): Boolean = handle(listOf(text), quietIfUnknown)
+
+    /**
+     * [alternatives] are the recognizer's guesses, best first. The first one that is a command wins;
+     * for a call, the first guess whose name is actually in the phone book.
+     */
+    fun handle(alternatives: List<String>, quietIfUnknown: Boolean = false): Boolean {
+        val cmds = alternatives.mapNotNull { CommandParser.parse(it) }
+        val known = cmds.filter { it !is Command.Unknown }
+        if (known.isEmpty()) {
+            if (cmds.isNotEmpty()) {
+                Bus.log("Anlaşılmadı: ${alternatives.first()}")
+                if (!quietIfUnknown) speaker.say("Anlamadım.")
+            }
             return false
         }
+        val cmd = known.first()
+        Bus.log("Komut: $cmd")
         try {
-            run(cmd)
+            if (cmd is Command.Call) {
+                val calls = known.filterIsInstance<Command.Call>()
+                val hit = calls.firstNotNullOfOrNull { c -> contacts.find(c.who) }
+                if (hit != null) {
+                    // Dial at once; the confirmation is spoken while the call starts.
+                    dial(hit.number)
+                    speaker.say("${hit.name} aranıyor.")
+                } else {
+                    val hint = if (ctx.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED)
+                        " Rehber izni verilmemiş." else ""
+                    speaker.say("${cmd.who} rehberde bulunamadı.$hint")
+                }
+            } else {
+                run(cmd)
+            }
         } catch (e: Exception) {
             Bus.log("Hata: $e")
             speaker.say("Bunu yaparken bir hata oldu.")
@@ -45,9 +70,15 @@ class Assistant(private val ctx: Context, private val speaker: Speaker) {
         return true
     }
 
+    fun preloadContacts() = contacts.preload()
+
+    fun contactCount() = contacts.count()
+
+    fun contactNames() = contacts.names()
+
     private fun run(cmd: Command) {
         when (cmd) {
-            is Command.Call -> call(cmd.who)
+            is Command.Call -> {}
             is Command.Alarm -> alarm(cmd.time)
             is Command.Timer -> timer(cmd.seconds)
             is Command.Weather -> {
@@ -79,17 +110,6 @@ class Assistant(private val ctx: Context, private val speaker: Speaker) {
             Command.Cancel -> speaker.stop()
             is Command.Unknown -> {}
         }
-    }
-
-    private fun call(who: String) {
-        val c = contacts.find(who)
-        if (c == null) {
-            val hint = if (ctx.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED)
-                " Rehber izni verilmemiş." else ""
-            speaker.say("$who rehberde bulunamadı.$hint")
-            return
-        }
-        speaker.say("${c.name} aranıyor.") { dial(c.number) }
     }
 
     private fun dial(number: String) {

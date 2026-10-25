@@ -27,6 +27,28 @@ class Prefs(ctx: Context) {
         get() = sp.getString("city", "")!!
         set(v) = sp.edit().putString("city", v.trim()).apply()
 
+    /** Text-to-speech engine package ("" = system default), voice name ("" = automatic), speed and pitch. */
+    var ttsEngine: String
+        get() = sp.getString("ttsEngine", "")!!
+        set(v) = sp.edit().putString("ttsEngine", v).apply()
+
+    var ttsVoice: String
+        get() = sp.getString("ttsVoice", "")!!
+        set(v) = sp.edit().putString("ttsVoice", v).apply()
+
+    var ttsRate: Float
+        get() = sp.getFloat("ttsRate", 1.15f)
+        set(v) = sp.edit().putFloat("ttsRate", v).apply()
+
+    var ttsPitch: Float
+        get() = sp.getFloat("ttsPitch", 1.0f)
+        set(v) = sp.edit().putFloat("ttsPitch", v).apply()
+
+    /** After the wake word, let the phone's own (Google) on-device recognizer hear the command. */
+    var systemRecognizer: Boolean
+        get() = sp.getBoolean("systemRecognizer", true)
+        set(v) = sp.edit().putBoolean("systemRecognizer", v).apply()
+
     private fun aliasJson() = JSONObject(sp.getString("aliases", "{}")!!)
 
     /** Spoken nicknames ("eşim", "annem") -> contact. Key is [Tr.ascii] of the nickname. */

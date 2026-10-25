@@ -10,6 +10,12 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.SeekBar
+import android.widget.Spinner
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.CheckBox
@@ -27,6 +33,12 @@ class MainActivity : Activity(), Bus.Listener {
     private lateinit var aliasName: EditText
     private var localSpeaker: Speaker? = null
     private var localAssistant: Assistant? = null
+    private var preview: Speaker? = null
+    private lateinit var engineSpin: Spinner
+    private lateinit var voiceSpin: Spinner
+    private lateinit var contactsInfo: TextView
+    private var engineIds = listOf<String>()
+    private var voiceIds = listOf<String>()
 
     private val runtimePerms: Array<String>
         get() = buildList {
@@ -56,6 +68,26 @@ class MainActivity : Activity(), Bus.Listener {
         noWake.isChecked = prefs.noWakeWord
         city.setText(prefs.city)
         findViewById<TextView>(R.id.help).text = HELP
+        contactsInfo = findViewById(R.id.contactsInfo)
+
+        val systemRec = findViewById<CheckBox>(R.id.systemRec)
+        systemRec.isChecked = prefs.systemRecognizer
+        systemRec.setOnCheckedChangeListener { _, on -> prefs.systemRecognizer = on }
+        findViewById<Button>(R.id.recDownload).setOnClickListener {
+            val ok = try { CommandRecognizer(this, {}, {}).downloadTurkish() } catch (e: Exception) { false }
+            if (ok) {
+                Toast.makeText(this, "İndirme istendi (bildirimden takip edin)", Toast.LENGTH_LONG).show()
+            } else {
+                // Older Android: Google app > Settings > Voice > Offline speech recognition.
+                Toast.makeText(this, "Google uygulaması > Ayarlar > Ses > Çevrimdışı konuşma tanıma > Türkçe", Toast.LENGTH_LONG).show()
+                try {
+                    startActivity(Intent("com.google.android.googlequicksearchbox.action.PRIVACY_SETTINGS_VOICE"))
+                } catch (e: Exception) {
+                    try { startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)) } catch (e2: Exception) {}
+                }
+            }
+        }
+        setupVoice()
 
         toggle.setOnClickListener {
             if (AssistantService.running) {
@@ -108,7 +140,7 @@ class MainActivity : Activity(), Bus.Listener {
                 if (AssistantService.running) {
                     AssistantService.start(this, AssistantService.ACTION_TEXT, t)
                 } else {
-                    val sp = localSpeaker ?: Speaker(this) {}.also { localSpeaker = it }
+                    val sp = localSpeaker ?: Speaker(this, onBusy = {}).also { localSpeaker = it }
                     val a = localAssistant ?: Assistant(this, sp).also { localAssistant = it }
                     a.handle(t)
                 }
@@ -137,6 +169,7 @@ class MainActivity : Activity(), Bus.Listener {
     }
 
     override fun onDestroy() {
+        preview?.shutdown()
         localSpeaker?.shutdown()
         localAssistant?.shutdown()
         super.onDestroy()
@@ -164,8 +197,107 @@ class MainActivity : Activity(), Bus.Listener {
         ).joinToString("\n")
 
         val list = prefs.aliases()
-        aliases.text = if (list.isEmpty()) "Henüz yok. Örn. \"eşim\" yazıp rehberden kişiyi seçin; sonra \"asistan eşimi ara\" deyin."
+        aliases.text = if (list.isEmpty()) "Gerek yok: rehberdeki herkes adıyla aranır. \"Eşim\", \"Aşkım\", \"Karım\", \"Annem\" gibi kayıtlar da kendiliğinden bulunur. Kişi bambaşka bir adla kayıtlıysa buradan bağlayın."
         else list.joinToString("\n") { (_, label, c) -> "$label → ${c.name} (${c.number})" }
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            contactsInfo.text = "✗ Rehber izni yok: \"İzinleri ver\"e basın, sonra herkes adıyla aranabilir."
+        } else {
+            Thread {
+                val n = ContactFinder(this, prefs).count()
+                runOnUiThread { contactsInfo.text = "✓ Rehberdeki $n kişinin tamamı otomatik tanınıyor. Örn: \"asistan Ahmet Yılmaz'ı ara\"." }
+            }.start()
+        }
+    }
+
+    private fun notifyVoice() {
+        if (AssistantService.running) AssistantService.start(this, AssistantService.ACTION_RELOAD_VOICE)
+    }
+
+    private fun setupVoice() {
+        engineSpin = findViewById(R.id.engine)
+        voiceSpin = findViewById(R.id.voice)
+        val rate = findViewById<SeekBar>(R.id.rate)
+        val pitch = findViewById<SeekBar>(R.id.pitch)
+        val rateLabel = findViewById<TextView>(R.id.rateLabel)
+        val pitchLabel = findViewById<TextView>(R.id.pitchLabel)
+        preview = Speaker(this, {}, { runOnUiThread { fillVoices() } })
+
+        // Bars: 0..30 -> 0.5x..2.0x
+        fun label() {
+            rateLabel.text = "Konuşma hızı: %.2fx".format(prefs.ttsRate)
+            pitchLabel.text = "Ses tonu: %.2fx".format(prefs.ttsPitch)
+        }
+        rate.progress = ((prefs.ttsRate - 0.5f) * 20).toInt()
+        pitch.progress = ((prefs.ttsPitch - 0.5f) * 20).toInt()
+        label()
+        val bars = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, p: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                if (bar === rate) prefs.ttsRate = 0.5f + p / 20f else prefs.ttsPitch = 0.5f + p / 20f
+                label()
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) {}
+            override fun onStopTrackingTouch(bar: SeekBar) {
+                preview?.applyTuning()
+                preview?.say(SAMPLE)
+                notifyVoice()
+            }
+        }
+        rate.setOnSeekBarChangeListener(bars)
+        pitch.setOnSeekBarChangeListener(bars)
+
+        engineSpin.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                val e = engineIds.getOrNull(pos) ?: return
+                if (e == prefs.ttsEngine) return
+                prefs.ttsEngine = e
+                prefs.ttsVoice = ""
+                preview?.reload()
+                notifyVoice()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        voiceSpin.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                val v = voiceIds.getOrNull(pos) ?: return
+                if (v == prefs.ttsVoice) return
+                prefs.ttsVoice = v
+                preview?.applyTuning()
+                preview?.say(SAMPLE)
+                notifyVoice()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        findViewById<Button>(R.id.voiceTest).setOnClickListener { preview?.say(SAMPLE) }
+        findViewById<Button>(R.id.voiceInstall).setOnClickListener {
+            try {
+                startActivity(Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA).apply {
+                    prefs.ttsEngine.takeIf { it.isNotEmpty() }?.let { setPackage(it) }
+                })
+            } catch (e: Exception) {
+                startActivity(Intent("com.android.settings.TTS_SETTINGS"))
+            }
+        }
+    }
+
+    private fun fillVoices() {
+        val sp = preview ?: return
+        val engines = sp.engines()
+        engineIds = listOf("") + engines.map { it.name }
+        engineSpin.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item,
+            listOf("Varsayılan") + engines.map { it.label }
+        )
+        engineSpin.setSelection(engineIds.indexOf(prefs.ttsEngine).coerceAtLeast(0))
+
+        val voices = sp.voices()
+        voiceIds = listOf("") + voices.map { it.name }
+        val labels = listOf(if (voices.isEmpty()) "Türkçe ses yok — \"Yeni ses indir\"" else "Otomatik") +
+            voices.mapIndexed { i, v ->
+                "Ses ${i + 1}" + (if (v.isNetworkConnectionRequired) " (internetli)" else "") + "  ·  " + v.name
+            }
+        voiceSpin.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        voiceSpin.setSelection(voiceIds.indexOf(prefs.ttsVoice).coerceAtLeast(0))
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -192,6 +324,7 @@ class MainActivity : Activity(), Bus.Listener {
     companion object {
         private const val REQ_PERMS = 1
         private const val REQ_PICK = 2
+        private const val SAMPLE = "Merhaba, ben Erhan'ın asistanıyım. Yarın sabah sekiz için alarm kuruldu."
         private val HELP = """
             Önce uyandırma kelimesini söyleyin ("asistan"), bip sesinden sonra ya da aynı cümlede komutu:
             • asistan eşimi ara / annemi ara / Ahmet'i ara

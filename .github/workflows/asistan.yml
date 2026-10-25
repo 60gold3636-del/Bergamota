@@ -43,7 +43,14 @@ jobs:
           rm -rf model-cache/x app/src/main/assets/model-tr
           unzip -q model-cache/$MODEL.zip -d model-cache/x
           mv model-cache/x/$MODEL app/src/main/assets/model-tr
-          echo "$MODEL" > app/src/main/assets/model-tr/uuid
+          # Faster replies: end a sentence after 0.3 s of silence instead of 0.5-1 s.
+          conf=app/src/main/assets/model-tr/conf/model.conf
+          if [ -f "$conf" ]; then
+            sed -i -E 's/(rule2\.min-trailing-silence=)[0-9.]+/\10.3/; s/(rule3\.min-trailing-silence=)[0-9.]+/\10.6/; s/(rule4\.min-trailing-silence=)[0-9.]+/\11.0/' "$conf"
+            grep -q rule2.min-trailing "$conf" || printf -- '--endpoint.rule2.min-trailing-silence=0.3\n--endpoint.rule3.min-trailing-silence=0.6\n--endpoint.rule4.min-trailing-silence=1.0\n' >> "$conf"
+            cat "$conf"
+          fi
+          echo "$MODEL-fast1" > app/src/main/assets/model-tr/uuid
           du -sh app/src/main/assets/model-tr
 
       - uses: gradle/actions/setup-gradle@v4

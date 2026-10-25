@@ -88,7 +88,101 @@
 
         <TextView
             style="@style/Section"
-            android:text="Kişi takma adları (eşim, annem, babam…)" />
+            android:text="Komut tanıma" />
+
+        <CheckBox
+            android:id="@+id/systemRec"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Uyandırma kelimesinden sonra komutu telefonun kendi tanıyıcısı dinlesin (rehberdeki isimleri çok daha iyi tanır, internetsiz çalışır)" />
+
+        <Button
+            android:id="@+id/recDownload"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Türkçe çevrimdışı konuşma paketini indir" />
+
+        <TextView
+            style="@style/Section"
+            android:text="Asistanın sesi" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ses motoru" />
+
+        <Spinner
+            android:id="@+id/engine"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Ses" />
+
+        <Spinner
+            android:id="@+id/voice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/rateLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+
+        <SeekBar
+            android:id="@+id/rate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="30" />
+
+        <TextView
+            android:id="@+id/pitchLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+
+        <SeekBar
+            android:id="@+id/pitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="30" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/voiceTest"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Sesi dene" />
+
+            <Button
+                android:id="@+id/voiceInstall"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Yeni ses indir" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Section"
+            android:text="Rehber" />
+
+        <TextView
+            android:id="@+id/contactsInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            style="@style/Section"
+            android:text="İsteğe bağlı takma adlar (rehberde başka adla kayıtlıysa)" />
 
         <TextView
             android:id="@+id/aliases"
