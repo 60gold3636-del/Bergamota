@@ -50,3 +50,8 @@ plays the fall, and after a hiccup it wakes up and finishes at 140 BPM.
 `python3 make_mi_ringtone.py out.wav --zurna`: the exact Bergamota Mi arrangement and rhythm
 (110 BPM, same drums, bass, plucks and pad) with the lead melody on the zurna instead of the
 e-piano. OGG only: `BergamotaMiZurnaRitim.ogg`.
+
+# Zurna sample
+
+`ZurnaOrnek.ogg` (`make_zurna_solo.py out.wav`): the synthesised zurna alone, a short Hicaz
+taksim-style phrase over a dem drone, to judge the instrument's tone by itself.
