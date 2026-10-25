@@ -1,5 +1,5 @@
 import sys, wave
-sys.path.insert(0, '/home/user/Bergamota/ringtone')
+sys.path.insert(0, __import__('os').path.dirname(__import__('os').path.abspath(__file__)))
 import numpy as np
 from make_mi_ringtone import SR, hz, reverb
 from make_zurna_ringtone import zurna_line
