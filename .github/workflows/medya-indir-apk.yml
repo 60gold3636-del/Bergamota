@@ -7,6 +7,9 @@ on:
       - ".github/workflows/medya-indir-apk.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -33,3 +36,14 @@ jobs:
         with:
           name: MedyaIndir-apk
           path: apps/MedyaIndir/MedyaIndir.apk
+      - name: Release olarak yayınla
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: medya-indir-${{ github.run_number }}
+          name: Medya İndir APK (${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            Android için Medya İndir uygulaması (Android 10+, 64-bit ARM).
+            Telefonda MedyaIndir.apk dosyasını indirip açın; "bilinmeyen kaynaklara izin ver" deyin.
+          files: apps/MedyaIndir/MedyaIndir.apk
